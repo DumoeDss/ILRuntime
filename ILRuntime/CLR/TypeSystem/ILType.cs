@@ -38,6 +38,19 @@ namespace ILRuntime.CLR.TypeSystem
         Dictionary<string, int> neoVTableSlots;
         string[] neoVTableSlotKeys;
         bool neoVTableBuilding;
+
+        // === Neo only - Step 11: interface offset map ===
+        // Maps each implemented interface to the starting slot offset of its
+        // methods within neoVTable, so interface dispatch is O(1):
+        //   actualMethod = neoVTable[interfaceOffset + interfaceMethodSlot]
+        // Each interface owns an independent 0-based method slot namespace.
+        InterfaceEntry[] neoInterfaceMap;
+        Dictionary<IType, int> neoInterfaceOffsets;
+        bool neoInterfaceMapBuilding;
+        // Lazy per-ILType 0-based slot map of this type's OWN declared methods
+        // (used when this ILType is itself an interface, to answer
+        // GetInterfaceMethodSlotSelf). Keyed by SignatureString.
+        Dictionary<string, int> neoSelfMethodSlots;
 #endif
         FieldReference[] fieldReferences;
         FieldDefinition[] fieldDefinitions;
@@ -466,6 +479,14 @@ namespace ILRuntime.CLR.TypeSystem
                             }
                         }
                     }
+
+                    // Step 11: ensure every interface-implementing method occupies
+                    // a class VTable slot, even when the implementing method is a
+                    // plain (non-virtual) C# method. C# implicit interface impl
+                    // produces non-virtual methods that IsNeoVTableCandidate rejects,
+                    // but they ARE the dispatch target of an interface callvirt, so
+                    // the interface offset map must be able to land on them.
+                    EnsureNeoInterfaceImplementorSlots(slots, slotKeys, slotMap);
                 }
 
                 neoVTable = slots.ToArray();
@@ -489,6 +510,81 @@ namespace ILRuntime.CLR.TypeSystem
                     continue;
                 AddNeoVTableSlot(method, method.SignatureString, slots, slotKeys, slotMap);
             }
+        }
+
+        // Step 11: walk the interface graph of THIS type (its own Implements plus
+        // each interface's parent interfaces) and ensure every interface method
+        // has its implementing method in the class VTable. When the interface
+        // method's key is already in slotMap (the implementing method was virtual
+        // and got a slot above), nothing happens. Otherwise we resolve the
+        // implementing instance method on this type by signature and give it a
+        // fresh slot, so interface dispatch can land on it.
+        void EnsureNeoInterfaceImplementorSlots(List<IMethod> slots, List<string> slotKeys, Dictionary<string, int> slotMap)
+        {
+            IType[] impls = Implements;
+            if (impls == null || impls.Length == 0)
+                return;
+
+            var seen = new HashSet<IType>();
+            var queue = new Queue<IType>();
+            foreach (var impl in impls)
+            {
+                if (impl != null && seen.Add(impl))
+                    queue.Enqueue(impl);
+            }
+
+            while (queue.Count > 0)
+            {
+                IType iface = queue.Dequeue();
+                if (iface == null)
+                    continue;
+
+                foreach (var ifaceMethod in iface.GetMethods())
+                {
+                    if (ifaceMethod == null)
+                        continue;
+                    string key = ifaceMethod.SignatureString;
+                    if (slotMap.ContainsKey(key))
+                        continue;
+
+                    IMethod implMethod = FindNeoImplementingMethod(ifaceMethod);
+                    if (implMethod != null)
+                        AddNeoVTableSlot(implMethod, key, slots, slotKeys, slotMap);
+                }
+
+                IType[] parents = iface.Implements;
+                if (parents != null)
+                {
+                    foreach (var parent in parents)
+                    {
+                        if (parent != null && seen.Add(parent))
+                            queue.Enqueue(parent);
+                    }
+                }
+            }
+        }
+
+        // Find an instance method declared on THIS type that matches the given
+        // interface method by SignatureString (name + generic count + param
+        // fullnames + return fullname). Returns null if none.
+        IMethod FindNeoImplementingMethod(IMethod ifaceMethod)
+        {
+            if (ifaceMethod == null || methods == null)
+                return null;
+            string key = ifaceMethod.SignatureString;
+            foreach (var pair in methods)
+            {
+                if (pair.Value == null)
+                    continue;
+                foreach (var m in pair.Value)
+                {
+                    if (m == null || m.IsStatic || m.IsConstructor)
+                        continue;
+                    if (m.SignatureString == key)
+                        return m;
+                }
+            }
+            return null;
         }
 
         static void AddNeoVTableSlot(IMethod method, string key, List<IMethod> slots, List<string> slotKeys, Dictionary<string, int> slotMap)
@@ -574,6 +670,338 @@ namespace ILRuntime.CLR.TypeSystem
             sb.Append(")->");
             sb.Append(method.ReturnType != null ? method.ReturnType.FullName : string.Empty);
             return sb.ToString();
+        }
+
+        // === Neo only - Step 11: interface offset map ===
+        //
+        // One entry per implemented interface (including inherited parent
+        // interfaces). VTableOffset is the starting slot into neoVTable;
+        // MethodSlotKeys[k] is the SignatureString of the interface's k-th
+        // declared method (so the interface-local slot is stable). In the
+        // common contiguous case the implementing method for slot k lives at
+        // neoVTable[VTableOffset + k]. When that does not hold (explicit
+        // interface impl, base-class-provided method), ClassSlotRemap[k] holds
+        // the actual class VTable index and overrides the contiguous formula.
+        internal struct InterfaceEntry
+        {
+            public IType InterfaceType;
+            public int VTableOffset;
+            public string[] MethodSlotKeys;
+            public int[] ClassSlotRemap; // null in the contiguous fast path
+        }
+
+        /// <summary>
+        /// Starting slot offset of <paramref name="interfaceType"/>'s methods
+        /// within this type's class VTable. Throws if the interface is not
+        /// implemented by this type.
+        /// </summary>
+        public int GetInterfaceVTableOffset(IType interfaceType)
+        {
+            if (!TryGetInterfaceVTableOffset(interfaceType, out int offset))
+                throw new MissingMethodException(string.Format("Type {0} does not implement interface {1}.", FullName, interfaceType != null ? interfaceType.FullName : "<null>"));
+            return offset;
+        }
+
+        public bool TryGetInterfaceVTableOffset(IType interfaceType, out int offset)
+        {
+            EnsureNeoInterfaceMap();
+            if (interfaceType == null || neoInterfaceOffsets == null)
+            {
+                offset = -1;
+                return false;
+            }
+            return neoInterfaceOffsets.TryGetValue(interfaceType, out offset);
+        }
+
+        /// <summary>
+        /// 0-based slot of <paramref name="method"/> within its own interface
+        /// declaring type, as seen by this implementing type's interface map.
+        /// </summary>
+        public bool TryGetInterfaceMethodSlot(IType interfaceType, IMethod method, out int slot)
+        {
+            slot = -1;
+            if (interfaceType == null || method == null)
+                return false;
+            EnsureNeoInterfaceMap();
+            if (neoInterfaceMap == null)
+                return false;
+            string key = method.SignatureString;
+            for (int i = 0; i < neoInterfaceMap.Length; i++)
+            {
+                if (neoInterfaceMap[i].InterfaceType != interfaceType)
+                    continue;
+                var keys = neoInterfaceMap[i].MethodSlotKeys;
+                if (keys == null)
+                    return false;
+                for (int k = 0; k < keys.Length; k++)
+                {
+                    if (keys[k] == key)
+                    {
+                        slot = k;
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 0-based slot of <paramref name="method"/> within THIS type's own
+        /// declared method list (used when this ILType is itself an interface,
+        /// so the JIT can encode the interface-local slot). Lazily builds a
+        /// SignatureString -> slot dictionary over this type's declared
+        /// candidate methods.
+        /// </summary>
+        public int GetInterfaceMethodSlotSelf(IMethod method)
+        {
+            if (method == null)
+                throw new ArgumentNullException(nameof(method));
+            if (neoSelfMethodSlots == null)
+                BuildNeoSelfMethodSlots();
+            if (neoSelfMethodSlots != null && neoSelfMethodSlots.TryGetValue(method.SignatureString, out int slot))
+                return slot;
+            throw new MissingMethodException(string.Format("Interface {0} has no declared method matching {1}.", FullName, method.SignatureString));
+        }
+
+        void BuildNeoSelfMethodSlots()
+        {
+            // INVARIANT (Step 11 interface dispatch): the interface-local slot
+            // index `k` produced here MUST match exactly the runtime slot `k`
+            // produced by AddNeoInterfaceEntry for the same interface type. The
+            // JIT encodes an interfaceMethodSlot against THIS ordering, and the
+            // runtime Callvirt_Interface interpreter reads it back against
+            // AddNeoInterfaceEntry's ordering. This equivalence holds ONLY
+            // because both methods enumerate the interface's `methods`
+            // dictionary (here directly, there via GetMethods(), which iterates
+            // the same dict in the same order) and apply the SAME
+            // IsNeoVTableCandidate filter. If you change the enumeration order
+            // or the candidate filter in one of these two methods, you MUST
+            // make the identical change in the other, or interface calls will
+            // silently mis-dispatch. See AddNeoInterfaceEntry.
+            if (methods == null)
+                InitializeMethods();
+            var map = new Dictionary<string, int>();
+            int slot = 0;
+            foreach (var pair in methods)
+            {
+                if (pair.Value == null)
+                    continue;
+                foreach (var m in pair.Value)
+                {
+                    if (m == null || !IsNeoVTableCandidate(m))
+                        continue;
+                    string key = m.SignatureString;
+                    if (!map.ContainsKey(key))
+                        map.Add(key, slot++);
+                }
+            }
+            neoSelfMethodSlots = map;
+        }
+
+        internal void EnsureNeoInterfaceMap()
+        {
+            if (neoInterfaceMap == null)
+                BuildNeoInterfaceMap();
+        }
+
+        void BuildNeoInterfaceMap()
+        {
+            if (neoInterfaceMapBuilding)
+                throw new InvalidOperationException(string.Format("Recursive Neo interface map build detected for type {0}", FullName));
+
+            neoInterfaceMapBuilding = true;
+            try
+            {
+                EnsureNeoVTable();
+
+                var entries = new List<InterfaceEntry>();
+                var offsets = new Dictionary<IType, int>();
+
+                // Step 11: inherit the base ILType's interface map verbatim. The
+                // derived class VTable inherits the base's vtable slots at the
+                // same indices (BuildNeoVTable copies base slots first), so the
+                // base's interface offsets + slot keys remain valid for the
+                // derived type. This covers "derived overrides a base-provided
+                // interface implementation" without the derived type redeclaring
+                // the interface.
+                if (BaseType is ILType baseILType)
+                {
+                    baseILType.EnsureNeoInterfaceMap();
+                    if (baseILType.neoInterfaceMap != null)
+                    {
+                        foreach (var be in baseILType.neoInterfaceMap)
+                        {
+                            // Skip interfaces this type re-implements (handled by its
+                            // own Implements below); the this-type entry wins.
+                            entries.Add(be);
+                            offsets[be.InterfaceType] = be.VTableOffset;
+                        }
+                    }
+                }
+
+                // Walk the implemented-interface graph (this.Implements plus
+                // each interface's own Implements for inheritance chains).
+                var seen = new HashSet<IType>(offsets.Keys);
+                var queue = new Queue<IType>();
+                IType[] impls = Implements;
+                if (impls != null)
+                {
+                    foreach (var impl in impls)
+                    {
+                        if (impl != null && seen.Add(impl))
+                            queue.Enqueue(impl);
+                    }
+                }
+                while (queue.Count > 0)
+                {
+                    IType iface = queue.Dequeue();
+                    EnqueueParentInterfaces(iface, seen, queue);
+                    AddNeoInterfaceEntry(iface, entries, offsets);
+                }
+
+                neoInterfaceMap = entries.ToArray();
+                neoInterfaceOffsets = offsets;
+            }
+            finally
+            {
+                neoInterfaceMapBuilding = false;
+            }
+        }
+
+        static void EnqueueParentInterfaces(IType iface, HashSet<IType> seen, Queue<IType> queue)
+        {
+            if (iface == null)
+                return;
+            IType[] parents = iface.Implements;
+            if (parents == null)
+                return;
+            foreach (var parent in parents)
+            {
+                if (parent != null && seen.Add(parent))
+                    queue.Enqueue(parent);
+            }
+        }
+
+        void AddNeoInterfaceEntry(IType iface, List<InterfaceEntry> entries, Dictionary<IType, int> offsets)
+        {
+            if (iface == null)
+                return;
+            if (offsets.ContainsKey(iface))
+                return;
+
+            // Enumerate the interface's declared candidate methods in declaration
+            // order; assign each a 0-based slot k. MethodSlotKeys[k] is its key.
+            //
+            // INVARIANT (Step 11 interface dispatch): the per-interface slot
+            // index `k` assigned here MUST match exactly the JIT-time
+            // interface-local slot produced by BuildNeoSelfMethodSlots for this
+            // same interface type. The JIT encodes an interfaceMethodSlot
+            // against BuildNeoSelfMethodSlots' ordering, and the runtime
+            // Callvirt_Interface interpreter reads that slot back against THIS
+            // ordering. This equivalence holds ONLY because both methods
+            // enumerate the interface's `methods` dictionary (here via
+            // GetMethods(), which iterates that dict in the same order, there
+            // directly) and apply the SAME IsNeoVTableCandidate filter. If you
+            // change the enumeration order or the candidate filter in one of
+            // these two methods, you MUST make the identical change in the
+            // other, or interface calls will silently mis-dispatch. See
+            // BuildNeoSelfMethodSlots.
+            var methods = iface.GetMethods();
+            var keys = new List<string>();
+            var classSlots = new List<int>();
+            bool contiguous = true;
+            int firstClassSlot = -1;
+
+            for (int k = 0; k < methods.Count; k++)
+            {
+                var m = methods[k];
+                if (m == null || !IsNeoVTableCandidate(m))
+                    continue;
+                string key = m.SignatureString;
+
+                int localSlot = keys.Count;
+                keys.Add(key);
+
+                int classSlot = -1;
+                if (neoVTableSlots != null && neoVTableSlots.TryGetValue(key, out int resolved))
+                    classSlot = resolved;
+
+                classSlots.Add(classSlot);
+
+                if (firstClassSlot < 0)
+                    firstClassSlot = classSlot;
+
+                // Contiguous fast path: classSlot == firstClassSlot + localSlot.
+                if (classSlot != firstClassSlot + localSlot)
+                    contiguous = false;
+            }
+
+            int vTableOffset = firstClassSlot;
+            int[] remap = null;
+            if (!contiguous || firstClassSlot < 0)
+            {
+                // Non-contiguous / unresolved fallback. Anchor offset at the
+                // minimum resolved class slot (or 0 if none resolved) and rely
+                // on the explicit per-method ClassSlotRemap.
+                int minSlot = int.MaxValue;
+                bool any = false;
+                for (int i = 0; i < classSlots.Count; i++)
+                {
+                    if (classSlots[i] >= 0)
+                    {
+                        any = true;
+                        if (classSlots[i] < minSlot)
+                            minSlot = classSlots[i];
+                    }
+                }
+                vTableOffset = any ? minSlot : 0;
+                remap = classSlots.ToArray();
+            }
+
+            var entry = new InterfaceEntry
+            {
+                InterfaceType = iface,
+                VTableOffset = vTableOffset,
+                MethodSlotKeys = keys.ToArray(),
+                ClassSlotRemap = remap,
+            };
+            entries.Add(entry);
+            offsets[iface] = vTableOffset;
+        }
+
+        /// <summary>
+        /// Resolves the class VTable slot for a given interface + interface-local
+        /// method slot on this type. Returns false if the interface is not
+        /// implemented or the slot is out of range.
+        /// </summary>
+        internal bool TryResolveNeoInterfaceClassSlot(IType interfaceType, int interfaceMethodSlot, out int classSlot)
+        {
+            classSlot = -1;
+            EnsureNeoInterfaceMap();
+            if (neoInterfaceMap == null)
+                return false;
+            for (int i = 0; i < neoInterfaceMap.Length; i++)
+            {
+                if (neoInterfaceMap[i].InterfaceType != interfaceType)
+                    continue;
+                ref var entry = ref neoInterfaceMap[i];
+                if (entry.MethodSlotKeys == null || interfaceMethodSlot < 0 || interfaceMethodSlot >= entry.MethodSlotKeys.Length)
+                    return false;
+                if (entry.ClassSlotRemap != null)
+                {
+                    int remapped = entry.ClassSlotRemap[interfaceMethodSlot];
+                    if (remapped < 0)
+                        return false;
+                    classSlot = remapped;
+                }
+                else
+                {
+                    classSlot = entry.VTableOffset + interfaceMethodSlot;
+                }
+                return true;
+            }
+            return false;
         }
 
 #endif

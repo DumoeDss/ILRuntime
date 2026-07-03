@@ -244,6 +244,33 @@ namespace ILRuntime.Runtime.Intepreter
             throw new InvalidOperationException(string.Format("Neo Callvirt_IL requires ILTypeInstance this, got {0}.", thisObj.GetType().FullName));
         }
 
+        static IMethod ResolveNeoCallvirtInterfaceTarget(OpCodeR* ip, IMethod declaredMethod, byte* targetBase, AutoList mStack)
+        {
+            object thisObj = ReadNeoCallThis(ip, targetBase, mStack);
+            if (!(thisObj is ILTypeInstance instance))
+                throw new InvalidOperationException(string.Format("Neo Callvirt_Interface requires ILTypeInstance this (CLR object through an interface is out of scope for Step 11), got {0}.", thisObj.GetType().FullName));
+
+            ILType runtimeType = instance.Type;
+            IType ifaceType = declaredMethod != null ? declaredMethod.DeclearingType : null;
+            int ifaceMethodSlot = ip->Operand4 & 0xffff;
+
+            if (ifaceType == null || !runtimeType.TryResolveNeoInterfaceClassSlot(ifaceType, ifaceMethodSlot, out int classSlot))
+                throw new MissingMethodException(string.Format("Neo Callvirt_Interface: type {0} does not implement interface {1} (method slot {2}).",
+                    runtimeType.FullName, ifaceType != null ? ifaceType.FullName : "<null>", ifaceMethodSlot));
+
+            var vtable = runtimeType.NeoVTable;
+            if (classSlot < 0 || classSlot >= vtable.Length)
+                throw new MissingMethodException(string.Format("Neo Callvirt_Interface: interface slot out of range on {0} (interface {1}, slot {2} -> class slot {3}).",
+                    runtimeType.FullName, ifaceType.FullName, ifaceMethodSlot, classSlot));
+
+            IMethod actual = vtable[classSlot];
+            if (actual == null)
+                throw new MissingMethodException(string.Format("Neo Callvirt_Interface: interface slot is null on {0} (interface {1}, slot {2} -> class slot {3}).",
+                    runtimeType.FullName, ifaceType.FullName, ifaceMethodSlot, classSlot));
+
+            return actual;
+        }
+
         static CLRMethod ResolveNeoCallvirtCLRTarget(OpCodeR* ip, IMethod declaredMethod, byte* targetBase, AutoList mStack)
         {
             ReadNeoCallThis(ip, targetBase, mStack);
@@ -1392,6 +1419,30 @@ namespace ILRuntime.Runtime.Intepreter
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
                                     CLRMethod clrMethod = ResolveNeoCallvirtCLRTarget(ip, targetMethod, targetBase, mStack);
                                     InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
+
+                                    ip++;
+                                    continue;
+                                }
+                            case OpCodeREnum.Callvirt_Interface:
+                                {
+                                    var targetMethod = AppDomain.GetMethod(ip->Operand2);
+                                    if (targetMethod == null)
+                                    {
+                                        ip++;
+                                        continue;
+                                    }
+
+                                    int callParamIdx = ip->Operand;
+                                    ref var map = ref nf.NeoCallParams[callParamIdx];
+                                    byte* targetBase = newEsp;
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase);
+
+                                    byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
+                                    int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
+                                    IMethod actualMethod = ResolveNeoCallvirtInterfaceTarget(ip, targetMethod, targetBase, mStack);
+
+                                    if (!InvokeNeoCallTarget(actualMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                        return null;
 
                                     ip++;
                                     continue;

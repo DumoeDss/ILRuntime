@@ -376,6 +376,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Callvirt:
                     case OpCodeREnum.Callvirt_IL:
                     case OpCodeREnum.Callvirt_CLR:
+                    case OpCodeREnum.Callvirt_Interface:
                     case OpCodeREnum.Newobj:
                         {
                             var targetMethod = domain.GetMethod(op.Operand2);
@@ -387,6 +388,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             
                             bool hasConstrained = op.Code != OpCodeREnum.Callvirt_IL &&
                                 op.Code != OpCodeREnum.Callvirt_CLR &&
+                                op.Code != OpCodeREnum.Callvirt_Interface &&
                                 op.Operand4 == 1;
                             int pushCnt = hasConstrained ? pCnt : Math.Max(pCnt - 3, 0);
                             int regCnt = pCnt - pushCnt;
@@ -427,6 +429,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             if (targetMethod is ILRuntime.CLR.Method.ILMethod ilm)
                             {
                                 paramInfos = ilm.CompiledFrame.ParamInfos;
+                                // Step 11: an interface (abstract) declared method has no
+                                // compiled parameter layout, so synthesize a contiguous
+                                // callee param layout from the declared signature. The
+                                // concrete impl shares this signature, so the argument
+                                // copy is valid.
+                                if (paramInfos == null)
+                                    paramInfos = AllocNeoParamInfosFromSignature(targetMethod, op.Code == OpCodeREnum.Newobj, domain);
                             }
                             else if (targetMethod is ILRuntime.CLR.Method.CLRMethod clrMethod)
                             {
@@ -583,6 +592,36 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
 
             return slot;
+        }
+
+        // Step 11: build a contiguous callee param-info layout purely from a
+        // method's declared signature (used when the target has no compiled
+        // frame, e.g. an interface abstract method). Mirrors the CLRMethod
+        // branch: slot 0 is `this` for HasThis callvirt, then each parameter.
+        static StackSlotInfo[] AllocNeoParamInfosFromSignature(CLR.Method.IMethod targetMethod, bool isNewobj, Enviorment.AppDomain domain)
+        {
+            int pCnt = targetMethod.ParameterCount;
+            bool hasThis = targetMethod.HasThis && !isNewobj;
+            int total = pCnt + ((hasThis || isNewobj) ? 1 : 0);
+            StackSlotInfo[] paramInfos = new StackSlotInfo[total];
+            int curPrim = 0, curRef = 0;
+            if (isNewobj)
+            {
+                paramInfos[0] = new StackSlotInfo { Offset = curPrim, Size = 4, RefOffset = curRef, RefCount = 1 };
+                curPrim += 4;
+                curRef += 1;
+            }
+            if (hasThis)
+            {
+                paramInfos[0] = AllocateNeoCallParamSlot(targetMethod.DeclearingType, ref curPrim, ref curRef, domain);
+            }
+            for (int p = 0; p < pCnt; p++)
+            {
+                int dstIndex = (hasThis || isNewobj) ? p + 1 : p;
+                var paramType = targetMethod.Parameters[p];
+                paramInfos[dstIndex] = AllocateNeoCallParamSlot(paramType, ref curPrim, ref curRef, domain);
+            }
+            return paramInfos;
         }
 
         static void FixBranchTargetsAfterRemove(OpCodeR[] body, int removedIndex, Dictionary<int, int[]> jumpTables, Dictionary<int, RegisterVMSymbol> symbols)

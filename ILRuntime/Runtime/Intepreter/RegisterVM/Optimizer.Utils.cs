@@ -536,6 +536,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Callvirt:
                 case OpCodeREnum.Callvirt_IL:
                 case OpCodeREnum.Callvirt_CLR:
+                case OpCodeREnum.Callvirt_Interface:
                 case OpCodeREnum.Call_Redirect:
                 case OpCodeREnum.Call:
                 case OpCodeREnum.Newobj:
@@ -754,6 +755,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Callvirt:
                 case OpCodeREnum.Callvirt_IL:
                 case OpCodeREnum.Callvirt_CLR:
+                case OpCodeREnum.Callvirt_Interface:
                 case OpCodeREnum.Call:
                 case OpCodeREnum.Newobj:
                 case OpCodeREnum.Ldind_I:
@@ -1170,6 +1172,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Callvirt:
                 case OpCodeREnum.Callvirt_IL:
                 case OpCodeREnum.Callvirt_CLR:
+                case OpCodeREnum.Callvirt_Interface:
                 case OpCodeREnum.Call_Redirect:
                 case OpCodeREnum.Newobj:
 
@@ -1340,6 +1343,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Callvirt:
                 case OpCodeREnum.Callvirt_IL:
                 case OpCodeREnum.Callvirt_CLR:
+                case OpCodeREnum.Callvirt_Interface:
                 case OpCodeREnum.Call_Redirect:
                 case OpCodeREnum.Newobj:
                 case OpCodeREnum.Ldind_I:

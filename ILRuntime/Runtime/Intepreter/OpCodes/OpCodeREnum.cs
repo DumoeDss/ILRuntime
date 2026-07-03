@@ -1008,5 +1008,13 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
         /// Operand2 stores the resolved CLR method hash.
         /// </summary>
         Callvirt_CLR,
+        /// <summary>
+        /// Neo mode interface virtual call. Operand2 is the declared interface
+        /// method token hash (its DeclearingType is the interface); Operand4 packs
+        /// (thisArgOffset &lt;&lt; 16) | (interfaceMethodSlot &amp; 0xffff). The handler
+        /// resolves the implementing type's interface offset + slot into the class
+        /// VTable. Same Neo call ABI as Callvirt_IL.
+        /// </summary>
+        Callvirt_Interface,
     }
 }

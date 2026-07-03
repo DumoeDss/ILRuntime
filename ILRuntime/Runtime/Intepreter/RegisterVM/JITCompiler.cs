@@ -2110,6 +2110,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             if (targetMethod is ILMethod ilMethod)
             {
                 ILType declaringILType = ilMethod.DeclearingType as ILType;
+                // Step 11: interface dispatch MUST be handled FIRST. An interface
+                // method is an ILMethod whose declaring ILType.IsInterface is true;
+                // the Step 10 IL branch below guards on !IsInterface, so without
+                // this earlier branch the interface call would fall through to the
+                // generic Callvirt arm and never reach the interface offset map.
+                if (declaringILType != null && declaringILType.IsInterface)
+                {
+                    // Encode the interface-local 0-based slot of the declared
+                    // method. The implementing type's interface offset map is
+                    // built lazily at runtime in the handler (TryGetInterface-
+                    // VTableOffset), not here -- the interface type itself has
+                    // no class VTable to map into.
+                    int ifaceMethodSlot = declaringILType.GetInterfaceMethodSlotSelf(ilMethod);
+                    op.Code = OpCodeREnum.Callvirt_Interface;
+                    op.Operand4 = EncodeCallvirtInterface(ifaceMethodSlot, 0);
+                    return;
+                }
                 if (declaringILType != null && !declaringILType.IsInterface && declaringILType.TryGetNeoVTableSlot(ilMethod, out slot))
                 {
                     op.Code = OpCodeREnum.Callvirt_IL;
@@ -2134,6 +2151,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         static int EncodeCallvirtDispatch(int slot, int thisArgOffset)
         {
             return ((thisArgOffset & 0xffff) << 16) | (slot & 0xffff);
+        }
+
+        // Step 11: same bit layout as EncodeCallvirtDispatch; separate name so a
+        // future .neo AOT format change to interface-type-index encoding is localized.
+        static int EncodeCallvirtInterface(int interfaceMethodSlot, int thisArgOffset)
+        {
+            return ((thisArgOffset & 0xffff) << 16) | (interfaceMethodSlot & 0xffff);
         }
 
         static bool MayCallvirtTargetILObject(CLRMethod method)

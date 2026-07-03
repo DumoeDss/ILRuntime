@@ -1,0 +1,24 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer", "verdict": "no Blocker, no Major; 3 Minor + 3 Trivial" } },
+    "review-loop": { "status": "done", "round": 1, "maxRounds": 3, "reReviewer": "reviewer2", "result": "clean — M2/M3 resolved by comment-only fixes (non-author confirmed); no new findings" },
+    "ship": { "status": "in_progress", "note": "adapted: openspec-gstack-ship is Rails/JS-centric (bin/test-lane, VERSION, Greptile, gh pr) — MISFIT for ILRuntime. Shipper writes ship-log.md (verification evidence + review verdict) only. No git push, no PR, no Rails machinery. Git commit left as explicit user decision." },
+    "archive": { "status": "pending", "note": "openspec-archive-change fits: sync delta to openspec/specs/neo-dispatch/spec.md, move change to openspec/changes/archive/." }
+  },
+  "acceptedKnown": [
+    { "id": "M1", "severity": "Minor", "summary": "Negative failure-path scenario (object not implementing interface) has no green test; harness lacks Leave_S (Step 6). Handler enforces clear-exception contract in code (ILIntepreter.Neo.cs:257/264/270). Follow-up test when Step 6 lands." }
+  ],
+  "resolvedFindings": [
+    { "id": "M2", "how": "comment-only clarification on NeoStep11TestClrInterfaceIDisposable (CLR-interface uses generic Callvirt arm, not Callvirt_Interface)" },
+    { "id": "M3", "how": "cross-referencing INVARIANT comments at BuildNeoSelfMethodSlots + AddNeoInterfaceEntry documenting the load-bearing slot-ordering equivalence" }
+  ],
+  "rounds": 1,
+  "openFindings": []
+}
