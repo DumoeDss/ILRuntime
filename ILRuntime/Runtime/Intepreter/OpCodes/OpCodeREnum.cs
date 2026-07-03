@@ -888,6 +888,14 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
         /// </summary>
         Move,
         /// <summary>
+        /// Step 12b: whole value-type copy (assignment / local-init / starg of a
+        /// value type whose TotalReferenceCount > 0). Like Move but copies a
+        /// multi-reference value type: a byte CopyBlock for the primitive region
+        /// PLUS a per-ref-slot mStack copy. Pure-primitive value types
+        /// (TotalReferenceCount == 0) keep plain Move.
+        /// </summary>
+        Move_Vt,
+        /// <summary>
         /// 将指定寄存器的值压入栈
         /// </summary>
         Push,

@@ -456,6 +456,32 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                 }
                                 break;
+                            // Step 12b: whole value-type copy (assignment / local-
+                            // init / starg of a value type with reference fields).
+                            // Operand2 = primitive byte size; Operand3 = dst ref-
+                            // run base; Operand = src ref-run base; Operand4 =
+                            // refCount. In-frame value-type reference fields live
+                            // out-of-line in the frame mStack ref region (Step 12
+                            // design), so the copy is a byte CopyBlock for the
+                            // primitive region PLUS a direct mStack-to-mStack copy
+                            // of refCount reference slots. src and dst runs share
+                            // the same length (same-type assignment), preserving
+                            // object identity per C# shallow struct-copy semantics.
+                            case OpCodeREnum.Move_Vt:
+                                {
+                                    int vtPrimSize = ip->Operand2;
+                                    int vtDstRefBase = ip->Operand3;
+                                    int vtSrcRefBase = ip->Operand;
+                                    int vtRefCount = ip->Operand4;
+                                    if (vtPrimSize > 0)
+                                        Unsafe.CopyBlock(frameBase + ip->DstOffset, frameBase + ip->SrcOffset, (uint)vtPrimSize);
+                                    for (int i = 0; i < vtRefCount; i++)
+                                    {
+                                        mStack[frameRefBase + vtDstRefBase + i] =
+                                            mStack[frameRefBase + vtSrcRefBase + i];
+                                    }
+                                }
+                                break;
                             // Step 12: ldloca / ldloca.s of a value-type local.
                             // The C# compiler emits `ldloca V; stfld/ldfld/initobj`
                             // for struct field access. The Neo offset-lowering pass

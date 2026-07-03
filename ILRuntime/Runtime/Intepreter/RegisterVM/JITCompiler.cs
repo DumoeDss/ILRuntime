@@ -544,6 +544,31 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             IType srcType = GetRegisterType(registerTypes, op.Register2);
                             op.Operand = IsNeoReferenceSlot(srcType) ? 1 : 0;
                             SetRegisterType(registerTypes, op.Register1, srcType);
+
+                            // Step 12b: LowerMove. Rewrite this Move to Move_Vt
+                            // when the DESTINATION slot is a value type with one
+                            // or more reference fields (TotalReferenceCount > 0).
+                            // Plain Move already handles primitives, single
+                            // reference slots, and pure-primitive value types
+                            // (refCount == 0, where the byte CopyBlock is correct)
+                            // so we leave those alone to minimize the regression
+                            // surface. This runs INSIDE TypeSpecializeNeoOpcodes,
+                            // BEFORE LowerNeoOffsets overwrites Register1/2 with
+                            // byte offsets (the OpCodeR explicit-layout union
+                            // aliases Register1/2/3 with DstOffset/SrcOffset/
+                            // OperandOffset), so the dest register index is still
+                            // valid for the type lookup. The authoritative slot
+                            // Size/RefOffset/RefCount are stamped later from
+                            // localInfos at LowerNeoOffsets time (see
+                            // Optimizer.Neo.cs Move_Vt case).
+                            IType dstType = GetRegisterType(registerTypes, op.Register1);
+                            if (dstType is ILType dstIl && dstIl.IsValueType && !dstIl.IsEnum)
+                            {
+                                if (dstIl.TotalReferenceCount > 0)
+                                {
+                                    op.Code = OpCodeREnum.Move_Vt;
+                                }
+                            }
                         }
                         break;
                     case OpCodeREnum.Neg:

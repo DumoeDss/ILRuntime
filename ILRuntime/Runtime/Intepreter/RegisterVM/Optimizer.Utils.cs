@@ -409,6 +409,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 #endif
             {
                 case OpCodeREnum.Move:
+                case OpCodeREnum.Move_Vt:
                 case OpCodeREnum.Conv_I:
                 case OpCodeREnum.Conv_I1:
                 case OpCodeREnum.Conv_I2:
@@ -723,6 +724,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 #endif
             {
                 case OpCodes.OpCodeREnum.Move:
+                case OpCodes.OpCodeREnum.Move_Vt:
                 case OpCodeREnum.Conv_I:
                 case OpCodeREnum.Conv_I1:
                 case OpCodeREnum.Conv_I2:
@@ -1018,6 +1020,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 #endif
             {
                 case OpCodes.OpCodeREnum.Move:
+                case OpCodes.OpCodeREnum.Move_Vt:
                 case OpCodeREnum.Conv_I:
                 case OpCodeREnum.Conv_I1:
                 case OpCodeREnum.Conv_I2:
@@ -1335,6 +1338,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 #endif
             {
                 case OpCodes.OpCodeREnum.Move:
+                case OpCodes.OpCodeREnum.Move_Vt:
                 case OpCodeREnum.Ldc_I4_0:
                 case OpCodeREnum.Ldc_I4_1:
                 case OpCodeREnum.Ldc_I4_2:

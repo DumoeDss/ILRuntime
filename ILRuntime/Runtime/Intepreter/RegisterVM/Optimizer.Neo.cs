@@ -175,6 +175,50 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.Operand3 = dstRef;
                         }
                         break;
+                    case OpCodeREnum.Move_Vt:
+                        // Step 12b: lower a whole-value-type copy. LowerMove
+                        // (in TypeSpecializeNeoOpcodes) already rewrote the Move
+                        // to Move_Vt while Register1/2 were still register
+                        // indices; here we stamp the standalone Operand fields
+                        // from localInfos (the authoritative slot layout) and
+                        // LowerR1R2 to set DstOffset/SrcOffset.
+                        //
+                        // OpCodeR is [StructLayout(LayoutKind.Explicit)]:
+                        //   offset 4: Register1 / DstOffset (ALIASED)
+                        //   offset 6: Register2 / SrcOffset (ALIASED)
+                        //   offset 8: Register3 / OperandOffset / Operand (ALIASED)
+                        //   offset 12: Operand2            (STANDALONE)
+                        //   offset 16: Operand3            (STANDALONE)
+                        //   offset 20: Operand4            (STANDALONE)
+                        // LowerR1R2 only writes DstOffset/SrcOffset (offsets 4/6).
+                        // We store primSize/dstRef/srcRef/refCount in the
+                        // standalone Operand2/3/4 fields so they survive lowering
+                        // intact. We additionally reuse `Operand` (offset 8,
+                        // aliased with Register3) to carry the SRC ref-run base;
+                        // this is SAFE because Move_Vt never uses Register3
+                        // (only Register1/2 via LowerR1R2), so overwriting the
+                        // aliased int at offset 8 cannot corrupt a needed
+                        // register index. (Mirrors how plain Move stores its
+                        // isRefMove flag in Operand.)
+                        {
+                            int srcReg = op.Register2;
+                            int dstReg = op.Register1;
+                            int srcSz = (srcReg >= 0 && srcReg < localInfos.Length) ? localInfos[srcReg].Size : 0;
+                            int dstSz = (dstReg >= 0 && dstReg < localInfos.Length) ? localInfos[dstReg].Size : 0;
+                            // min(src,dst): same rule as plain Move, to avoid
+                            // clobbering neighbouring slots when widths differ.
+                            int sz = (srcSz > 0 && dstSz > 0) ? (srcSz < dstSz ? srcSz : dstSz)
+                                                              : (srcSz > 0 ? srcSz : dstSz);
+                            int srcRef = (srcReg >= 0 && srcReg < localInfos.Length) ? localInfos[srcReg].RefOffset : 0;
+                            int dstRef = (dstReg >= 0 && dstReg < localInfos.Length) ? localInfos[dstReg].RefOffset : 0;
+                            int dstRefCount = (dstReg >= 0 && dstReg < localInfos.Length) ? localInfos[dstReg].RefCount : 0;
+                            LowerR1R2(ref op, localInfos);
+                            op.Operand2 = sz;        // primitive byte size to CopyBlock
+                            op.Operand3 = dstRef;    // dst ref-run base (frame-ref offset)
+                            op.Operand = srcRef;     // src ref-run base (reuses the former isRefMove flag field)
+                            op.Operand4 = dstRefCount; // number of ref slots to copy
+                        }
+                        break;
                     case OpCodeREnum.Conv_I:
                     case OpCodeREnum.Conv_I1:
                     case OpCodeREnum.Conv_I2:

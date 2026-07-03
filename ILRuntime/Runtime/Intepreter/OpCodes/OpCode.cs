@@ -82,6 +82,7 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
             switch (Code)
             {
                 case OpCodeREnum.Move:
+                case OpCodeREnum.Move_Vt:
                 case OpCodeREnum.Ldind_I:
                 case OpCodeREnum.Ldind_I1:
                 case OpCodeREnum.Ldind_I2:
