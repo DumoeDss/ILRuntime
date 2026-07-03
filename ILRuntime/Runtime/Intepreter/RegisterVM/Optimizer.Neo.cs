@@ -555,6 +555,91 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.SrcOffset = (ushort)localInfos[r2].Offset;
                         }
                         break;
+                    // ---- Step 16: array element access lowering ----
+                    // Encoding (spare-field choice): the JIT lays these out with up
+                    // to 3 registers (R1/R2/R3). After lowering we carry:
+                    //   DstOffset  = R1 byte offset
+                    //   SrcOffset  = R2 byte offset
+                    //   Operand4   = R3 byte offset (the "third" register -- index
+                    //                for Ldelem, value for Stelem). Operand4 (offset
+                    //                20) does NOT alias Operand (offset 8), which
+                    //                holds the element-type token for Newarr, so it
+                    //                is safe to reuse here.
+                    //   Operand3   = the ref offset that the per-arm runtime needs
+                    //                (dest array ref for Newarr; dest ref for
+                    //                Ldelem Ref/Any/VT result; value ref for Stelem
+                    //                Ref/Any/VT value). Mirrors the Box/Isinst arm
+                    //                (@430-447) which proves Operand3/Operand4 are
+                    //                reusable scratch post-lowering.
+                    // IMPORTANT: do NOT touch Operand -- Newarr carries its
+                    // element-type token there (set by JIT @2064). Ldelem_Any /
+                    // Stelem_Any do NOT carry a token in Operand (the JIT only
+                    // stamps Register1/2/3 for them), so the element type is
+                    // recovered at runtime from the array's CLR type.
+                    case OpCodeREnum.Newarr:
+                        {
+                            // R1 = dest array (ref temp), R2 = count (int).
+                            short r1 = op.Register1;
+                            short r2 = op.Register2;
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                            op.SrcOffset = (ushort)localInfos[r2].Offset;
+                            op.Operand3 = localInfos[r1].RefOffset; // dest array ref slot
+                        }
+                        break;
+                    case OpCodeREnum.Ldlen:
+                        {
+                            // R1 = dest (int), R2 = array (ref).
+                            short r1 = op.Register1;
+                            short r2 = op.Register2;
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                            op.SrcOffset = (ushort)localInfos[r2].Offset;
+                        }
+                        break;
+                    case OpCodeREnum.Ldelem_I1:
+                    case OpCodeREnum.Ldelem_U1:
+                    case OpCodeREnum.Ldelem_I2:
+                    case OpCodeREnum.Ldelem_U2:
+                    case OpCodeREnum.Ldelem_I4:
+                    case OpCodeREnum.Ldelem_U4:
+                    case OpCodeREnum.Ldelem_I8:
+                    case OpCodeREnum.Ldelem_R4:
+                    case OpCodeREnum.Ldelem_R8:
+                    case OpCodeREnum.Ldelem_Ref:
+                    case OpCodeREnum.Ldelem_Any:
+                        {
+                            // R1 = dest, R2 = array (ref), R3 = index (int).
+                            short r1 = op.Register1;
+                            short r2 = op.Register2;
+                            short r3 = op.Register3;
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                            op.SrcOffset = (ushort)localInfos[r2].Offset;
+                            op.Operand4 = localInfos[r3].Offset; // index byte offset
+                            op.Operand3 = localInfos[r1].RefOffset; // dest ref slot (Ref/Any/VT)
+                        }
+                        break;
+                    case OpCodeREnum.Stelem_I:    // native-int store (rare; JIT lowers it
+                                                // to the 3-register form). Lowered here so
+                                                // the encoding is correct; the interpreter
+                                                // arm stays a Step-tagged NIE (out of scope).
+                    case OpCodeREnum.Stelem_I1:
+                    case OpCodeREnum.Stelem_I2:
+                    case OpCodeREnum.Stelem_I4:
+                    case OpCodeREnum.Stelem_I8:
+                    case OpCodeREnum.Stelem_R4:
+                    case OpCodeREnum.Stelem_R8:
+                    case OpCodeREnum.Stelem_Ref:
+                    case OpCodeREnum.Stelem_Any:
+                        {
+                            // R1 = array (ref), R2 = index (int), R3 = value.
+                            short r1 = op.Register1;
+                            short r2 = op.Register2;
+                            short r3 = op.Register3;
+                            op.DstOffset = (ushort)localInfos[r1].Offset; // array byte offset
+                            op.SrcOffset = (ushort)localInfos[r2].Offset; // index byte offset
+                            op.Operand4 = localInfos[r3].Offset; // value byte offset
+                            op.Operand3 = localInfos[r3].RefOffset; // value ref slot (Ref/Any/VT)
+                        }
+                        break;
                     case OpCodeREnum.Br:
                     case OpCodeREnum.Br_S:
                     case OpCodeREnum.Nop:

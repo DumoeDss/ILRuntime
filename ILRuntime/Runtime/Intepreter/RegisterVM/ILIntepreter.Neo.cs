@@ -2113,6 +2113,305 @@ namespace ILRuntime.Runtime.Intepreter
                                         *(int*)(frameBase + ip->DstOffset) = -1;
                                 }
                                 break;
+                            // ---- Step 16: array element access ----
+                            // Encoding after LowerNeoOffsets:
+                            //   Newarr: DstOffset=dest array byte off, SrcOffset=count
+                            //           byte off, Operand=element-type token,
+                            //           Operand3=dest array ref slot.
+                            //   Ldlen:  DstOffset=dest(int), SrcOffset=array byte off.
+                            //   Ldelem_*: DstOffset=dest, SrcOffset=array,
+                            //             Operand4=index byte off, Operand3=dest ref slot.
+                            //   Stelem_*: DstOffset=array, SrcOffset=index,
+                            //             Operand4=value byte off, Operand3=value ref slot.
+                            // Three array kinds (matches Legacy ExecuteR @4879-5304):
+                            //   (a) CLR primitive array: typed CLR indexer.
+                            //   (b) IL reference-type array: ILTypeInstance[] (or CLR
+                            //       object[]); element is an mStack-resident object.
+                            //   (c) IL value-type array: ILTypeInstance[] with every slot
+                            //       pre-instantiated; element is a heap ILTypeInstance,
+                            //       copied via CopyILToFrame / CopyFrameToIL (Step 12/13).
+                            // Bounds: the CLR typed indexer throws IndexOutOfRangeException
+                            // natively; null array -> NullReferenceException (surfaced by
+                            // the Step 14 outer try/catch). No explicit bounds check.
+                            case OpCodeREnum.Newarr:
+                                {
+                                    int count = *(int*)(frameBase + ip->SrcOffset);
+                                    t = AppDomain.GetType(ip->Operand);
+                                    object arr = null;
+                                    if (t != null)
+                                    {
+                                        if (t.TypeForCLR != typeof(ILTypeInstance))
+                                        {
+                                            if (t is CLRType ct)
+                                                arr = ct.CreateArrayInstance(count);
+                                            else
+                                                arr = Array.CreateInstance(t.TypeForCLR, count);
+                                            // Register the array's CLR type, as Legacy does.
+                                            AppDomain.GetType(arr.GetType());
+                                        }
+                                        else
+                                        {
+                                            var ilArr = new ILTypeInstance[count];
+                                            ilType = (ILType)t;
+                                            if (ilType.IsValueType)
+                                            {
+                                                for (int i = 0; i < count; i++)
+                                                    ilArr[i] = ilType.Instantiate(true);
+                                            }
+                                            arr = ilArr;
+                                        }
+                                    }
+                                    if (arr != null)
+                                    {
+                                        dstIdx = frameRefBase + ip->Operand3;
+                                        mStack[dstIdx] = arr;
+                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                    }
+                                    else
+                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                }
+                                break;
+                            case OpCodeREnum.Ldlen:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0)
+                                        throw new NullReferenceException();
+                                    Array lenArr = (Array)mStack[srcIdx];
+                                    *(int*)(frameBase + ip->DstOffset) = lenArr.Length;
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_I1:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    // bool[] vs sbyte[] disambiguation (Legacy @5161-5179).
+                                    if (la is bool[] ba) *(int*)(frameBase + ip->DstOffset) = ba[li] ? 1 : 0;
+                                    else *(int*)(frameBase + ip->DstOffset) = ((sbyte[])la)[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_U1:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    // byte[] vs bool[] disambiguation (Legacy @5181-5200).
+                                    if (la is byte[] bya) *(int*)(frameBase + ip->DstOffset) = bya[li];
+                                    else *(int*)(frameBase + ip->DstOffset) = ((bool[])la)[li] ? 1 : 0;
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_I2:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    // short[] vs char[] disambiguation (Legacy @5201-5220).
+                                    if (la is short[] sa) *(int*)(frameBase + ip->DstOffset) = sa[li];
+                                    else *(int*)(frameBase + ip->DstOffset) = ((char[])la)[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_U2:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    // ushort[] vs char[] disambiguation (Legacy @5221-5240).
+                                    if (la is ushort[] usa) *(int*)(frameBase + ip->DstOffset) = usa[li];
+                                    else *(int*)(frameBase + ip->DstOffset) = ((char[])la)[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_I4:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    if (la is int[] ia) *(int*)(frameBase + ip->DstOffset) = ia[li];
+                                    else *(int*)(frameBase + ip->DstOffset) = (int)((uint[])la)[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_U4:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    *(uint*)(frameBase + ip->DstOffset) = ((uint[])(Array)mStack[srcIdx])[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_I8:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    if (la is long[] lla) *(long*)(frameBase + ip->DstOffset) = lla[li];
+                                    else *(long*)(frameBase + ip->DstOffset) = (long)((ulong[])la)[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_R4:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    *(float*)(frameBase + ip->DstOffset) = ((float[])(Array)mStack[srcIdx])[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_R8:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    *(double*)(frameBase + ip->DstOffset) = ((double[])(Array)mStack[srcIdx])[li];
+                                }
+                                break;
+                            case OpCodeREnum.Ldelem_Ref:
+                            case OpCodeREnum.Ldelem_Any:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    object elem;
+                                    if (la is ILTypeInstance[] ilArr)
+                                        elem = ilArr[li];
+                                    else
+                                        elem = la.GetValue(li);
+                                    if (elem is CrossBindingAdaptorType cbat)
+                                        elem = cbat.ILInstance;
+                                    if (elem is ILTypeInstance elemIns
+                                        && !(elemIns is DelegateAdapter)
+                                        && elemIns.Type.IsValueType
+                                        && !elemIns.Boxed)
+                                    {
+                                        // IL value-type element: copy primitive bytes +
+                                        // ref slots into the dest frame region (Step 12/13
+                                        // CopyILToFrame helper).
+                                        CopyILToFrame(elemIns,
+                                            frameBase, ip->DstOffset, ip->Operand3,
+                                            elemIns.Type.TotalPrimitiveSize,
+                                            elemIns.Type.TotalReferenceCount,
+                                            mStack, frameRefBase);
+                                    }
+                                    else if (elem != null)
+                                    {
+                                        // Reference element: store the object on the dest
+                                        // ref slot, write its mStack index to the dest slot.
+                                        dstIdx = frameRefBase + ip->Operand3;
+                                        mStack[dstIdx] = elem;
+                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                    }
+                                    else
+                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_I1:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset); // array
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset); // index
+                                    byte val1 = *(byte*)(frameBase + ip->Operand4); // value
+                                    Array sa = (Array)mStack[srcIdx];
+                                    if (sa is byte[] sba) sba[si] = val1;
+                                    else if (sa is bool[] sboa) sboa[si] = val1 != 0;
+                                    else ((sbyte[])sa)[si] = (sbyte)val1;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_I2:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset);
+                                    short val2 = *(short*)(frameBase + ip->Operand4);
+                                    Array sa = (Array)mStack[srcIdx];
+                                    if (sa is short[] ssa) ssa[si] = val2;
+                                    else if (sa is ushort[] susa) susa[si] = (ushort)val2;
+                                    else ((char[])sa)[si] = (char)val2;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_I4:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset);
+                                    int val4 = *(int*)(frameBase + ip->Operand4);
+                                    Array sa = (Array)mStack[srcIdx];
+                                    if (sa is int[] sia) sia[si] = val4;
+                                    else ((uint[])sa)[si] = (uint)val4;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_I8:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset);
+                                    long val8 = *(long*)(frameBase + ip->Operand4);
+                                    Array sa = (Array)mStack[srcIdx];
+                                    if (sa is long[] slla) slla[si] = val8;
+                                    else ((ulong[])sa)[si] = (ulong)val8;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_R4:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset);
+                                    float valr4 = *(float*)(frameBase + ip->Operand4);
+                                    ((float[])(Array)mStack[srcIdx])[si] = valr4;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_R8:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset);
+                                    double valr8 = *(double*)(frameBase + ip->Operand4);
+                                    ((double[])(Array)mStack[srcIdx])[si] = valr8;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_Ref:
+                            case OpCodeREnum.Stelem_Any:
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset); // array
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset); // index
+                                    Array sa = (Array)mStack[srcIdx];
+                                    if (sa is ILTypeInstance[] dstIlArr)
+                                    {
+                                        ILTypeInstance slotIns = dstIlArr[si];
+                                        if (slotIns != null && slotIns.Type.IsValueType && !slotIns.Boxed)
+                                        {
+                                            // IL value-type element: copy the in-frame value
+                                            // (primitive + ref slots) into the pre-instantiated
+                                            // element instance (Step 12/12b CopyFrameToIL).
+                                            CopyFrameToIL(frameBase, ip->Operand4, ip->Operand3,
+                                                slotIns.Type.TotalPrimitiveSize,
+                                                slotIns.Type.TotalReferenceCount,
+                                                mStack, frameRefBase, slotIns);
+                                        }
+                                        else
+                                        {
+                                            // Reference element: read the value's mStack
+                                            // object and store it into the array slot.
+                                            int vIdx = *(int*)(frameBase + ip->Operand4);
+                                            dstIlArr[si] = vIdx >= 0 ? (ILTypeInstance)mStack[vIdx] : null;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // CLR object array: the value reaching Stelem_Ref /
+                                        // Stelem_Any into an object[] is a reference (C#
+                                        // boxes value types before storing into object[]),
+                                        // so read its mStack object and Array.SetValue it.
+                                        int vIdx = *(int*)(frameBase + ip->Operand4);
+                                        object vObj = vIdx >= 0 ? mStack[vIdx] : null;
+                                        sa.SetValue(vObj, si);
+                                    }
+                                }
+                                break;
                             // Step 14: exception handling. Throw reads the exception
                             // object from its register-1 ref slot (Register1 is a raw
                             // register index -- Throw is NOT lowered by LowerNeoOffsets,
