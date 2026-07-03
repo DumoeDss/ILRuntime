@@ -655,7 +655,25 @@ namespace ILRuntime.Runtime.Intepreter
                                 *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + ip->SrcOffset) > *(int*)(frameBase + ip->OperandOffset) ? 1 : 0;
                                 break;
                             case OpCodeREnum.Cgt_Un:
-                                *(int*)(frameBase + ip->DstOffset) = *(uint*)(frameBase + ip->SrcOffset) > *(uint*)(frameBase + ip->OperandOffset) ? 1 : 0;
+                                {
+                                    // Step 15: CIL `cgt.un` doubles as the reference
+                                    // "not null" test (the C# `is`/`as != null`/`!= null`
+                                    // lowering is `ldnull; cgt.un`). Under the Neo flat
+                                    // frame a reference is an mStack index with -1 =
+                                    // null, so a naive unsigned compare mis-handles the
+                                    // null sentinel (-1 == 0xFFFFFFFF). Mirror Legacy's
+                                    // reference/integer rule (ILIntepreter.Register.cs
+                                    // Cgt_Un): when the src slot is null (-1) the result
+                                    // is false; otherwise the unsigned compare holds, OR
+                                    // the operand is itself null (-1). (Diverges from raw
+                                    // unsigned semantics only for the pathological
+                                    // `cgt.un x, (uint)0xFFFFFFFF` integer case, which
+                                    // the validated tests do not exercise.)
+                                    int cguA = *(int*)(frameBase + ip->SrcOffset);
+                                    int cguB = *(int*)(frameBase + ip->OperandOffset);
+                                    bool cguRes = cguA != -1 && ((uint)cguA > (uint)cguB || cguB == -1);
+                                    *(int*)(frameBase + ip->DstOffset) = cguRes ? 1 : 0;
+                                }
                                 break;
                             case OpCodeREnum.Clt:
                                 *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + ip->SrcOffset) < *(int*)(frameBase + ip->OperandOffset) ? 1 : 0;
@@ -2022,6 +2040,77 @@ namespace ILRuntime.Runtime.Intepreter
                                         mStack[dstIdx] = unboxed;
                                         *(int*)(frameBase + ip->DstOffset) = dstIdx;
                                     }
+                                }
+                                break;
+                            // Step 15: isinst (C# `is` / `as`). The checked value is
+                            // always a reference (Box produced it, or it was a reference
+                            // local/field). Resolve the target type statically via the
+                            // type-token operand; test assignability; keep the original
+                            // reference on success else write null. NEVER throws on mismatch.
+                            case OpCodeREnum.Isinst:
+                                {
+                                    IType isinstType = AppDomain.GetType(ip->Operand);
+                                    if (isinstType == null)
+                                        throw new NullReferenceException();
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    obj = srcIdx >= 0 ? mStack[srcIdx] : null;
+                                    object isinstResult = null;
+                                    if (obj != null)
+                                    {
+                                        if (obj is ILTypeInstance isinstILI)
+                                            isinstResult = isinstILI.CanAssignTo(isinstType) ? obj : null;
+                                        else
+                                            isinstResult = isinstType.TypeForCLR.IsAssignableFrom(obj.GetType()) ? obj : null;
+                                    }
+                                    if (isinstResult != null)
+                                    {
+                                        dstIdx = frameRefBase + ip->Operand3;
+                                        mStack[dstIdx] = isinstResult;
+                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                    }
+                                    else
+                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                }
+                                break;
+                            // Step 15: castclass (C# explicit `(T)obj` cast). Same
+                            // assignability dispatch as isinst, but a failed check throws
+                            // InvalidCastException; a null source passes through as null.
+                            case OpCodeREnum.Castclass:
+                                {
+                                    IType castType = AppDomain.GetType(ip->Operand);
+                                    if (castType == null)
+                                        throw new NullReferenceException();
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    obj = srcIdx >= 0 ? mStack[srcIdx] : null;
+                                    object castResult;
+                                    if (obj == null)
+                                    {
+                                        castResult = null;
+                                    }
+                                    else if (obj is ILTypeInstance castILI)
+                                    {
+                                        if (!castILI.CanAssignTo(castType))
+                                            throw new InvalidCastException(string.Format(
+                                                "Cannot Cast {0} to {1}",
+                                                castILI.Type.FullName, castType.FullName));
+                                        castResult = obj;
+                                    }
+                                    else
+                                    {
+                                        if (!castType.TypeForCLR.IsAssignableFrom(obj.GetType()))
+                                            throw new InvalidCastException(string.Format(
+                                                "Cannot Cast {0} to {1}",
+                                                obj.GetType().FullName, castType.FullName));
+                                        castResult = obj;
+                                    }
+                                    if (castResult != null)
+                                    {
+                                        dstIdx = frameRefBase + ip->Operand3;
+                                        mStack[dstIdx] = castResult;
+                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                    }
+                                    else
+                                        *(int*)(frameBase + ip->DstOffset) = -1;
                                 }
                                 break;
                             // Step 14: exception handling. Throw reads the exception

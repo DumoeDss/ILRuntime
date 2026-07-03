@@ -430,6 +430,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Box:
                     case OpCodeREnum.Unbox:
                     case OpCodeREnum.Unbox_Any:
+                    case OpCodeREnum.Isinst:        // Step 15: type-check reads the src ref slot, writes the dst ref slot in place (R1==R2).
+                    case OpCodeREnum.Castclass:     // Step 15
                         {
                             short r1 = op.Register1;
                             short r2 = op.Register2;

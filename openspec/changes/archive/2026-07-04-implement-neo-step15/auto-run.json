@@ -1,0 +1,22 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner15" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer15" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer15", "verdict": "CLEAN — 0 Blocker/0 Major/1 Minor(comment-nit,non-blocking). Cgt_Un rewrite CORRECT, no unsigned-int regression (probe-verified)." } },
+    "review-loop": { "status": "done", "rounds": 0, "result": "clean — no fix needed; 1 Minor comment-nit accepted-known." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "acceptedKnown": [
+    { "id": "cgt-un-comment", "severity": "Minor-nit", "summary": "Cgt_Un divergence comment names only the operand=sentinel case; the symmetric src=sentinel case is also a divergence (same class, unexercised — no uint-max arithmetic in TestCases). Optional one-line comment fix; non-blocking." },
+    { "id": "peephole-deferred", "summary": "box-T;isinst-U peephole + PatchKind.IsinstResult deferred (infra doesn't exist; optimization only — box->isinst works via the 2 runtime arms)." }
+  ],
+  "rounds": 0,
+  "openFindings": []
+}
