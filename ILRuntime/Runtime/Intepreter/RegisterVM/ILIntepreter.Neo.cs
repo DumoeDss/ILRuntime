@@ -1601,8 +1601,56 @@ namespace ILRuntime.Runtime.Intepreter
                                 }
                                 else
                                 {
-                                    // TODO Step 13: CLR value type Initobj (with/without ValueTypeBinder)
-                                    throw new NotImplementedException("CLR value type Initobj: Step 13");
+                                    // Step 13: CLR value type Initobj.
+                                    // In the Neo frame a CLR value-type local is stored as
+                                    // a BOXED object reference (a 4-byte mStack index slot,
+                                    // RefCount = 1; see JITCompiler.AllocateLocalStackSpaces
+                                    // CLR-VT branch). So Initobj materializes a default
+                                    // boxed instance and installs its mStack index. This
+                                    // works uniformly for pure-primitive CLR structs and
+                                    // for CLR structs with reference fields, with or without
+                                    // a registered ValueTypeBinder -- the binder is only
+                                    // required for the flat-bytes representation used by CLR
+                                    // struct array elements / by-value params / IL-typed
+                                    // fields, which is deferred to Step 13b.
+                                    CLRType clrInitType = t as CLRType;
+                                    if (clrInitType == null)
+                                    {
+                                        // Unknown CLR type Initobj: write null index.
+                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                        break;
+                                    }
+                                    if (clrInitType.IsPrimitive)
+                                    {
+                                        // CLR primitive local: flat bytes; zero them.
+                                        int psz = AppDomain.GetPrimitiveSize(clrInitType);
+                                        if (psz > 0)
+                                            Unsafe.InitBlock(frameBase + ip->DstOffset, 0, (uint)psz);
+                                    }
+                                    else if (!clrInitType.IsValueType)
+                                    {
+                                        // Reference-type CLR local Initobj: write null index.
+                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                    }
+                                    else
+                                    {
+                                        // CLR struct OR CLR enum local: held as a boxed object
+                                        // reference (a CLR value type with !IsPrimitive -- which
+                                        // includes enums -- is allocated as a 4-byte mStack index
+                                        // slot via the CLR-VT branch; see
+                                        // JITCompiler.AllocateLocalStackSpaces). Materialize a
+                                        // default boxed instance. CreateDefaultInstance yields the
+                                        // enum's zero value (the default boxed enum). This works
+                                        // with or without a registered ValueTypeBinder -- the
+                                        // binder is only required for the flat-bytes representation
+                                        // used by CLR struct array elements / by-value params /
+                                        // IL-typed fields, which is deferred to Step 13b.
+                                        object def = clrInitType.CreateDefaultInstance();
+                                        int initRefOff = ip->Operand3;
+                                        int initDstIdx = frameRefBase + initRefOff;
+                                        mStack[initDstIdx] = def;
+                                        *(int*)(frameBase + ip->DstOffset) = initDstIdx;
+                                    }
                                 }
                                 break;
                             case OpCodeREnum.Box:
@@ -1658,8 +1706,43 @@ namespace ILRuntime.Runtime.Intepreter
                                 }
                                 else
                                 {
-                                    // TODO Step 13: CLR value type Box (with/without ValueTypeBinder)
-                                    throw new NotImplementedException("CLR value type Box: Step 13");
+                                    // Step 13: CLR value type Box.
+                                    CLRType clrBoxType = t as CLRType;
+                                    if (clrBoxType == null)
+                                        throw new InvalidCastException();
+                                    object boxed;
+                                    if (clrBoxType.IsPrimitive)
+                                    {
+                                        // CLR primitives are stored as flat bytes in the
+                                        // frame; box reads the sized value and boxes it.
+                                        boxed = NeoBoxReturnValue(clrBoxType, frameBase + ip->SrcOffset,
+                                            AppDomain.GetPrimitiveSize(clrBoxType));
+                                    }
+                                    else
+                                    {
+                                        // A CLR value-type (struct OR enum) local is held as a
+                                        // boxed object reference (a CLR value type with
+                                        // !IsPrimitive -- which includes enums -- is allocated
+                                        // as a 4-byte mStack index slot via the CLR-VT branch;
+                                        // see JITCompiler.AllocateLocalStackSpaces), so boxing
+                                        // reads that mStack slot. To preserve value semantics
+                                        // (a later mutation of the source local must not affect
+                                        // the boxed copy) the box is an independent shallow copy
+                                        // via MemberwiseClone. PerformMemberwiseClone works on a
+                                        // boxed enum the same as a boxed struct (a boxed enum IS
+                                        // a boxed System.Enum-derived value type). The
+                                        // ValueTypeBinder is optional for this local path -- it
+                                        // is mandatory only for the flat-bytes array/param
+                                        // representation deferred to Step 13b; structs-with-refs
+                                        // -and-no-binder therefore work for locals (no Step-13b
+                                        // NIE here, unlike the design's flat-bytes assumption).
+                                        srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                        obj = srcIdx >= 0 ? mStack[srcIdx] : null;
+                                        boxed = obj != null ? clrBoxType.PerformMemberwiseClone(obj) : null;
+                                    }
+                                    dstIdx = frameRefBase + dstRefOffset;
+                                    mStack[dstIdx] = boxed;
+                                    *(int*)(frameBase + ip->DstOffset) = boxed != null ? dstIdx : -1;
                                 }
                                 break;
                             case OpCodeREnum.Ldfld_I1:
@@ -1901,8 +1984,37 @@ namespace ILRuntime.Runtime.Intepreter
                                 }
                                 else
                                 {
-                                    // TODO Step 13: CLR value type Unbox (with/without ValueTypeBinder)
-                                    throw new NotImplementedException("CLR value type Unbox: Step 13");
+                                    // Step 13: CLR value type Unbox / Unbox_Any.
+                                    CLRType clrUnboxType = t as CLRType;
+                                    if (clrUnboxType == null)
+                                        throw new InvalidCastException();
+                                    // obj (the boxed source) was fetched above; null was
+                                    // already turned into NullReferenceException.
+                                    if (clrUnboxType.IsPrimitive)
+                                    {
+                                        // CLR primitives unbox into the dest flat-bytes slot
+                                        // by value.
+                                        NeoWritePrimitiveToFrame(obj, frameBase + ip->DstOffset);
+                                    }
+                                    else
+                                    {
+                                        // CLR struct OR enum local destination is a boxed
+                                        // object reference (a CLR value type with !IsPrimitive
+                                        // -- which includes enums -- is allocated as a 4-byte
+                                        // mStack index slot via the CLR-VT branch; see
+                                        // JITCompiler.AllocateLocalStackSpaces). Copy the boxed
+                                        // struct/enum into an independent boxed instance (value
+                                        // semantics: mutating the unboxed local must not affect
+                                        // the source box). PerformMemberwiseClone works on a
+                                        // boxed enum the same as a boxed struct. The binder is
+                                        // optional for this local path (mandatory only for the
+                                        // flat-bytes array/param representation deferred to
+                                        // Step 13b).
+                                        object unboxed = clrUnboxType.PerformMemberwiseClone(obj);
+                                        dstIdx = frameRefBase + dstRefOffset;
+                                        mStack[dstIdx] = unboxed;
+                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                    }
                                 }
                                 break;
                             default:
@@ -2196,6 +2308,83 @@ namespace ILRuntime.Runtime.Intepreter
                 return *(double*)retDst;
             // Fallback: raw bytes as int
             return retSize >= 4 ? (object)*(int*)retDst : (object)(int)*retDst;
+        }
+
+        // Step 13: box a sized primitive value of the given CLR Type from a raw
+        // frame byte pointer into a boxed object (the inverse of NeoBoxReturnValue
+        // without the IType lookup -- callers already hold the System.Type).
+        // NOTE: currently has no call sites after the Box-enum arm was removed
+        // (MINOR-1). Retained intentionally -- it may be revived by Step 15
+        // (enum cross-cast). Do NOT remove.
+        static unsafe object NeoBoxPrimitiveByType(Type clr, byte* src)
+        {
+            if (clr == typeof(int))
+                return *(int*)src;
+            if (clr == typeof(uint))
+                return *(uint*)src;
+            if (clr == typeof(long))
+                return *(long*)src;
+            if (clr == typeof(ulong))
+                return *(ulong*)src;
+            if (clr == typeof(short))
+                return *(short*)src;
+            if (clr == typeof(ushort))
+                return *(ushort*)src;
+            if (clr == typeof(byte))
+                return *src;
+            if (clr == typeof(sbyte))
+                return *(sbyte*)src;
+            if (clr == typeof(bool))
+                return *src != 0;
+            if (clr == typeof(char))
+                return *(char*)src;
+            if (clr == typeof(float))
+                return *(float*)src;
+            if (clr == typeof(double))
+                return *(double*)src;
+            if (clr == typeof(IntPtr))
+                return *(IntPtr*)src;
+            if (clr == typeof(UIntPtr))
+                return *(UIntPtr*)src;
+            // Fallback: raw bytes as int.
+            return (object)*(int*)src;
+        }
+
+        // Step 13: the inverse of NeoBoxPrimitiveByType -- write a boxed CLR
+        // primitive back into a raw frame byte pointer by the value's CLR type.
+        static unsafe void NeoWritePrimitiveToFrame(object obj, byte* dst)
+        {
+            Type clr = obj.GetType();
+            if (clr == typeof(int))
+                *(int*)dst = (int)obj;
+            else if (clr == typeof(uint))
+                *(uint*)dst = (uint)obj;
+            else if (clr == typeof(long))
+                *(long*)dst = (long)obj;
+            else if (clr == typeof(ulong))
+                *(ulong*)dst = (ulong)obj;
+            else if (clr == typeof(short))
+                *(short*)dst = (short)obj;
+            else if (clr == typeof(ushort))
+                *(ushort*)dst = (ushort)obj;
+            else if (clr == typeof(byte))
+                *dst = (byte)obj;
+            else if (clr == typeof(sbyte))
+                *(sbyte*)dst = (sbyte)obj;
+            else if (clr == typeof(bool))
+                *dst = (bool)obj ? (byte)1 : (byte)0;
+            else if (clr == typeof(char))
+                *(char*)dst = (char)obj;
+            else if (clr == typeof(float))
+                *(float*)dst = (float)obj;
+            else if (clr == typeof(double))
+                *(double*)dst = (double)obj;
+            else if (clr == typeof(IntPtr))
+                *(IntPtr*)dst = (IntPtr)obj;
+            else if (clr == typeof(UIntPtr))
+                *(UIntPtr*)dst = (UIntPtr)obj;
+            else
+                throw new NotImplementedException("Neo: unsupported CLR primitive for Unbox: " + clr.FullName);
         }
     }
 }

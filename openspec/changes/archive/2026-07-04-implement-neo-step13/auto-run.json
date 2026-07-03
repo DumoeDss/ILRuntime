@@ -1,0 +1,25 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner13" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer13" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer13" } },
+    "review-loop": { "status": "done", "rounds": 1, "result": "clean — MINOR-1 (drop IsEnum, route CLR enums via boxed-ref) + MINOR-2 (IntPtr/UIntPtr) + spec annotation applied & non-author confirmed; CLR-enum-local test deferred (K2/Move-path blocker, Step 13b)." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "deliveredScope": "Step 13 = areas 1 (IL box/unbox verify+coverage) + 2 (CLR box/unbox/initobj on boxed-ref local representation). DEFERRED: area 3 (constrained. VT specialization — blocked on Step 17 byref model), areas 4-5 (binding codegen + CLRMethod param layout — Step 13b).",
+  "acceptedKnownFollowups": [
+    { "id": "K1", "summary": "FCP mis-propagates VT Moves (Step 12b carryover)." },
+    { "id": "K2-family", "summary": "Move path mis-handles scalar→boxed-ref CLR-VT-local assignment (reads int as mStack index). Blocks CLR-enum/struct local round-trip; fixed by Step 13b area 5." },
+    { "id": "area3", "summary": "constrained.-on-value-type specialization blocked on Step 17 (ldarga + Constrained runtime arm + VT this-address model). Zero current regression." },
+    { "id": "areas4-5", "summary": "binding codegen (Unsafe.Unbox, eliminate WriteBackInstance) + CLRMethod unified param layout = Step 13b." }
+  ],
+  "rounds": 1,
+  "openFindings": []
+}
