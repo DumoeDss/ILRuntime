@@ -63,6 +63,15 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // itself stays in register-index form so inliner / debugger / future
         // AOT serialization can keep operating on a stable representation.
         public OpCodeR[] NeoExecuteBody;
+        // Step 14: catch-handler exception variable slot. -1 when the method
+        // has no catch handler. ExecuteNeo writes the caught exception object
+        // into this ref slot on catch entry (mirroring Legacy's
+        // AssignToRegister(exReg, ex)). The slot is reserved in
+        // AllocateLocalStackSpaces at the catch exception register's
+        // post-compaction index.
+        public int NeoCatchExceptionRegIndex;
+        public int NeoCatchExceptionByteOffset;
+        public int NeoCatchExceptionRefOffset;
 #endif
     }
     struct JITCompiler
@@ -440,8 +449,36 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             frame = new CompiledFrame();
             frame.SwitchTargets = jumptables;
             frame.Symbols = symbols;
-            var totalRegCnt = Optimizer.CleanupRegister(res, locVarRegStart, hasReturn);
+            short neoCatchExReg = -1;
+#if ENABLE_NEO_MODE
+            // Neo exception handling (Step 14): if this method has any catch
+            // handler, protect its exception-variable register (temp register 0,
+            // baseRegStart) from compaction so AllocateLocalStackSpaces
+            // reserves a StackSlotInfo (and thus an mStack ref slot) for it --
+            // ExecuteNeo writes the caught object there on catch entry.
+            if (body.HasExceptionHandlers)
+            {
+                bool hasCatch = false;
+                foreach (var eh in body.ExceptionHandlers)
+                {
+                    if (eh.HandlerType == Mono.Cecil.Cil.ExceptionHandlerType.Catch)
+                    {
+                        hasCatch = true;
+                        break;
+                    }
+                }
+                if (hasCatch)
+                    neoCatchExReg = baseRegStart;
+            }
+#endif
+            var totalRegCnt = Optimizer.CleanupRegister(res, locVarRegStart, hasReturn, neoCatchExReg, out short neoCatchExRegFinal);
             frame.StackRegisterCount = Math.Max(totalRegCnt - baseRegStart, 0);
+#if ENABLE_NEO_MODE
+            // Record the catch exception register's post-compaction index;
+            // AllocateLocalStackSpaces resolves its byte/ref offsets from
+            // localInfo at this index and stamps them onto the frame.
+            frame.NeoCatchExceptionRegIndex = neoCatchExRegFinal;
+#endif
 #if ENABLE_NEO_MODE
             TypeSpecializeNeoOpcodes(res, locVarRegStart, totalRegCnt);
 #endif
@@ -1439,6 +1476,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             frame.TotalRefSize = refOffset;
             frame.LocalsPrimitiveSize = offset - localsPrimStart;
             frame.LocalsReferenceCount = refOffset - localsRefStart;
+
+            // Step 14: resolve the catch-handler exception variable's frame slot
+            // from its post-compaction register index (stamped by Compile). The
+            // slot was reserved by the temp-register allocation loop above
+            // (baseRegStart is protected from compaction in CleanupRegister, so
+            // StackRegisterCount >= 1 and localInfo[NeoCatchExceptionRegIndex]
+            // is valid). ExecuteNeo reads these offsets to install the caught
+            // exception on catch entry. -1 when the method has no catch handler.
+            int catchRegIdx = frame.NeoCatchExceptionRegIndex;
+            if (catchRegIdx >= 0 && catchRegIdx < localInfo.Length)
+            {
+                frame.NeoCatchExceptionByteOffset = localInfo[catchRegIdx].Offset;
+                frame.NeoCatchExceptionRefOffset = localInfo[catchRegIdx].RefOffset;
+            }
+            else
+            {
+                frame.NeoCatchExceptionByteOffset = -1;
+                frame.NeoCatchExceptionRefOffset = -1;
+            }
 
             // 3) Return value
             int retPrim = 0, retRef = 0;

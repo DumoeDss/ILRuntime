@@ -14,13 +14,28 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 {
     partial class Optimizer
     {
-        public static int CleanupRegister(List<OpCodeR> ins, int locRegStart, bool hasReturn)
+        public static int CleanupRegister(List<OpCodeR> ins, int locRegStart, bool hasReturn, short protectedReg, out short protectedRegFinalIndex)
         {
+            protectedRegFinalIndex = protectedReg;
             short maxRegNum = (short)locRegStart;
             HashSet<short> usedRegisters = new HashSet<short>();
             //arguments can not be cleaned
             for (short i = 0; i < locRegStart; i++)
                 usedRegisters.Add(i);
+            // Neo exception handling (Step 14): the catch handler's exception
+            // variable occupies temp register 0 (baseRegStart = locRegStart +
+            // varCnt). It is never explicitly referenced by any opcode (the
+            // caught object is placed there by the runtime, not by the IR), so
+            // without protection CleanupRegister would compact it away and the
+            // Neo catch-entry write would have nowhere to store the exception.
+            // Protect it so a StackSlotInfo is reserved for it. Legacy's flat
+            // register array always has this slot, so Legacy passes -1.
+            if (protectedReg >= 0)
+            {
+                usedRegisters.Add(protectedReg);
+                if (protectedReg > maxRegNum)
+                    maxRegNum = protectedReg;
+            }
             for (int i = 0; i < ins.Count; i++)
             {
                 var X = ins[i];
@@ -105,6 +120,22 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     if (replaced)
                         ins[j] = X;
                 }
+            }
+
+            // The protected register (Neo catch exception var) is itself never
+            // removed, but it shifts down by the number of unused registers
+            // originally below it. Compute its final (post-compaction) index so
+            // AllocateLocalStackSpaces can reserve its StackSlotInfo at the
+            // exact index the catch-handler body references it by.
+            if (protectedReg >= 0)
+            {
+                int shift = 0;
+                for (int i = 0; i < unusedRegisters.Count; i++)
+                {
+                    if (unusedRegisters[i] < protectedReg)
+                        shift++;
+                }
+                protectedRegFinalIndex = (short)(protectedReg - shift);
             }
 
             return maxRegNum - unusedRegisters.Count + 1;

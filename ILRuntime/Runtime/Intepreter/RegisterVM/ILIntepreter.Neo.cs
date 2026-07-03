@@ -360,6 +360,13 @@ namespace ILRuntime.Runtime.Intepreter
             int finallyEndAddress = 0;
             Exception lastCaughtEx = null;
             var ehs = method.ExceptionHandlerRegister;
+            // Step 14: when an exception escapes this frame unhandled, we must
+            // NOT throw from inside the per-iteration catch (that would skip the
+            // bottom-of-method cleanup below and leak this frame on the frames
+            // stack / its mStack reservation). Instead we stash the to-be-thrown
+            // exception here, break out of the loop, let the cleanup run, and
+            // re-throw AFTER cleanup -- making every Neo frame self-cleaning.
+            Exception pendingThrow = null;
 
             fixed (OpCodeR* ptr = body)
             {
@@ -2017,6 +2024,72 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                 }
                                 break;
+                            // Step 14: exception handling. Throw reads the exception
+                            // object from its register-1 ref slot (Register1 is a raw
+                            // register index -- Throw is NOT lowered by LowerNeoOffsets,
+                            // so resolve it via localInfos, exactly like Ret reads its
+                            // source). The frame byte at localInfos[Register1].Offset
+                            // holds the mStack index of the exception object.
+                            case OpCodeREnum.Throw:
+                                {
+                                    int exByteOff = localInfos[ip->Register1].Offset;
+                                    int exIdx = *(int*)(frameBase + exByteOff);
+                                    Exception ex = GetNeoException(mStack, exIdx);
+                                    throw ex;
+                                }
+                            // Step 14: rethrow the in-flight exception captured by the
+                            // outer catch into lastCaughtEx.
+                            case OpCodeREnum.Rethrow:
+                                throw lastCaughtEx;
+                            // Step 14: Leave / Leave_S. Route through any enclosing
+                            // finally whose try range straddles the leave boundary
+                            // (port of Legacy ILIntepreter.Register.cs:2765-2783).
+                            // ip->Operand is the leave target byte offset.
+                            case OpCodeREnum.Leave:
+                            case OpCodeREnum.Leave_S:
+                                {
+                                    if (ehs != null)
+                                    {
+                                        int addr = (int)(ip - ptr);
+                                        var eh = FindExceptionHandlerByBranchTarget(addr, ip->Operand, ehs);
+                                        if (eh != null)
+                                        {
+                                            finallyEndAddress = ip->Operand;
+                                            ip = ptr + eh.HandlerStart;
+                                            continue;
+                                        }
+                                    }
+                                    ip = ptr + ip->Operand;
+                                    continue;
+                                }
+                            // Step 14: Endfinally. If the finally was entered for an
+                            // in-flight exception (finallyEndAddress < 0 sentinel set
+                            // in HandleException), re-throw lastCaughtEx so the search
+                            // resumes. Otherwise resume at the recorded leave target,
+                            // routing through any further enclosing finally. Port of
+                            // Legacy ILIntepreter.Register.cs:2785-2806.
+                            case OpCodeREnum.Endfinally:
+                                {
+                                    if (finallyEndAddress < 0)
+                                    {
+                                        finallyEndAddress = 0;
+                                        throw lastCaughtEx;
+                                    }
+                                    int addr = (int)(ip - ptr);
+                                    var eh = FindExceptionHandlerByBranchTarget(addr, finallyEndAddress, ehs);
+                                    if (eh != null)
+                                    {
+                                        ip = ptr + eh.HandlerStart;
+                                        continue;
+                                    }
+                                    ip = ptr + finallyEndAddress;
+                                    finallyEndAddress = 0;
+                                    continue;
+                                }
+                            // IL filter blocks (filter / endfilter): out of scope for
+                            // Step 14 (rare in C#). Remains a Step-tagged NIE.
+                            case OpCodeREnum.Endfilter:
+                                throw new NotImplementedException("Neo: IL filter blocks (endfilter) are not implemented (Step 14, out of scope)");
                             default:
                                 throw new NotImplementedException(string.Format("Neo: opcode {0} not yet implemented (Step 6)", code));
                         }
@@ -2035,7 +2108,26 @@ namespace ILRuntime.Runtime.Intepreter
                             {
                                 mStack.RemoveRange(targetCount, mStack.Count - targetCount);
                             }
-                            // TODO: write exception object into the catch handler's slot (Step 14)
+                            // Step 14: write the caught exception object into the catch
+                            // handler's reserved exception-variable slot. The slot's
+                            // byte offset and ref offset were stamped by the JIT
+                            // (CompiledFrame.NeoCatchExceptionByteOffset /
+                            // NeoCatchExceptionRefOffset) at the catch exception
+                            // register's post-compaction index -- mirroring Legacy's
+                            // AssignToRegister(exReg = paramCnt + locCnt, ex) at
+                            // ILIntepreter.Register.cs:5326-5327. `ex` is already the
+                            // unwrapped inner exception when the propagated object was
+                            // an ILRuntimeException (HandleException does the unwrap),
+                            // matching Legacy semantics. The slot is -1 only when the
+                            // method has no catch handler (then isCatch can't be true).
+                            int catchByteOff = nf.NeoCatchExceptionByteOffset;
+                            int catchRefOff = nf.NeoCatchExceptionRefOffset;
+                            if (catchByteOff >= 0)
+                            {
+                                int catchSlotIdx = frameRefBase + catchRefOff;
+                                mStack[catchSlotIdx] = ex;
+                                *(int*)(frameBase + catchByteOff) = catchSlotIdx;
+                            }
                         }
                         if (isJmp)
                         {
@@ -2044,7 +2136,12 @@ namespace ILRuntime.Runtime.Intepreter
                         }
                         if (unhandledException)
                         {
-                            throw;
+                            // Step 14: re-throw path (e.g. Endfinally re-throws
+                            // lastCaughtEx and no handler matches). Stash and let
+                            // the bottom cleanup run before re-throwing.
+                            pendingThrow = ex;
+                            returned = true;
+                            break;
                         }
                         unhandledException = true;
                         returned = true;
@@ -2052,8 +2149,14 @@ namespace ILRuntime.Runtime.Intepreter
                         if (!AppDomain.DebugService.Break(this, ex))
 #endif
                         {
-                            var newEx = new ILRuntimeException(ex.Message, this, method, oriESP, ex);
-                            throw newEx;
+                            // Step 14: stash the wrapped exception and break out
+                            // so the bottom-of-method cleanup (frame pop + mStack
+                            // truncate) runs BEFORE the re-throw -- making this
+                            // Neo frame self-cleaning instead of relying on the
+                            // caller's HandleException frame-pop loop to clean up
+                            // a leaked frame/mStack reservation.
+                            pendingThrow = new ILRuntimeException(ex.Message, this, method, oriESP, ex);
+                            break;
                         }
                     }
                 }
@@ -2078,6 +2181,17 @@ namespace ILRuntime.Runtime.Intepreter
                 UnityEngine.Profiler.EndSample();
 #endif
 #endif
+            // Step 14: if an exception escaped this frame unhandled, re-throw it
+            // now -- AFTER the frame/mStack cleanup above, so this Neo frame is
+            // self-cleaning. The exception propagates via the C# stack into the
+            // caller's per-iteration catch, where HandleException searches the
+            // CALLER's handler table at the call-site address (cross-frame
+            // propagation). Because this frame was already popped and its mStack
+            // reservation already released, the caller's HandleException
+            // frame-pop loop finds the caller's frame on top and does not need
+            // to clean up this frame.
+            if (pendingThrow != null)
+                throw pendingThrow;
             return frameBase;
         }
 
@@ -2090,6 +2204,23 @@ namespace ILRuntime.Runtime.Intepreter
             if (ins == null)
                 throw new InvalidCastException();
             return ins;
+        }
+
+        // Step 14: resolve a Throw operand's exception object from its mStack ref
+        // slot. A null exception object (ref index -1) is itself a
+        // NullReferenceException in the CLR. The object may be an
+        // ILRuntimeException wrapping a deeper IL-thrown exception; the shared
+        // HandleException unwraps it on catch entry, so here we throw the object
+        // as-is.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static Exception GetNeoException(AutoList mStack, int objIndex)
+        {
+            if (objIndex < 0)
+                throw new NullReferenceException();
+            Exception ex = mStack[objIndex] as Exception;
+            if (ex == null)
+                throw new NullReferenceException();
+            return ex;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -1,0 +1,22 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner14" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer14" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer14", "verdict": "CLEAN — 0 Blocker/0 Major/2 Minor(info,non-blocking)/2 Nit. Top risk (Optimizer.RegisterCleanup Legacy-neutrality) CLEAN." } },
+    "review-loop": { "status": "done", "rounds": 0, "result": "clean — no fix needed." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "acceptedKnown": [
+    { "id": "catch-wrapper", "severity": "Minor-info", "summary": "catch slot stores the ILRuntimeException wrapper (matches Legacy exactly Register.cs:5327); spec 'unwrapped' wording loose. May surface identically in Legacy when isinst (Step 15) lands." },
+    { "id": "TC2-no-isinst", "severity": "Minor-info", "summary": "TC2 asserts e!=null because isinst (type-check in catch) is Step 15." }
+  ],
+  "rounds": 0,
+  "openFindings": []
+}
