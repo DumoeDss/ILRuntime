@@ -456,6 +456,39 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                 }
                                 break;
+                            // Step 12: ldloca / ldloca.s of a value-type local.
+                            // The C# compiler emits `ldloca V; stfld/ldfld/initobj`
+                            // for struct field access. The Neo offset-lowering pass
+                            // resolves the ldloca dest back to the source local's
+                            // frame offset for the _Inline field opcodes and
+                            // Initobj, so those do not read this temp's bytes.
+                            // Therefore ldloca itself is a no-op at runtime for the
+                            // Step 12 in-frame-VT field-access path. (Genuine byref
+                            // use of the address -- ref params, stind, fixed -- is a
+                            // separate pointer model not covered by Step 12 and
+                            // remains unimplemented; the dest temp is left as-is.)
+                            case OpCodeREnum.Ldloca:
+                            case OpCodeREnum.Ldloca_S:
+                                // Step 12: ldloca of an in-frame value-type local.
+                                // The address is resolved at offset-lowering time
+                                // (the dest is recorded in the address-alias map
+                                // with the underlying local + accumulated nested-
+                                // field byte offset), so the leaf _Inline field
+                                // access uses the folded absolute offset directly.
+                                // ldloca itself is therefore a no-op at runtime
+                                // for the in-frame-VT path. (Heap / genuine-byref
+                                // ldloca remains Step 6+ / Step 12b.)
+                                break;
+                            // Step 12: ldflda of a nested in-frame value-type
+                            // field. Like ldloca, the address is resolved at
+                            // offset-lowering time (the dest is recorded in the
+                            // address-alias map with the accumulated nested-field
+                            // byte offset), so the leaf _Inline field access uses
+                            // the folded absolute offset directly. ldflda itself
+                            // is therefore a no-op at runtime for the in-frame-VT
+                            // path. (Heap-instance ldflda remains Step 6+.)
+                            case OpCodeREnum.Ldflda:
+                                break;
                             case OpCodeREnum.Add:
                                 *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + ip->SrcOffset) + *(int*)(frameBase + ip->OperandOffset);
                                 break;
@@ -1530,9 +1563,15 @@ namespace ILRuntime.Runtime.Intepreter
                                     if (sz > 0)
                                         Unsafe.InitBlock(frameBase + ip->DstOffset, 0, (uint)sz);
                                     if (refCnt > 0)
-                                        throw new NotImplementedException("Neo Initobj reference fields require Step 7 RefOffset lowering");
-                                    for (int i = 0; i < refCnt; i++)
-                                        mStack[frameRefBase + i] = null;
+                                    {
+                                        // Step 12: null the in-frame VT's reference-
+                                        // field mStack slots. ip->Operand3 carries
+                                        // the target slot's RefOffset (stamped by
+                                        // the Neo offset-lowering pass).
+                                        int slotRefOffset = ip->Operand3;
+                                        for (int i = 0; i < refCnt; i++)
+                                            mStack[frameRefBase + slotRefOffset + i] = null;
+                                    }
                                 }
                                 else
                                 {
@@ -1685,6 +1724,108 @@ namespace ILRuntime.Runtime.Intepreter
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->DstOffset));
                                 srcIdx = *(int*)(frameBase + ip->SrcOffset);
                                 ins.ManagedObjects[ip->Operand3] = srcIdx >= 0 ? mStack[srcIdx] : null;
+                                break;
+                            // ---- Step 12: in-frame value-type inline field access ----
+                            // These index the frame byte region directly. Encoding:
+                            //   Ldfld_*_Inline: DstOffset = dest temp byte offset;
+                            //                   SrcOffset = owning VT slot byte offset;
+                            //                   Operand2  = field PrimitiveOffset within the VT.
+                            //   Stfld_*_Inline: DstOffset = owning VT slot byte offset;
+                            //                   SrcOffset = value temp byte offset;
+                            //                   Operand2  = field PrimitiveOffset within the VT.
+                            // The owning VT slot holds raw bytes (NOT an mStack index),
+                            // so there is no GetNeoILInstance / no branch.
+                            case OpCodeREnum.Ldfld_I1_Inline:
+                                *(int*)(frameBase + ip->DstOffset) =
+                                    *(sbyte*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_U1_Inline:
+                                *(int*)(frameBase + ip->DstOffset) =
+                                    *(byte*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_I2_Inline:
+                                *(int*)(frameBase + ip->DstOffset) =
+                                    *(short*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_U2_Inline:
+                                *(int*)(frameBase + ip->DstOffset) =
+                                    *(ushort*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_I4_Inline:
+                                *(int*)(frameBase + ip->DstOffset) =
+                                    *(int*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_U4_Inline:
+                                *(uint*)(frameBase + ip->DstOffset) =
+                                    *(uint*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_I8_Inline:
+                                *(long*)(frameBase + ip->DstOffset) =
+                                    *(long*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_U8_Inline:
+                                *(ulong*)(frameBase + ip->DstOffset) =
+                                    *(ulong*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_R4_Inline:
+                                *(float*)(frameBase + ip->DstOffset) =
+                                    *(float*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Ldfld_R8_Inline:
+                                *(double*)(frameBase + ip->DstOffset) =
+                                    *(double*)(frameBase + ip->SrcOffset + ip->Operand2);
+                                break;
+                            case OpCodeREnum.Stfld_I1_Inline:
+                            case OpCodeREnum.Stfld_U1_Inline:
+                                *(byte*)(frameBase + ip->DstOffset + ip->Operand2) =
+                                    *(byte*)(frameBase + ip->SrcOffset);
+                                break;
+                            case OpCodeREnum.Stfld_I2_Inline:
+                            case OpCodeREnum.Stfld_U2_Inline:
+                                *(short*)(frameBase + ip->DstOffset + ip->Operand2) =
+                                    *(short*)(frameBase + ip->SrcOffset);
+                                break;
+                            case OpCodeREnum.Stfld_I4_Inline:
+                            case OpCodeREnum.Stfld_U4_Inline:
+                                *(int*)(frameBase + ip->DstOffset + ip->Operand2) =
+                                    *(int*)(frameBase + ip->SrcOffset);
+                                break;
+                            case OpCodeREnum.Stfld_I8_Inline:
+                            case OpCodeREnum.Stfld_U8_Inline:
+                                *(long*)(frameBase + ip->DstOffset + ip->Operand2) =
+                                    *(long*)(frameBase + ip->SrcOffset);
+                                break;
+                            case OpCodeREnum.Stfld_R4_Inline:
+                                *(float*)(frameBase + ip->DstOffset + ip->Operand2) =
+                                    *(float*)(frameBase + ip->SrcOffset);
+                                break;
+                            case OpCodeREnum.Stfld_R8_Inline:
+                                *(double*)(frameBase + ip->DstOffset + ip->Operand2) =
+                                    *(double*)(frameBase + ip->SrcOffset);
+                                break;
+                            // Ref inline variants operate on the frame's mStack
+                            // reference region. Encoding (stamped by the Neo
+                            // offset-lowering pass):
+                            //   Ldfld_Ref_Inline: Operand  = source field absolute
+                            //                                frame-ref index
+                            //                                (owningSlot.RefOffset
+                            //                                 + field.ReferenceOffset);
+                            //                     Operand4 = dest temp RefOffset.
+                            //   Stfld_Ref_Inline: Operand  = dest field absolute
+                            //                                frame-ref index
+                            //                                (owningSlot.RefOffset
+                            //                                 + field.ReferenceOffset).
+                            //                     SrcOffset = value temp byte offset.
+                            case OpCodeREnum.Ldfld_Ref_Inline:
+                                obj = mStack[frameRefBase + ip->Operand];
+                                dstIdx = frameRefBase + ip->Operand4;
+                                mStack[dstIdx] = obj;
+                                *(int*)(frameBase + ip->DstOffset) = obj != null ? dstIdx : -1;
+                                break;
+                            case OpCodeREnum.Stfld_Ref_Inline:
+                                srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                mStack[frameRefBase + ip->Operand] =
+                                    srcIdx >= 0 ? mStack[srcIdx] : null;
                                 break;
                             case OpCodeREnum.Unbox:
                             case OpCodeREnum.Unbox_Any:

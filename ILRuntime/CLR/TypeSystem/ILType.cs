@@ -91,6 +91,12 @@ namespace ILRuntime.CLR.TypeSystem
         int totalReferenceCnt = -1;
         int totalStaticPrimitiveSize = -1;
         int totalStaticReferenceCnt = -1;
+        // Step 12: max natural alignment over the type's fields (recursively,
+        // for nested value types). 1 if the type has no fields. Cached during
+        // InitializeFields. Used by the Neo frame allocator (JITCompiler) to
+        // align value-type slots so typed pointer casts in the _Inline field-
+        // access opcodes are naturally aligned.
+        int naturalAlignment = -1;
 #endif
 
         public IMethod ToStringMethod
@@ -411,6 +417,27 @@ namespace ILRuntime.CLR.TypeSystem
                     InitializeFields();
                 }
                 return totalStaticReferenceCnt;
+            }
+        }
+
+        /// <summary>
+        /// Step 12: the natural alignment of this IL value type = the maximum
+        /// natural alignment among its fields (recursed into nested IL value
+        /// types; enums use their underlying primitive size; reference fields
+        /// use pointer size 4). Returns 1 for a type with no fields. Only
+        /// meaningful for value types, but computed for all ILTypes from their
+        /// field set. Forces InitializeFields (which computes it) if needed.
+        /// </summary>
+        public int NaturalAlignment
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get
+            {
+                if (fieldMapping == null)
+                {
+                    InitializeFields();
+                }
+                return naturalAlignment;
             }
         }
 
@@ -1973,6 +2000,7 @@ namespace ILRuntime.CLR.TypeSystem
                 totalReferenceCnt = 0;
                 totalStaticPrimitiveSize = 0;
                 totalStaticReferenceCnt = 0;
+                naturalAlignment = 1;
 #endif
                 return;
             }
@@ -1991,6 +2019,10 @@ namespace ILRuntime.CLR.TypeSystem
             int referenceOffset = 0;
             int staticPrimitiveOffset = 0;
             int staticReferenceOffset = 0;
+            // Step 12: track the max natural alignment over this type's
+            // instance fields. Starts at 1 (the alignment of an empty / byte-
+            // only struct) and is raised by each field per its natural size.
+            int maxFieldAlignment = 1;
 #endif
             for (int i = 0; i < fields.Count; i++)
             {
@@ -2089,7 +2121,10 @@ namespace ILRuntime.CLR.TypeSystem
                             PrimitiveOffset = primitiveOffset,
                             ReferenceOffset = referenceOffset
                         };
-                        primitiveOffset += AppDomain.GetPrimitiveSize(fieldType);
+                        int pSize = AppDomain.GetPrimitiveSize(fieldType);
+                        primitiveOffset += pSize;
+                        if (pSize > maxFieldAlignment)
+                            maxFieldAlignment = pSize;
                     }
                     else
                     {
@@ -2102,6 +2137,11 @@ namespace ILRuntime.CLR.TypeSystem
                             };
                             primitiveOffset += it.TotalPrimitiveSize;
                             referenceOffset += it.TotalReferenceCount;
+                            // Recurse: a nested IL value type's natural
+                            // alignment is its own max field alignment.
+                            int nestedAlign = it.NaturalAlignment;
+                            if (nestedAlign > maxFieldAlignment)
+                                maxFieldAlignment = nestedAlign;
                         }
                         else
                         {
@@ -2111,6 +2151,9 @@ namespace ILRuntime.CLR.TypeSystem
                                 ReferenceOffset = referenceOffset
                             };
                             referenceOffset++;
+                            // Reference / pointer field → pointer size 4.
+                            if (4 > maxFieldAlignment)
+                                maxFieldAlignment = 4;
                         }
                     }
 #endif
@@ -2124,6 +2167,13 @@ namespace ILRuntime.CLR.TypeSystem
 
             totalPrimitiveSize = primitiveOffset;
             totalReferenceCnt = referenceOffset;
+            // Step 12: finalize the type's natural alignment. For an enum, the
+            // accumulator above already reflects its single backing field's
+            // primitive size (the underlying type); for a value type it is the
+            // max over its fields (recursed for nested VTs); for a reference
+            // type it is the max over its instance fields (rarely needed, but
+            // harmless). 1 is the floor for an empty struct.
+            naturalAlignment = maxFieldAlignment < 1 ? 1 : maxFieldAlignment;
 #endif
 
             if ( staticFieldTypes != null )

@@ -18,6 +18,65 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             var localInfos = frame.LocalInfos;
             var body = frame.NeoExecuteBody;
             List<NeoCallParamMap> callParams = new List<NeoCallParamMap>();
+
+            // Step 12: build an alias map for the address-producing opcodes
+            // ldloca / ldloca.s / ldflda when they address an in-frame value
+            // type. The C# compiler emits `ldloca V; stfld/ldfld` for struct
+            // field access and `ldloca V; ldflda f; ...; stfld/ldfld` for a
+            // nested value-type field, so the leaf field-access operand is a
+            // temp holding an address, not the local. The _Inline field opcodes
+            // need the owning value type's actual frame byte offset, so we
+            // resolve the operand register back to (underlying local + accumulated
+            // nested-field byte offset) here. Each alias entry records the base
+            // local register and the accumulated byte offset to add.
+            Dictionary<short, NeoAddressAlias> addrAlias = null;
+            var localIsRef = frame.LocalIsReference;
+            for (int s = 0; s < body.Length; s++)
+            {
+                OpCodeR so = body[s];
+                if (so.Code == OpCodeREnum.Ldloca || so.Code == OpCodeREnum.Ldloca_S)
+                {
+                    short dest = so.Register1;
+                    short src = so.Register2;
+                    // Only alias when the source is NOT a plain reference slot.
+                    // A reference local (LocalIsReference) produces a genuine
+                    // pointer (ref/fixed/byref use) and is consumed by the heap
+                    // field path, not the in-frame-VT inline path. A value-type
+                    // local -- even a 4-byte one such as `struct { int a; string b; }`
+                    // (Size 4, RefCount 1, indistinguishable from a reference by
+                    // StackSlotInfo alone) -- is correctly identified here via
+                    // LocalIsReference.
+                    bool srcIsReference = localIsRef != null && src >= 0 && src < localIsRef.Length && localIsRef[src];
+                    if (src >= 0 && src < localInfos.Length && !srcIsReference)
+                    {
+                        if (addrAlias == null)
+                            addrAlias = new Dictionary<short, NeoAddressAlias>();
+                        // Inherit any alias the source already carries.
+                        NeoAddressAlias inherited;
+                        if (addrAlias.TryGetValue(src, out inherited))
+                            addrAlias[dest] = new NeoAddressAlias { Reg = inherited.Reg, Offset = inherited.Offset };
+                        else
+                            addrAlias[dest] = new NeoAddressAlias { Reg = src, Offset = 0 };
+                    }
+                }
+                else if (so.Code == OpCodeREnum.Ldflda)
+                {
+                    short dest = so.Register1;
+                    short src = so.Register2;
+                    NeoAddressAlias inherited;
+                    if (addrAlias != null && addrAlias.TryGetValue(src, out inherited))
+                    {
+                        // Fold the nested field's PrimitiveOffset into the
+                        // accumulated byte offset.
+                        addrAlias[dest] = new NeoAddressAlias
+                        {
+                            Reg = inherited.Reg,
+                            Offset = inherited.Offset + so.Operand2
+                        };
+                    }
+                }
+            }
+
             for (int i = 0; i < body.Length; i++)
             {
                 OpCodeR op = body[i];
@@ -284,6 +343,21 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Bgei_R8:
                     case OpCodeREnum.Bgei_Un_R8:
                     case OpCodeREnum.Initobj:
+                        {
+                            // Step 12: Initobj on an in-frame IL value type must
+                            // also null the slot's reference-field mStack slots.
+                            // Stamp the target slot's RefOffset into Operand3
+                            // (spare: Initobj only uses Operand=type token and
+                            // DstOffset=slot byte offset) so the ExecuteNeo arm
+                            // can locate the ref region without a runtime lookup.
+                            // The target is typically an ldloca dest (the C#
+                            // compiler emits `ldloca V; initobj` for
+                            // default(struct)), so resolve through the alias map.
+                            short r1 = ResolveAddressAlias(addrAlias, op.Register1).Reg;
+                            op.Operand3 = localInfos[r1].RefOffset;
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                        }
+                        break;
                     case OpCodeREnum.Ldnull:
                     case OpCodeREnum.Ldstr:
                     case OpCodeREnum.Ldc_I4_M1:
@@ -365,6 +439,73 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             short r1 = op.Register1;
                             short r2 = op.Register2;
                             op.DstOffset = (ushort)localInfos[r1].Offset;
+                            op.SrcOffset = (ushort)localInfos[r2].Offset;
+                        }
+                        break;
+                    // ---- Step 12: in-frame value-type inline field access ----
+                    // Primitive inline variants: same DstOffset/SrcOffset shape
+                    // as the heap family, but the offsets address the frame
+                    // byte region directly (no mStack dereference).
+                    case OpCodeREnum.Ldfld_I1_Inline:
+                    case OpCodeREnum.Ldfld_I2_Inline:
+                    case OpCodeREnum.Ldfld_I4_Inline:
+                    case OpCodeREnum.Ldfld_I8_Inline:
+                    case OpCodeREnum.Ldfld_U1_Inline:
+                    case OpCodeREnum.Ldfld_U2_Inline:
+                    case OpCodeREnum.Ldfld_U4_Inline:
+                    case OpCodeREnum.Ldfld_U8_Inline:
+                    case OpCodeREnum.Ldfld_R4_Inline:
+                    case OpCodeREnum.Ldfld_R8_Inline:
+                        {
+                            short r1 = op.Register1; // dest temp
+                            // owning in-frame VT slot (possibly an ldloca/ldflda alias)
+                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register2);
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                            op.SrcOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
+                            // Operand2 (field PrimitiveOffset) is left as-is.
+                        }
+                        break;
+                    case OpCodeREnum.Stfld_I1_Inline:
+                    case OpCodeREnum.Stfld_I2_Inline:
+                    case OpCodeREnum.Stfld_I4_Inline:
+                    case OpCodeREnum.Stfld_I8_Inline:
+                    case OpCodeREnum.Stfld_U1_Inline:
+                    case OpCodeREnum.Stfld_U2_Inline:
+                    case OpCodeREnum.Stfld_U4_Inline:
+                    case OpCodeREnum.Stfld_U8_Inline:
+                    case OpCodeREnum.Stfld_R4_Inline:
+                    case OpCodeREnum.Stfld_R8_Inline:
+                        {
+                            // owning in-frame VT slot (possibly an ldloca/ldflda alias)
+                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register1);
+                            short r2 = op.Register2; // value temp
+                            op.DstOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
+                            op.SrcOffset = (ushort)localInfos[r2].Offset;
+                        }
+                        break;
+                    // Ref inline variants: resolve the absolute frame-ref
+                    // index = owningSlot.RefOffset + field.ReferenceOffset.
+                    // Operand3 still holds the field's ReferenceOffset (set by
+                    // the JIT); we fold in the owning slot's RefOffset here.
+                    // NOTE: nested-VT ref-field accumulation (ldflda of a VT
+                    // that itself has ref fields) is not folded here -- Step 12
+                    // tests only nest primitive value types.
+                    case OpCodeREnum.Ldfld_Ref_Inline:
+                        {
+                            short r1 = op.Register1; // dest temp
+                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register2);
+                            op.Operand = localInfos[owner.Reg].RefOffset + op.Operand3; // source field abs ref index
+                            op.Operand4 = localInfos[r1].RefOffset;                     // dest temp ref offset
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                            op.SrcOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
+                        }
+                        break;
+                    case OpCodeREnum.Stfld_Ref_Inline:
+                        {
+                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register1);
+                            short r2 = op.Register2; // value temp
+                            op.Operand = localInfos[owner.Reg].RefOffset + op.Operand3; // dest field abs ref index
+                            op.DstOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
                             op.SrcOffset = (ushort)localInfos[r2].Offset;
                         }
                         break;
@@ -563,6 +704,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         static StackSlotInfo AllocateNeoCallParamSlot(CLR.TypeSystem.IType type, ref int offset, ref int refOffset, Enviorment.AppDomain domain)
         {
             StackSlotInfo slot = default;
+            // NOTE (Step 12): this builds the callee-side param layout for CLR
+            // method calls and for interface-signature synthesis. The autogen
+            // CLR binding redirects read params SEQUENTIALLY via ReadNeo*
+            // (curPrim advanced by each param's exact size, no alignment), so
+            // this layout MUST stay contiguous (offset += size) to match them.
+            // Natural alignment is applied only to the IL frame's own
+            // locals/temps/params (AllocateLocalStackSpaces in JITCompiler),
+            // not here -- applying it here regresses CLR small-primitive calls.
             slot.Offset = offset;
             slot.RefOffset = refOffset;
 
@@ -592,6 +741,24 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
 
             return slot;
+        }
+
+        // Step 12: resolve a register that may be the dest of an ldloca/ldloca.s
+        // or ldflda addressing an in-frame value type back to the underlying
+        // local register plus the accumulated nested-field byte offset. Returns
+        // { reg, Offset = 0 } when the register is not an alias (a direct
+        // local/parameter/temp).
+        struct NeoAddressAlias
+        {
+            public short Reg;
+            public int Offset;
+        }
+
+        static NeoAddressAlias ResolveAddressAlias(Dictionary<short, NeoAddressAlias> addrAlias, short reg)
+        {
+            if (addrAlias != null && addrAlias.TryGetValue(reg, out NeoAddressAlias resolved))
+                return resolved;
+            return new NeoAddressAlias { Reg = reg, Offset = 0 };
         }
 
         // Step 11: build a contiguous callee param-info layout purely from a

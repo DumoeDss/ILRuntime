@@ -1,0 +1,24 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner12" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer12" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer12", "verdict": "CLEAN — 0 Blocker/0 Major; 5 Minor + 1 Trivial" } },
+    "review-loop": { "status": "done", "rounds": 3, "maxRounds": 3, "result": "clean. Minor 2 (alignment-8 test) + Minor 3 (Ldflda type propagation) kept. Minor 1 guard REVERTED (compound defect: dead comparison + over-broad detector needing liveness pass; proper home = Step 12b). Escaped-address residual accepted-known. Non-author re-review confirmed clean revert, smoke 37/37." },
+    "ship": { "status": "in_progress", "note": "ship-log.md (skip Rails gstack-ship misfit); then archive." },
+    "archive": { "status": "pending", "note": "sync delta to openspec/specs/neo-value-types/spec.md; move to archive/2026-07-04-implement-neo-step12/." },
+    "commit": { "status": "pending", "note": "user pre-authorized: LEAD commits after review-loop clean. Will commit AFTER ship+archive (one clean commit capturing code+test+archive+synced spec)." }
+  },
+  "acceptedKnown": [
+    { "id": "escaped-vt-address", "severity": "Minor", "summary": "Escaped VT address (ldloca/ldflda dest consumed by an implemented non-field opcode) not detected; could silently corrupt. Common escapes already loud via Step-6/13 NIEs; residual rare, not triggered by any test. Liveness-aware guard / byref model belongs in Step 12b." },
+    { "id": "Minor4", "severity": "Minor", "summary": "addrAlias single forward pass cross-block reuse; matches existing linear-slot assumption; flag for 12b." },
+    { "id": "Minor5", "severity": "Minor", "summary": "NaturalAlignment for classes — dead path, harmless." },
+    { "id": "Trivial1", "severity": "Trivial", "summary": "OpCodeREnum ordering cosmetic." }
+  ],
+  "rounds": 3,
+  "openFindings": []
+}

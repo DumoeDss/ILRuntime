@@ -480,6 +480,19 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Ldfld_R8:
                 case OpCodeREnum.Ldfld_Ref:
                 case OpCodeREnum.Ldfld_Value:
+                // Step 12: inline Ldfld variants — single source = owning VT
+                // slot (Register2). Mirrors the heap Ldfld family registration.
+                case OpCodeREnum.Ldfld_I1_Inline:
+                case OpCodeREnum.Ldfld_I2_Inline:
+                case OpCodeREnum.Ldfld_I4_Inline:
+                case OpCodeREnum.Ldfld_I8_Inline:
+                case OpCodeREnum.Ldfld_U1_Inline:
+                case OpCodeREnum.Ldfld_U2_Inline:
+                case OpCodeREnum.Ldfld_U4_Inline:
+                case OpCodeREnum.Ldfld_U8_Inline:
+                case OpCodeREnum.Ldfld_R4_Inline:
+                case OpCodeREnum.Ldfld_R8_Inline:
+                case OpCodeREnum.Ldfld_Ref_Inline:
                 case OpCodeREnum.Ldvirtftn:
                 case OpCodeREnum.Isinst:
                 case OpCodeREnum.Castclass:
@@ -507,6 +520,20 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Stfld_R8:
                 case OpCodeREnum.Stfld_Ref:
                 case OpCodeREnum.Stfld_Value:
+                // Step 12: inline Stfld variants — two sources: owning VT slot
+                // (Register1) and value temp (Register2). Mirrors the heap
+                // Stfld family registration.
+                case OpCodeREnum.Stfld_I1_Inline:
+                case OpCodeREnum.Stfld_I2_Inline:
+                case OpCodeREnum.Stfld_I4_Inline:
+                case OpCodeREnum.Stfld_I8_Inline:
+                case OpCodeREnum.Stfld_U1_Inline:
+                case OpCodeREnum.Stfld_U2_Inline:
+                case OpCodeREnum.Stfld_U4_Inline:
+                case OpCodeREnum.Stfld_U8_Inline:
+                case OpCodeREnum.Stfld_R4_Inline:
+                case OpCodeREnum.Stfld_R8_Inline:
+                case OpCodeREnum.Stfld_Ref_Inline:
                     r1 = op.Register1;
                     r2 = op.Register2;
                     return true;
@@ -790,6 +817,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Ldfld_R8:
                 case OpCodeREnum.Ldfld_Ref:
                 case OpCodeREnum.Ldfld_Value:
+                // Step 12: inline Ldfld variants — dest = Register1.
+                case OpCodeREnum.Ldfld_I1_Inline:
+                case OpCodeREnum.Ldfld_I2_Inline:
+                case OpCodeREnum.Ldfld_I4_Inline:
+                case OpCodeREnum.Ldfld_I8_Inline:
+                case OpCodeREnum.Ldfld_U1_Inline:
+                case OpCodeREnum.Ldfld_U2_Inline:
+                case OpCodeREnum.Ldfld_U4_Inline:
+                case OpCodeREnum.Ldfld_U8_Inline:
+                case OpCodeREnum.Ldfld_R4_Inline:
+                case OpCodeREnum.Ldfld_R8_Inline:
+                case OpCodeREnum.Ldfld_Ref_Inline:
                 case OpCodeREnum.Ldflda:
                 case OpCodeREnum.Ldtoken:
                 case OpCodeREnum.Isinst:
@@ -877,6 +916,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Stfld_R8:
                 case OpCodeREnum.Stfld_Ref:
                 case OpCodeREnum.Stfld_Value:
+                // Step 12: inline Stfld variants — no dest register.
+                case OpCodeREnum.Stfld_I1_Inline:
+                case OpCodeREnum.Stfld_I2_Inline:
+                case OpCodeREnum.Stfld_I4_Inline:
+                case OpCodeREnum.Stfld_I8_Inline:
+                case OpCodeREnum.Stfld_U1_Inline:
+                case OpCodeREnum.Stfld_U2_Inline:
+                case OpCodeREnum.Stfld_U4_Inline:
+                case OpCodeREnum.Stfld_U8_Inline:
+                case OpCodeREnum.Stfld_R4_Inline:
+                case OpCodeREnum.Stfld_R8_Inline:
+                case OpCodeREnum.Stfld_Ref_Inline:
                 case OpCodeREnum.Stsfld:
                 case OpCodeREnum.Throw:
                 case OpCodeREnum.Readonly:
@@ -1037,6 +1088,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Ldfld_R8:
                 case OpCodeREnum.Ldfld_Ref:
                 case OpCodeREnum.Ldfld_Value:
+                // Step 12: inline Ldfld variants — single source = Register2.
+                case OpCodeREnum.Ldfld_I1_Inline:
+                case OpCodeREnum.Ldfld_I2_Inline:
+                case OpCodeREnum.Ldfld_I4_Inline:
+                case OpCodeREnum.Ldfld_I8_Inline:
+                case OpCodeREnum.Ldfld_U1_Inline:
+                case OpCodeREnum.Ldfld_U2_Inline:
+                case OpCodeREnum.Ldfld_U4_Inline:
+                case OpCodeREnum.Ldfld_U8_Inline:
+                case OpCodeREnum.Ldfld_R4_Inline:
+                case OpCodeREnum.Ldfld_R8_Inline:
+                case OpCodeREnum.Ldfld_Ref_Inline:
                 case OpCodeREnum.Ldflda:
                 case OpCodeREnum.Ldvirtftn:
                 case OpCodeREnum.Isinst:
@@ -1084,6 +1147,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Stfld_R8:
                 case OpCodeREnum.Stfld_Ref:
                 case OpCodeREnum.Stfld_Value:
+                // Step 12: inline Stfld variants — two sources (Register1, Register2).
+                case OpCodeREnum.Stfld_I1_Inline:
+                case OpCodeREnum.Stfld_I2_Inline:
+                case OpCodeREnum.Stfld_I4_Inline:
+                case OpCodeREnum.Stfld_I8_Inline:
+                case OpCodeREnum.Stfld_U1_Inline:
+                case OpCodeREnum.Stfld_U2_Inline:
+                case OpCodeREnum.Stfld_U4_Inline:
+                case OpCodeREnum.Stfld_U8_Inline:
+                case OpCodeREnum.Stfld_R4_Inline:
+                case OpCodeREnum.Stfld_R8_Inline:
+                case OpCodeREnum.Stfld_Ref_Inline:
                     switch (idx)
                     {
                         case 0:
@@ -1379,6 +1454,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Ldfld_R8:
                 case OpCodeREnum.Ldfld_Ref:
                 case OpCodeREnum.Ldfld_Value:
+                // Step 12: inline Ldfld variants — dest = Register1.
+                case OpCodeREnum.Ldfld_I1_Inline:
+                case OpCodeREnum.Ldfld_I2_Inline:
+                case OpCodeREnum.Ldfld_I4_Inline:
+                case OpCodeREnum.Ldfld_I8_Inline:
+                case OpCodeREnum.Ldfld_U1_Inline:
+                case OpCodeREnum.Ldfld_U2_Inline:
+                case OpCodeREnum.Ldfld_U4_Inline:
+                case OpCodeREnum.Ldfld_U8_Inline:
+                case OpCodeREnum.Ldfld_R4_Inline:
+                case OpCodeREnum.Ldfld_R8_Inline:
+                case OpCodeREnum.Ldfld_Ref_Inline:
                 case OpCodeREnum.Ldsfld:
                 case OpCodeREnum.Ldsflda:
                 case OpCodeREnum.Ldtoken:

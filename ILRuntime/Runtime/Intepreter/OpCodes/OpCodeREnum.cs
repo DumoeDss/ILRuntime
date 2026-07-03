@@ -955,6 +955,33 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
         Ldfld_R8,
         Ldfld_Ref,
         Ldfld_Value,
+        // Step 12: in-frame value-type inline field access. These index the
+        // frame byte region directly (frameBase + slotOffset + fieldOffset)
+        // instead of dereferencing a heap ILTypeInstance. Emitted by the JIT
+        // type-specialize pass when the field-access operand register is an
+        // in-frame value type (value-type local/temp/parameter).
+        Ldfld_I1_Inline,
+        Ldfld_I2_Inline,
+        Ldfld_I4_Inline,
+        Ldfld_I8_Inline,
+        Ldfld_U1_Inline,
+        Ldfld_U2_Inline,
+        Ldfld_U4_Inline,
+        Ldfld_U8_Inline,
+        Ldfld_R4_Inline,
+        Ldfld_R8_Inline,
+        Ldfld_Ref_Inline,
+        Stfld_I1_Inline,
+        Stfld_I2_Inline,
+        Stfld_I4_Inline,
+        Stfld_I8_Inline,
+        Stfld_U1_Inline,
+        Stfld_U2_Inline,
+        Stfld_U4_Inline,
+        Stfld_U8_Inline,
+        Stfld_R4_Inline,
+        Stfld_R8_Inline,
+        Stfld_Ref_Inline,
 
         // === Neo only - Step 6: 三槽算术 _I8/_R4/_R8 ===
         Add_I8, Sub_I8, Mul_I8, Div_I8, Div_Un_I8, Rem_I8, Rem_Un_I8,

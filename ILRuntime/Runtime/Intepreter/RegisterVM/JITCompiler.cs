@@ -483,6 +483,31 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             for (int i = 0; i < body.Count; i++)
             {
                 OpCodeR op = body[i];
+                // ---- Step 12: select inline vs heap field-access opcode ----
+                // The JIT's Translate step unconditionally emits the heap
+                // Ldfld_* / Stfld_* variant. Here, where the per-register
+                // static types are known, rewrite it to the _Inline variant
+                // when the operand register holds an in-frame value type (a
+                // value-type local/temp/parameter that is not boxed and not a
+                // reference slot). The discriminator is the operand register's
+                // value-category, NOT the field's declaring type (which is
+                // identical whether the operand is a heap instance or an
+                // in-frame VT). The field offset operands (Operand2/Operand3)
+                // are unchanged; the Neo offset-lowering pass later resolves
+                // SrcOffset/DstOffset to the VT slot's byte offset and stamps
+                // the absolute frame-ref index for the Ref variants.
+                OpCodeR rewritten = op;
+                if (TryRewriteFieldAccessForInline(ref rewritten, registerTypes))
+                {
+                    op = rewritten;
+                    // The dest temp of an inline Ldfld holds a primitive value
+                    // (or, for Ldfld_Ref_Inline, a reference). Seed its type so
+                    // downstream typed-opcode specialization is correct.
+                    if (op.Code != OpCodeREnum.Ldfld_Ref_Inline)
+                        SetRegisterType(registerTypes, op.Register1, FieldTypeForInlineLdfld(op.Code));
+                    else
+                        SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
+                }
                 switch (op.Code)
                 {
                     case OpCodeREnum.Ldc_I4_M1:
@@ -643,8 +668,158 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldfld_R8:
                         SetRegisterType(registerTypes, op.Register1, appdomain.DoubleType);
                         break;
+                    // Step 12: ldloca/ldloca.s of a value-type local produces a
+                    // managed pointer, but for the Neo in-frame-VT model the
+                    // pointer aliases the local's byte range. Propagate the
+                    // source local's value-type to the dest temp so the
+                    // field-access discriminator (TryRewriteFieldAccessForInline)
+                    // recognizes the operand as an in-frame value type and emits
+                    // the _Inline variant. The offset-lowering pass resolves the
+                    // ldloca dest back to the source local's offset.
+                    case OpCodeREnum.Ldloca:
+                    case OpCodeREnum.Ldloca_S:
+                        {
+                            IType srcType = GetRegisterType(registerTypes, op.Register2);
+                            if (srcType is ILType srcIl && srcIl.IsValueType && !srcIl.IsEnum)
+                                SetRegisterType(registerTypes, op.Register1, srcType);
+                        }
+                        break;
+                    // Step 12 (Minor 3): ldflda of a nested in-frame value-type
+                    // field. The dest temp aliases the owning VT's byte range
+                    // (plus the field's nested offset, folded later by the
+                    // offset-lowering pass). For a chain `ldloca V -> ldflda f
+                    // -> stfld x`, the stfld operand is this ldflda dest; the
+                    // field-access discriminator (TryRewriteFieldAccessForInline)
+                    // keys on that operand's value-category, so the dest MUST
+                    // carry an in-frame VT type. Propagate the source register's
+                    // VT type (the same rule the Ldloca case uses) when the
+                    // source is an in-frame VT. This makes opcode selection
+                    // self-contained instead of depending on the JIT reusing
+                    // the same temp for the ldloca dest and the ldflda dest.
+                    case OpCodeREnum.Ldflda:
+                        {
+                            IType srcType = GetRegisterType(registerTypes, op.Register2);
+                            if (srcType is ILType srcIl && srcIl.IsValueType && !srcIl.IsEnum)
+                                SetRegisterType(registerTypes, op.Register1, srcType);
+                        }
+                        break;
                 }
                 body[i] = op;
+            }
+        }
+
+        // Step 12: returns true and rewrites `op` from its heap Ldfld_*/Stfld_*
+        // form to the matching _Inline variant when the field-access operand
+        // register holds an in-frame value type. Returns false (no change) when
+        // the operand is a reference slot (heap ILTypeInstance / CLR object /
+        // boxed VT) or when the opcode is not a field-access primitive/Ref
+        // variant (e.g. Ldfld_Value / Stfld_Value = whole-VT-field copy = 12b).
+        // For Ldfld the operand is Register2; for Stfld the operand is Register1.
+        bool TryRewriteFieldAccessForInline(ref OpCodeR op, IType[] registerTypes)
+        {
+            OpCodeREnum code = op.Code;
+            bool isLdfld = false;
+            bool isStfld = false;
+            // Primitive + Ref variants only (Value variants are 12b whole-copy).
+            switch (code)
+            {
+                case OpCodeREnum.Ldfld_I1:
+                case OpCodeREnum.Ldfld_I2:
+                case OpCodeREnum.Ldfld_I4:
+                case OpCodeREnum.Ldfld_I8:
+                case OpCodeREnum.Ldfld_U1:
+                case OpCodeREnum.Ldfld_U2:
+                case OpCodeREnum.Ldfld_U4:
+                case OpCodeREnum.Ldfld_U8:
+                case OpCodeREnum.Ldfld_R4:
+                case OpCodeREnum.Ldfld_R8:
+                case OpCodeREnum.Ldfld_Ref:
+                    isLdfld = true;
+                    break;
+                case OpCodeREnum.Stfld_I1:
+                case OpCodeREnum.Stfld_I2:
+                case OpCodeREnum.Stfld_I4:
+                case OpCodeREnum.Stfld_I8:
+                case OpCodeREnum.Stfld_U1:
+                case OpCodeREnum.Stfld_U2:
+                case OpCodeREnum.Stfld_U4:
+                case OpCodeREnum.Stfld_U8:
+                case OpCodeREnum.Stfld_R4:
+                case OpCodeREnum.Stfld_R8:
+                case OpCodeREnum.Stfld_Ref:
+                    isStfld = true;
+                    break;
+                default:
+                    return false;
+            }
+
+            short operandReg = isLdfld ? op.Register2 : op.Register1;
+            IType operandType = GetRegisterType(registerTypes, operandReg);
+            // In-frame value type = an IL value type that is not boxed (i.e. the
+            // register holds the VT's flat bytes, not an mStack index). Enums are
+            // addressed as their underlying primitive, not as VTs, so exclude them.
+            bool operandIsInFrameVt =
+                operandType is ILType ot && ot.IsValueType && !ot.IsEnum;
+            if (!operandIsInFrameVt)
+                return false;
+
+            op.Code = ToInlineOpcode(code);
+            return true;
+        }
+
+        // Step 12: map a heap Ldfld_*/Stfld_* opcode to its _Inline counterpart.
+        static OpCodeREnum ToInlineOpcode(OpCodeREnum code)
+        {
+            switch (code)
+            {
+                case OpCodeREnum.Ldfld_I1: return OpCodeREnum.Ldfld_I1_Inline;
+                case OpCodeREnum.Ldfld_I2: return OpCodeREnum.Ldfld_I2_Inline;
+                case OpCodeREnum.Ldfld_I4: return OpCodeREnum.Ldfld_I4_Inline;
+                case OpCodeREnum.Ldfld_I8: return OpCodeREnum.Ldfld_I8_Inline;
+                case OpCodeREnum.Ldfld_U1: return OpCodeREnum.Ldfld_U1_Inline;
+                case OpCodeREnum.Ldfld_U2: return OpCodeREnum.Ldfld_U2_Inline;
+                case OpCodeREnum.Ldfld_U4: return OpCodeREnum.Ldfld_U4_Inline;
+                case OpCodeREnum.Ldfld_U8: return OpCodeREnum.Ldfld_U8_Inline;
+                case OpCodeREnum.Ldfld_R4: return OpCodeREnum.Ldfld_R4_Inline;
+                case OpCodeREnum.Ldfld_R8: return OpCodeREnum.Ldfld_R8_Inline;
+                case OpCodeREnum.Ldfld_Ref: return OpCodeREnum.Ldfld_Ref_Inline;
+                case OpCodeREnum.Stfld_I1: return OpCodeREnum.Stfld_I1_Inline;
+                case OpCodeREnum.Stfld_I2: return OpCodeREnum.Stfld_I2_Inline;
+                case OpCodeREnum.Stfld_I4: return OpCodeREnum.Stfld_I4_Inline;
+                case OpCodeREnum.Stfld_I8: return OpCodeREnum.Stfld_I8_Inline;
+                case OpCodeREnum.Stfld_U1: return OpCodeREnum.Stfld_U1_Inline;
+                case OpCodeREnum.Stfld_U2: return OpCodeREnum.Stfld_U2_Inline;
+                case OpCodeREnum.Stfld_U4: return OpCodeREnum.Stfld_U4_Inline;
+                case OpCodeREnum.Stfld_U8: return OpCodeREnum.Stfld_U8_Inline;
+                case OpCodeREnum.Stfld_R4: return OpCodeREnum.Stfld_R4_Inline;
+                case OpCodeREnum.Stfld_R8: return OpCodeREnum.Stfld_R8_Inline;
+                case OpCodeREnum.Stfld_Ref: return OpCodeREnum.Stfld_Ref_Inline;
+                default: return code;
+            }
+        }
+
+        // Step 12: dest temp type for an inline Ldfld primitive opcode. Mirrors
+        // the heap Ldfld type-tracking cases above.
+        IType FieldTypeForInlineLdfld(OpCodeREnum code)
+        {
+            switch (code)
+            {
+                case OpCodeREnum.Ldfld_I1_Inline:
+                case OpCodeREnum.Ldfld_I2_Inline:
+                case OpCodeREnum.Ldfld_I4_Inline:
+                case OpCodeREnum.Ldfld_U1_Inline:
+                case OpCodeREnum.Ldfld_U2_Inline:
+                case OpCodeREnum.Ldfld_U4_Inline:
+                    return appdomain.IntType;
+                case OpCodeREnum.Ldfld_I8_Inline:
+                case OpCodeREnum.Ldfld_U8_Inline:
+                    return appdomain.LongType;
+                case OpCodeREnum.Ldfld_R4_Inline:
+                    return appdomain.FloatType;
+                case OpCodeREnum.Ldfld_R8_Inline:
+                    return appdomain.DoubleType;
+                default:
+                    return appdomain.IntType;
             }
         }
 
@@ -1067,6 +1242,17 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             return code;
         }
 
+        // Step 12: round `offset` up to the next multiple of `alignment`.
+        // `alignment` MUST be a power of two (caller guarantees: primitive
+        // sizes 1/2/4/8 or a VT's NaturalAlignment which is itself a max of
+        // such sizes). Used wherever a slot's byte offset is assigned so that
+        // the typed pointer casts in the Ldfld_*_Inline / Stfld_*_Inline
+        // opcodes are naturally aligned.
+        static int AlignUp(int offset, int alignment)
+        {
+            return (offset + alignment - 1) & ~(alignment - 1);
+        }
+
         void AllocateLocalStackSpaces(ref CompiledFrame frame)
         {
             var body = def.Body;
@@ -1085,6 +1271,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 {
                     int size = declaringType.TotalPrimitiveSize;
                     int refSize = declaringType.TotalReferenceCount;
+                    // Step 12: align the `this` value-type slot.
+                    offset = AlignUp(offset, declaringType.NaturalAlignment);
                     slot.Offset = offset;
                     slot.RefOffset = refOffset;
                     slot.Size = size;
@@ -1137,6 +1325,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     {
                         int size = il.TotalPrimitiveSize;
                         int refSize = il.TotalReferenceCount;
+                        // Step 12: align the VT local slot.
+                        offset = AlignUp(offset, il.NaturalAlignment);
                         slot.Offset = offset;
                         slot.Size = size;
                         slot.RefOffset = refOffset;
@@ -1146,6 +1336,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     }
                     else
                     {
+                        // CLR value type stored as a reference (mStack index).
+                        offset = AlignUp(offset, 4);
                         slot.Offset = offset;
                         slot.RefOffset = refOffset;
                         slot.Size = 4;
@@ -1157,6 +1349,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 }
                 else if (!vt.IsValueType)
                 {
+                    offset = AlignUp(offset, 4);
                     slot.Offset = offset;
                     slot.RefOffset = refOffset;
                     slot.Size = 4;
@@ -1170,6 +1363,9 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     // primitive
                     var ivt = appdomain.GetType(vt, declaringType, method);
                     int size = appdomain.GetPrimitiveSize(ivt);
+                    if (size < 1) size = 1;
+                    // Step 12: align the primitive local to its natural size.
+                    offset = AlignUp(offset, size);
                     slot.Offset = offset;
                     slot.RefOffset = refOffset;
                     slot.Size = size;
@@ -1180,6 +1376,10 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
             var valueTypes = GatherValueTypes(ref frame);
             int maxSize = 8, maxRefCount = 1;
+            // Step 12: track the max natural alignment across the value types
+            // that can flow through the temp register file, so each temp slot
+            // is aligned for the largest possible VT it may hold.
+            int maxAlignment = 4;
             foreach (var i in valueTypes)
             {
                 if (i is ILType il)
@@ -1190,11 +1390,16 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         maxSize = size;
                     if (refSize > maxRefCount)
                         maxRefCount = refSize;
+                    int align = il.NaturalAlignment;
+                    if (align > maxAlignment)
+                        maxAlignment = align;
                 }
             }
             for (int i = 0; i < frame.StackRegisterCount; i++)
             {
                 StackSlotInfo slot = default;
+                // Step 12: align each temp slot to the max VT alignment.
+                offset = AlignUp(offset, maxAlignment);
                 slot.Offset = offset;
                 slot.RefOffset = refOffset;
                 slot.Size = maxSize;
@@ -1226,6 +1431,24 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 
         StackSlotInfo AllocateSlotForType(IType t, ref int offset, ref int refOffset)
         {
+            // Step 12: naturally align every slot. The alignment of a slot is
+            // the max natural alignment among its fields (recursively, for
+            // nested value types); a primitive uses its own size; a reference
+            // slot uses pointer size 4. Alignment is only applied to the byte
+            // region (offset) — the mStack ref region holds indices, not bytes.
+            int align = 4;
+            if (t.IsPrimitive)
+            {
+                align = appdomain.GetPrimitiveSize(t);
+                if (align < 1) align = 1;
+            }
+            else if (t.IsValueType && t is ILType ilt)
+            {
+                align = ilt.NaturalAlignment;
+                if (align < 1) align = 1;
+            }
+            offset = AlignUp(offset, align);
+
             StackSlotInfo slot = default;
             if (t.IsPrimitive)
             {
@@ -1871,7 +2094,21 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case Code.Ldflda:
                     op.Register1 = (short)(baseRegIdx - 1);
                     op.Register2 = (short)(baseRegIdx - 1);
+#if ENABLE_NEO_MODE
+                    {
+                        // Step 12: capture the field's PrimitiveOffset / ReferenceOffset
+                        // so the Neo offset-lowering pass can fold a nested value-type
+                        // field address (ldloca + ldflda chain) into the leaf field
+                        // access's absolute frame offset. Legacy keeps the static-field
+                        // index in OperandLong.
+                        var offset = appdomain.GetFieldOffset(token, declaringType, method, out IType type, out IType fieldType);
+                        op.Operand = type.GetHashCode();
+                        op.Operand2 = offset.PrimitiveOffset;
+                        op.Operand3 = offset.ReferenceOffset;
+                    }
+#else
                     op.OperandLong = appdomain.GetStaticFieldIndex(token, declaringType, method);
+#endif
                     break;
                 case Code.Stfld:
                     op.Register1 = (short)(baseRegIdx - 2);

@@ -175,6 +175,17 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
                 case OpCodeREnum.Ldfld_R8:
                 case OpCodeREnum.Ldfld_Ref:
                 case OpCodeREnum.Ldfld_Value:
+                case OpCodeREnum.Ldfld_I1_Inline:
+                case OpCodeREnum.Ldfld_I2_Inline:
+                case OpCodeREnum.Ldfld_I4_Inline:
+                case OpCodeREnum.Ldfld_I8_Inline:
+                case OpCodeREnum.Ldfld_U1_Inline:
+                case OpCodeREnum.Ldfld_U2_Inline:
+                case OpCodeREnum.Ldfld_U4_Inline:
+                case OpCodeREnum.Ldfld_U8_Inline:
+                case OpCodeREnum.Ldfld_R4_Inline:
+                case OpCodeREnum.Ldfld_R8_Inline:
+                case OpCodeREnum.Ldfld_Ref_Inline:
                 case OpCodeREnum.Stfld_I1:
                 case OpCodeREnum.Stfld_I2:
                 case OpCodeREnum.Stfld_I4:
@@ -187,6 +198,17 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
                 case OpCodeREnum.Stfld_R8:
                 case OpCodeREnum.Stfld_Ref:
                 case OpCodeREnum.Stfld_Value:
+                case OpCodeREnum.Stfld_I1_Inline:
+                case OpCodeREnum.Stfld_I2_Inline:
+                case OpCodeREnum.Stfld_I4_Inline:
+                case OpCodeREnum.Stfld_I8_Inline:
+                case OpCodeREnum.Stfld_U1_Inline:
+                case OpCodeREnum.Stfld_U2_Inline:
+                case OpCodeREnum.Stfld_U4_Inline:
+                case OpCodeREnum.Stfld_U8_Inline:
+                case OpCodeREnum.Stfld_R4_Inline:
+                case OpCodeREnum.Stfld_R8_Inline:
+                case OpCodeREnum.Stfld_Ref_Inline:
                     if (domain != null)
                         param = string.Format("r{0}, r{1}, 0x{2:X8}, {3}({4},{5})", Register1, Register2, OperandLong, domain.GetType(Operand), Operand2, Operand3);
                     else
