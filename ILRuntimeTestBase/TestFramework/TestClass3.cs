@@ -101,6 +101,38 @@ namespace ILRuntimeTest.TestFramework
             return b + sb + s + us + (flag ? 1000 : 0) + ch + tail;
         }
 
+        // ---- Step 13b K2/K2-FAM helpers (host C#; read by the IL side via the
+        //      reflection fallback CLRMethod.Invoke(byte*) -- no autogen redirect
+        //      for these). Taking a CLR struct BY VALUE and returning a primitive
+        //      verifies the param bytes cross IL->CLR correctly without needing
+        //      IL-side ldfld on CLR struct fields (a separate deferred concern).
+        //      These mirror the K2 reproducer shape. ----
+
+        // K2: a CLR struct by-value PARAMETER (no binder). Returns the int sum
+        // of the three float fields as a check the struct's flat bytes arrived
+        // unchanged. Before 13b the caller-temp-slot fallback miscopied the
+        // boxed-ref mStack index into the param region (K2).
+        public static int SumTestVector3NoBindingFields(TestVector3NoBinding v)
+        {
+            return (int)(v.x + v.y + v.z);
+        }
+
+        // K2: a CLR struct by-value PARAMETER (WITH binder). TestVector3 has a
+        // registered ValueTypeBinder (pure-primitive, 3 floats).
+        public static int SumTestVector3Fields(TestVector3 a, TestVector3 b)
+        {
+            return (int)(a.X + a.Y + a.Z + b.X + b.Y + b.Z);
+        }
+
+        // K2 (return side): a CLR struct RETURN value. The reflection return
+        // path (InvokeNeoClrMethod) must write the struct's flat bytes into the
+        // caller's dest local. Returns a known struct; the IL caller checks it
+        // by re-feeding it to Sum... above (no IL-side ldfld needed).
+        public static TestVector3NoBinding MakeTestVector3NoBinding(float x, float y, float z)
+        {
+            return new TestVector3NoBinding(x, y, z);
+        }
+
         public void LoadAsset<T>(string name, T obj)
         {
 

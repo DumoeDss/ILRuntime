@@ -2,6 +2,7 @@ using ILRuntime.CLR.TypeSystem;
 using ILRuntime.CLR.Utils;
 using ILRuntime.Runtime.Enviorment;
 using ILRuntime.Runtime.Intepreter;
+using ILRuntime.Runtime.Intepreter.RegisterVM;
 using ILRuntime.Runtime.Stack;
 using System;
 using System.Collections.Generic;
@@ -361,7 +362,34 @@ namespace ILRuntime.CLR.Method
 
                 if (pt is CLRType clrType && clrType.IsValueType && !clrType.TypeForCLR.IsPrimitive && !clrType.TypeForCLR.IsEnum)
                 {
-                    throw new NotImplementedException("CLR value type reflection fallback: Step 13");
+                    // Step 13b (D2): read a CLR struct param by its flat-byte slot
+                    // width. The callee param region laid out a CLR struct as flat
+                    // managed bytes sized by Optimizer.GetNeoValueTypeManagedSize
+                    // (the SAME size ReadNeoValueType advances the cursor by), so
+                    // this stays byte-consistent with the layout. A struct WITH
+                    // reference-type fields and NO registered ValueTypeBinder
+                    // cannot be read (the GC refs are not mappable without a
+                    // binder) -> clear Step-13b NIE; a struct WITH a binder that
+                    // has ref fields needs the binder's ref-mapping, which the
+                    // Legacy StackObject binder API cannot feed here -- the
+                    // reflection fallback only supports binder structs whose ref
+                    // count is zero (pure-primitive like TestVector3), handled by
+                    // the flat-bytes read below. (The autogen path owns the full
+                    // binder ref-mapping for binder structs; this is the no-
+                    // redirect reflection path.)
+                    if (clrType.ValueTypeBinder != null)
+                    {
+                        clrType.GetValueTypeSize(out _, out int managedCount);
+                        if (managedCount > 0)
+                            throw new NotImplementedException("CLR value type with reference fields via binder in reflection fallback: register a CLR binding redirect (Step 13b). Type: " + t.FullName);
+                    }
+                    else if (NeoClrStructHasReferenceField(t))
+                    {
+                        throw new NotImplementedException("CLR value type with reference fields and no ValueTypeBinder (Step 13b): register a binder. Type: " + t.FullName);
+                    }
+                    int vtSize = Optimizer.GetNeoValueTypeManagedSize(t);
+                    param[i] = ILIntepreter.ReadNeoValueType(t, targetBase, ref curPrim, vtSize);
+                    continue;
                 }
 
                 if (pt is ILType || !t.IsPrimitive && !t.IsEnum)
@@ -422,6 +450,35 @@ namespace ILRuntime.CLR.Method
 
             Array.Clear(invocationParam, 0, invocationParam.Length);
             return res;
+        }
+
+        // Step 13b: does a CLR value type contain any reference-type (managed)
+        // instance field (recursively)? Such a struct's flat-bytes slot holds GC
+        // references that cannot be materialized without a ValueTypeBinder, so the
+        // no-binder reader throws a clear NIE. Primitives/enums and pure-value
+        // structs (e.g. TestVector3 -- 3 floats) return false.
+        static bool NeoClrStructHasReferenceField(Type t)
+        {
+            if (t == null || !t.IsValueType)
+                return false;
+            if (t.IsPrimitive || t.IsEnum)
+                return false;
+            foreach (var f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                var ft = f.FieldType;
+                if (ft.IsPointer)
+                    continue;
+                if (!ft.IsValueType)
+                    return true;
+                if (!ft.IsPrimitive && !ft.IsEnum)
+                {
+                    // Nested CLR struct: recurse (an unmanaged-only nested struct
+                    // is fine; one with a ref field is not).
+                    if (NeoClrStructHasReferenceField(ft))
+                        return true;
+                }
+            }
+            return false;
         }
 #endif
 

@@ -32,9 +32,15 @@ Insert these into the roadmap ordering:
    (Step 16) and `constrained.`-on-VT (Step 13 area 3). The Step 17 Ref-Slot /
    byref / VT-address model is the prerequisite for both.
 3. **Step 13b (CLR binding codegen + unified CLRMethod param layout)** — slot
-   it **immediately AFTER Step 17** (so the byref/param model informs the
-   layout). Closes: Step 13 areas 4-5, K2, K2-family. Highest-value follow-up
-   (unblocks CLR value-type by-value params/return).
+   it **immediately AFTER Step 17**. **DONE (2026-07-04):** Area 5 core landed
+   (unified CLRMethod param layout — removed caller-temp-slot fallback;
+   ReadNeoValueType/WriteNeoValueType byte-consistent; filled CLRMethod.Invoke
+   + return + autogen NIEs). **Closes K2.** K2-FAM partially (flat-bytes path);
+   the boxed-ref-bridge half DEFERRED. Area 4 (value-type-`this` direct-call),
+   CLR-method ref/out, CLR-object stind/ldind field-hash DEFERRED to a future
+   step (13b was Neo-only-codegen; Legacy untouched). Surfaced **F-MAJ-1**
+   (pre-existing AllocateLocalStackSpaces slot-reuse with 2+ CLR struct locals)
+   -> next optimizer-hardening.
 4. **Step 18 (value-type newobj + CLR newobj)** — fold IN: quirk-newobj-alias.
    (Step 18 already owns IL value-type newobj.)
 5. **[CATCH-COMPLETE]** small follow-up (anytime after Step 15) — closes
@@ -55,10 +61,11 @@ Insert these into the roadmap ordering:
 |----|------|-------------|--------|--------------|----------|
 | D-LDELEMA | `ldelema` opcode | Step 16 | **RESOLVED (Step 17)** | Step 17 Ref-Slot/stind/ldind | resolved (IL VT array path; CLR primitive-array ldelema still NIE) |
 | D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **partial (Step 17)** | Step 17 byref/VT-this-address | arm exists, full VT dispatch DEFERRED (callvirt byref-this) |
-| D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **Step 13b** (new) | — (Step 17 first, recommended) | roadmap gap (highest value) |
+| D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **partial (Step 13b)** | Area 5 core done; Area 4 + CLR ref/out + CLR stind/ldind deferred | roadmap gap (highest value) |
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
-| K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **Step 13b area 5** | unified param layout | pre-existing |
-| K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **Step 13b area 5** | unified param layout + Move-path | pre-existing |
+| K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
+| K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **partial (Step 13b)** | flat-bytes path resolved; boxed-ref bridge deferred | pre-existing |
+| F-MAJ-1 | 2+ simultaneous CLR struct locals -> AllocateLocalStackSpaces slot-reuse -> silent wrong result | Step 13b | **[OPT-HARDEN-2]** | next optimizer-hardening / AllocateLocalStackSpaces | pre-existing (13b made reachable) |
 | Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **Step 18** | newobj completion | pre-existing (Step 10/11) |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
@@ -138,14 +145,29 @@ address = potential mutation through it). Gated `#if ENABLE_NEO_MODE`
 ### K2 / K2-FAM — Move-path boxed-ref CLR-VT-local (Step 12b / Step 13 -> Step 13b)
 - **K2:** the Step 8 VT-by-value param copy reads a primitive-field VALUE as an
   mStack index -> `ArgumentOutOfRangeException`. The call param-setup path uses
-  `NeoCallParamMap`/`CopyNeoCallArguments`, not `Move_Vt`.
+  `NeoCallParamMap`/`CopyNeoCallArguments`, not `Move_Vt`. **RESOLVED (Step 13b):**
+  the unified CLRMethod param layout (removed caller-temp-slot fallback;
+  ReadNeoValueType by width) reads CLR struct params correctly. K2 closed.
 - **K2-FAM:** the Move path mis-handles scalar/constant -> boxed-ref CLR-VT-local
-  assignment (reads an int as an mStack index). Blocks CLR-enum/struct LOCAL
-  round-trip end-to-end.
-Pre-existing. The Step 13 MINOR-1 Box/Unbox/Initobj fix is correct per the
-boxed-ref representation but UNTESTABLE end-to-end until this is fixed (the
-CLR-enum-local test is deferred). **Resolution:** Step 13b area 5 (unified param
-layout + Move-path) closes both.
+  assignment (reads an int as an mStack index). **PARTIAL (Step 13b):** the
+  flat-bytes path (a CLR struct obtained from a method RETURN, stored as flat
+  bytes) now passes by value correctly without a bridge. The boxed-ref-source
+  shape (a CLR struct local sourced from Box/Initobj) still needs a bridge to
+  pass by value — DEFERRED (Phase 3 safety valve); it needs IL-side
+  ldfld/stfld on CLR struct fields for a clean reproducer. Pre-existing; not a
+  13b regression.
+
+### F-MAJ-1 — AllocateLocalStackSpaces slot-reuse with 2+ CLR struct locals (Step 13b -> [OPT-HARDEN-2])
+A method holding 2+ simultaneous CLR struct locals (+ int locals) hits a
+slot-reuse/liveness bug in `JITCompiler.AllocateLocalStackSpaces`: one struct
+local's 12-byte slot is corrupted while another is live -> silent wrong result
+(a combined `r1!=600 || r2!=3` check fails though each passes in isolation; not
+an r1<->r2 clobber). Pre-existing (stash-proven: pre-13b the pattern was an
+unsupported-NIE, not broken; struct-specific — two CLR-INT-return locals pass).
+Step 13b made it reachable (the CLR-struct-by-value feature now exists).
+**Resolution:** next optimizer-hardening step ([OPT-HARDEN-2]) — the
+`AllocateLocalStackSpaces` slot-reuse/liveness logic. The Step 13b tests work
+around it by holding a single CLR struct local at a time.
 
 ### Q-NEWOBJ — Newobj dest/arg aliasing after `newarr` (Step 16 -> Step 18)
 `new T(intArg)` immediately FOLLOWS a `newarr` collides in the Call/Newobj
@@ -222,3 +244,8 @@ assert the exception type/identity; opportunistic cleanup.
 ## 4. Resolved
 - **K1** — FCP value-type-move mis-propagation. Fixed in OPT-HARDEN (2026-07-04)
   via the `ldloca-kill` (Neo-only, Legacy-neutral). See §3 K1.
+- **K2** — Step 8 VT-by-value param copy (reads primitive as mStack index).
+  Fixed in Step 13b (2026-07-04) via the unified CLRMethod param layout +
+  ReadNeoValueType. See §3 K2/K2-FAM.
+- **D-LDELEMA** — `ldelema` opcode. Fixed in Step 17 (2026-07-04, IL VT array
+  path; CLR primitive-array ldelema still NIE). See §3 D-LDELEMA.

@@ -1,7 +1,10 @@
 ﻿#if ENABLE_NEO_MODE
 using ILRuntime.Runtime.Intepreter.OpCodes;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text;
 
 namespace ILRuntime.Runtime.Intepreter.RegisterVM
@@ -1169,20 +1172,17 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     else
                                         paramType = clrMethod.Parameters[p - ((targetMethod.HasThis && op.Code != OpCodeREnum.Newobj) ? 1 : 0)];
 
-                                    if (paramType.IsValueType && !paramType.IsPrimitive && !(paramType is CLR.TypeSystem.ILType) && !(paramType.TypeForCLR != null && paramType.TypeForCLR.IsEnum))
-                                    {
-                                        // TODO Step 13: replace this CLR struct fallback with a real CLR value-type ABI.
-                                        // For now we keep the caller temp slot shape so unsupported CLR structs (for example TaskAwaiter)
-                                        // do not fail during JIT prewarm. Reference/primitive/IL value-type parameters use exact callee layout below.
-                                        var srcInfo = localInfos[srcRegs[p]];
-                                        paramInfos[dstIndex] = new StackSlotInfo { Offset = curPrim, Size = srcInfo.Size, RefOffset = curRef, RefCount = srcInfo.RefCount };
-                                        curPrim += srcInfo.Size;
-                                        curRef += srcInfo.RefCount;
-                                    }
-                                    else
-                                    {
-                                        paramInfos[dstIndex] = AllocateNeoCallParamSlot(paramType, ref curPrim, ref curRef, domain);
-                                    }
+                                    // Step 13b (D1): ALL parameter types -- including CLR value
+                                    // types -- flow through the unified AllocateNeoCallParamSlot
+                                    // callee-layout helper. The previous caller-temp-slot fallback
+                                    // (which overrode the callee layout with the caller source
+                                    // register's shape for CLR structs) is REMOVED: it miscopied a
+                                    // boxed-ref CLR struct local's 4-byte mStack index into the
+                                    // param region (K2). The callee layout already sizes a CLR struct
+                                    // via GetPrimitiveSize (AllocateNeoCallParamSlot's IsValueType
+                                    // branch), so primitives/enums/IL-VTs/refs are byte-identical and
+                                    // only the CLR-struct branch changes.
+                                    paramInfos[dstIndex] = AllocateNeoCallParamSlot(paramType, ref curPrim, ref curRef, domain);
                                 }
                             }
 
@@ -1356,7 +1356,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
             else if (type.IsValueType)
             {
-                slot.Size = domain.GetPrimitiveSize(type);
+                // Step 13b (D1): a CLR struct param/return slot is flat bytes sized
+                // by the managed value-type byte size (Unsafe.SizeOf<T>). This NEVER
+                // throws (unlike GetPrimitiveSize, which only knew the primitive
+                // singletons), so an unsupported CLR struct param (e.g. an async
+                // state-machine builder) no longer crashes JIT prewarm. The
+                // reader/writer (CLRMethod.Invoke / AppendArgumentCodeNeo /
+                // ReadNeoValueType / WriteNeoValueType) MUST use the SAME managed
+                // size so the reader layout and this callee layout stay
+                // byte-consistent -- see GetNeoValueTypeManagedSize. For a struct
+                // WITH a registered ValueTypeBinder the binder maps the ref fields
+                // (its managed count), so RefCount reflects the binder; the
+                // primitive bytes are still the flat managed size.
+                slot.Size = GetNeoValueTypeManagedSize(type.TypeForCLR);
+                if (type is CLR.TypeSystem.CLRType crt && crt.ValueTypeBinder != null)
+                {
+                    crt.GetValueTypeSize(out _, out int managedCount);
+                    slot.RefCount = managedCount;
+                    refOffset += managedCount;
+                }
                 offset += slot.Size;
             }
             else
@@ -1369,6 +1387,45 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 
             return slot;
         }
+
+        // Step 13b (D1/D4): the managed byte size of a CLR value type, used to size
+        // its flat-bytes param/return slot in the callee param region. Computed via
+        // the generic Unsafe.SizeOf<T>() (the GC-reference-aware managed size -- NOT
+        // the unmanaged Marshal size), cached per Type. Never throws: works for any
+        // struct (blittable, with ref fields, async builders, TaskAwaiter, ...), so
+        // JIT prewarm of a method that takes an unsupported CLR struct param does not
+        // crash. The reader/writer helpers (ReadNeoValueType / WriteNeoValueType and
+        // the autogen AppendArgumentCodeNeo path) MUST use the same size for a given
+        // Type so the reader layout and this callee layout stay byte-consistent.
+        static readonly ConcurrentDictionary<Type, int> s_neoVtSizeCache = new ConcurrentDictionary<Type, int>();
+        static MethodInfo s_unsafeSizeOfGeneric;
+        // public: the autogen CLR binding code (compiled into the HOST assembly)
+        // calls this to size a CLR struct param/return slot so it stays
+        // byte-consistent with the optimizer's callee layout (single size source).
+        public static int GetNeoValueTypeManagedSize(Type t)
+        {
+            if (t == null)
+                return 0;
+            return s_neoVtSizeCache.GetOrAdd(t, type =>
+            {
+                if (type.IsEnum)
+                    type = Enum.GetUnderlyingType(type);
+                if (s_unsafeSizeOfGeneric == null)
+                {
+                    // Unsafe.SizeOf<T>() -> a generic method; instantiate per Type.
+                    s_unsafeSizeOfGeneric = typeof(Unsafe).GetMethod(
+                        "SizeOf", BindingFlags.Public | BindingFlags.Static);
+                }
+                if (s_unsafeSizeOfGeneric != null)
+                {
+                    var inst = s_unsafeSizeOfGeneric.MakeGenericMethod(type);
+                    return (int)inst.Invoke(null, null);
+                }
+                // Fallback: unmanaged marshalled size (blittable structs only).
+                return System.Runtime.InteropServices.Marshal.SizeOf(type);
+            });
+        }
+
 
         // Step 12: resolve a register that may be the dest of an ldloca/ldloca.s
         // or ldflda addressing an in-frame value type back to the underlying

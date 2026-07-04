@@ -1,6 +1,7 @@
 #if ENABLE_NEO_MODE
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -126,6 +127,110 @@ namespace ILRuntime.Runtime.Intepreter
             return mStack[idx];
         }
 
+        // ---- Step 13b (D4): CLR value-type read/write helpers ----
+        // These are the by-type generalization of the ReadNeo* primitive family
+        // for a CLR struct param/return slot, which is stored as FLAT BYTES in
+        // the callee param region (sized by the managed value-type byte size --
+        // see Optimizer.GetNeoValueTypeManagedSize). Both CLR-param readers --
+        // the reflection fallback CLRMethod.Invoke(byte*) and the autogen
+        // AppendArgumentCodeNeo / GetReturnValueCodeNeo delegate body -- call
+        // THESE so the reader layout and the callee layout stay byte-consistent
+        // BY CONSTRUCTION (single code path, single size source). For a struct
+        // WITH ref fields and NO registered ValueTypeBinder there is no way to
+        // map the GC references, so the caller checks for that case and throws a
+        // clearly-tagged Step-13b NIE before reaching here; these helpers assume
+        // a blittable-or-binder-mapped struct.
+        //
+        // The typed read/write is emitted once per Type via DynamicMethod (IL
+        // calling Unsafe.ReadUnaligned<T>/WriteUnaligned<T>, box/unbox) and
+        // cached, so the hot path is a delegate invoke with no reflection. The
+        // size used to advance the cursor is Optimizer.GetNeoValueTypeManagedSize.
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtReaderDelegate> s_neoVtReaders
+            = new System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtReaderDelegate>();
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtWriterDelegate> s_neoVtWriters
+            = new System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtWriterDelegate>();
+
+        // Custom delegate types: pointer types cannot be generic type arguments
+        // (CS0306), so Func<byte*,object>/Action<byte*,object> are illegal. These
+        // custom delegates accept the frame byte pointer directly.
+        unsafe delegate object NeoVtReaderDelegate(byte* src);
+        unsafe delegate void NeoVtWriterDelegate(byte* dst, object value);
+
+        static NeoVtReaderDelegate CreateNeoVtReader(Type t)
+        {
+            // T ReadUnaligned<T>(void* source) -- the native-pointer overload
+            // (matches the byte* arg; the ref-byte overload would need a managed
+            // pointer and fail IL verification here).
+            MethodInfo readOpen = null;
+            foreach (var m in typeof(Unsafe).GetMethods(BindingFlags.Public | BindingFlags.Static))
+            {
+                var ps = m.GetParameters();
+                if (m.Name == "ReadUnaligned" && m.IsGenericMethod && ps.Length == 1
+                    && ps[0].ParameterType == typeof(void*))
+                { readOpen = m; break; }
+            }
+            var readMi = readOpen.MakeGenericMethod(t);
+            var dm = new System.Reflection.Emit.DynamicMethod("NeoVtReader_" + t.FullName, typeof(object), new[] { typeof(byte*) }, restrictedSkipVisibility: true);
+            var il = dm.GetILGenerator();
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            il.EmitCall(System.Reflection.Emit.OpCodes.Call, readMi, null);
+            il.Emit(System.Reflection.Emit.OpCodes.Box, t);
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
+            return (NeoVtReaderDelegate)dm.CreateDelegate(typeof(NeoVtReaderDelegate));
+        }
+
+        static NeoVtWriterDelegate CreateNeoVtWriter(Type t)
+        {
+            // void WriteUnaligned<T>(void* destination, T value) -- native-pointer.
+            MethodInfo writeOpen = null;
+            foreach (var m in typeof(Unsafe).GetMethods(BindingFlags.Public | BindingFlags.Static))
+            {
+                var ps = m.GetParameters();
+                if (m.Name == "WriteUnaligned" && m.IsGenericMethod && ps.Length == 2
+                    && ps[0].ParameterType == typeof(void*))
+                { writeOpen = m; break; }
+            }
+            var writeMi = writeOpen.MakeGenericMethod(t);
+            var dm = new System.Reflection.Emit.DynamicMethod("NeoVtWriter_" + t.FullName, null, new[] { typeof(byte*), typeof(object) }, restrictedSkipVisibility: true);
+            var il = dm.GetILGenerator();
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_0);
+            il.Emit(System.Reflection.Emit.OpCodes.Ldarg_1);
+            il.Emit(System.Reflection.Emit.OpCodes.Unbox_Any, t);
+            il.EmitCall(System.Reflection.Emit.OpCodes.Call, writeMi, null);
+            il.Emit(System.Reflection.Emit.OpCodes.Ret);
+            return (NeoVtWriterDelegate)dm.CreateDelegate(typeof(NeoVtWriterDelegate));
+        }
+
+        // Read sz managed bytes at frameBase+curPrim into a BOXED object of the
+        // given CLR Type, advancing curPrim by sz (sz MUST equal
+        // Optimizer.GetNeoValueTypeManagedSize(clr) for the param/return slot).
+        // public: the autogen CLR binding redirect delegate body calls this so the
+        // generated reader and the reflection reader share one code path.
+        public static unsafe object ReadNeoValueType(Type clr, byte* frameBase, ref int curPrim, int sz)
+        {
+            if (clr == null || sz <= 0)
+            {
+                curPrim += sz;
+                return null;
+            }
+            var reader = s_neoVtReaders.GetOrAdd(clr, CreateNeoVtReader);
+            object result = reader(frameBase + curPrim);
+            curPrim += sz;
+            return result;
+        }
+
+        // Write a boxed CLR struct's managed bytes into dst (sz bytes). The
+        // inverse of ReadNeoValueType, used by the return-value path. public: the
+        // autogen GetReturnValueCodeNeo delegate body calls this.
+        public static unsafe void WriteNeoValueType(object value, byte* dst, int sz)
+        {
+            if (value == null || dst == null || sz <= 0)
+                return;
+            Type clr = value.GetType();
+            var writer = s_neoVtWriters.GetOrAdd(clr, CreateNeoVtWriter);
+            writer(dst, value);
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void CopyNeoCallArguments(ref NeoCallParamMap map, byte* frameBase, byte* targetBase)
         {
@@ -190,7 +295,20 @@ namespace ILRuntime.Runtime.Intepreter
             }
             else if (retType.IsValueType)
             {
-                throw new NotImplementedException("CLR value type return in reflection fallback: Step 13");
+                // Step 13b (D6): write a CLR struct return value's flat managed
+                // bytes into the caller's dest frame slot (already sized by
+                // AllocateLocalStackSpaces for the value type) via WriteNeoValueType.
+                // The inverse of the param read path (D2/D4) -- same size source
+                // (Optimizer.GetNeoValueTypeManagedSize), so the write matches the
+                // caller's dest layout by construction. A struct with reference
+                // fields and no binder is unreadable on the way IN and unwriteable
+                // on the way OUT the same way; for the reflection fallback (no
+                // binder ref-mapping) we only support pure-primitive / zero-managed-
+                // count binder structs. The boxed CLR return `res` carries the GC
+                // refs for a binder struct when the binder populated them upstream
+                // (def not here); this path writes the flat primitive bytes.
+                int retSz = Optimizer.GetNeoValueTypeManagedSize(retType.TypeForCLR);
+                WriteNeoValueType(res, retDstPtr, retSz);
             }
             else
             {

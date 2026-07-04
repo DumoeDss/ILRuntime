@@ -10,6 +10,34 @@ namespace ILRuntime.Runtime.CLRBinding
 {
     static class BindingGeneratorExtensions
     {
+        // Step 13b: does a CLR value type contain any reference-type (managed)
+        // instance field (recursively)? Used by the Neo autogen to emit a clear
+        // NIE for structs that cannot be read/written as flat bytes without a
+        // ValueTypeBinder (GC refs are unmappable). Mirrors CLRMethod's runtime
+        // NeoClrStructHasReferenceField so the codegen-time decision and the
+        // reflection-fallback runtime decision agree.
+        internal static bool NeoBindingHasReferenceField(Type t)
+        {
+            if (t == null || !t.IsValueType)
+                return false;
+            if (t.IsPrimitive || t.IsEnum)
+                return false;
+            foreach (var f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                var ft = f.FieldType;
+                if (ft.IsPointer)
+                    continue;
+                if (!ft.IsValueType)
+                    return true;
+                if (!ft.IsPrimitive && !ft.IsEnum)
+                {
+                    if (NeoBindingHasReferenceField(ft))
+                        return true;
+                }
+            }
+            return false;
+        }
+
         internal static bool ShouldSkipField(this Type type, FieldInfo i)
         {
             if (i.IsPrivate)
@@ -122,15 +150,48 @@ namespace ILRuntime.Runtime.CLRBinding
 
             if (pt.IsValueType && !pt.IsPrimitive && valueTypeBinders != null && valueTypeBinders.Contains(pt))
             {
-                sb.AppendLine($"            {realClsName} {varName} = default({realClsName});");
-                sb.AppendLine("            // TODO: CLR value type reflection fallback: Step 13");
+                // Step 13b (D5): CLR struct param WITH a registered ValueTypeBinder.
+                // For a pure-primitive binder struct (the common case, e.g.
+                // TestVector3 -- 3 floats) the flat-bytes read matches the callee
+                // layout exactly. A binder struct WITH reference fields would need
+                // the binder's ref-mapping on the Neo cursor (a Neo-cursor binder
+                // API does not exist yet); emit a clear Step-13b NIE for that case
+                // so it fails loudly instead of silently mis-reading GC refs.
+                if (NeoBindingHasReferenceField(pt))
+                {
+                    sb.AppendLine($"            {realClsName} {varName} = default({realClsName});");
+                    sb.AppendLine($"            throw new NotImplementedException(\"CLR value type with reference fields via binder in Neo autogen (Step 13b): register a flat-bytes binder path. Type: {pt.FullName}\");");
+                }
+                else
+                {
+                    sb.AppendLine($"            int __sz_{idx} = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({realClsName}));");
+                    sb.AppendLine($"            {realClsName} {varName} = ({realClsName})ILIntepreter.ReadNeoValueType(typeof({realClsName}), __frameBase, ref __curPrim, __sz_{idx});");
+                }
             }
             else
             {
-                if (pt.IsByRef || pt == typeof(System.TypedReference) || (pt.IsValueType && !pt.IsPrimitive && !pt.IsEnum && (valueTypeBinders == null || !valueTypeBinders.Contains(pt))))
+                if (pt.IsByRef || pt == typeof(System.TypedReference))
                 {
                     sb.AppendLine($"            {realClsName} {varName} = default({realClsName});");
-                    sb.AppendLine("            // TODO: ByRef or unsupported ValueType parameters in Neo");
+                    sb.AppendLine("            // TODO: ByRef parameters in Neo (CLR-method ref/out: Step 13b DEFERRED -- needs a typed-reference bridge).");
+                }
+                else if (pt.IsValueType && !pt.IsPrimitive && !pt.IsEnum)
+                {
+                    // Step 13b (D5): CLR struct param WITHOUT a binder. A struct
+                    // WITH reference fields cannot be read (GC refs unmappable) ->
+                    // clear Step-13b NIE; a pure-primitive struct reads via the
+                    // shared ReadNeoValueType helper (byte-consistent with the
+                    // callee layout by construction -- same size source).
+                    if (NeoBindingHasReferenceField(pt))
+                    {
+                        sb.AppendLine($"            {realClsName} {varName} = default({realClsName});");
+                        sb.AppendLine($"            throw new NotImplementedException(\"CLR value type with reference fields and no ValueTypeBinder (Step 13b): register a binder. Type: {pt.FullName}\");");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"            int __sz_{idx} = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({realClsName}));");
+                        sb.AppendLine($"            {realClsName} {varName} = ({realClsName})ILIntepreter.ReadNeoValueType(typeof({realClsName}), __frameBase, ref __curPrim, __sz_{idx});");
+                    }
                 }
                 else
                 {
@@ -457,7 +518,20 @@ namespace ILRuntime.Runtime.CLRBinding
             }
             else if (type.IsValueType)
             {
-                sb.AppendLine("            // TODO: CLR value type return in reflection fallback: Step 13");
+                // Step 13b (D5): write a CLR struct return value's flat managed
+                // bytes into the caller's dest slot via the shared WriteNeoValueType
+                // (the inverse of the param read path -- same size source, so the
+                // write matches the caller's dest layout by construction). A struct
+                // WITH reference fields and no binder is unwriteable the same way it
+                // is unreadable; emit a clear Step-13b NIE for that case.
+                if (!type.IsPrimitive && !type.IsEnum && NeoBindingHasReferenceField(type))
+                {
+                    sb.AppendLine($"            throw new NotImplementedException(\"CLR value-type return with reference fields and no ValueTypeBinder (Step 13b): register a binder. Type: {type.FullName}\");");
+                }
+                else
+                {
+                    sb.AppendLine($"            if (__retDst != null) {{ int __retSz = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({type.FullName})); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }}");
+                }
             }
             else
             {

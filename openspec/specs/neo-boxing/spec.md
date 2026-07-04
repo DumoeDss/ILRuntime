@@ -12,9 +12,11 @@ boxed CLR object for CLR types), and `constrained.` is a dispatch concern that
 layers on top of `neo-dispatch`.
 
 The CLR-call-ABI aspects of value-type handling (CLR struct by-value
-parameters, return values, and instance `this`) are owned by `neo-value-types`
-and are deferred to a Step 13b follow-up; this capability does not change the
-call ABI.
+parameters, return values, and instance `this`) were deferred to a Step 13b
+follow-up in the base capability. Step 13b (`implement-neo-step13b`) closes the
+**by-value parameter and return-value** portion of that deferral; the byref CLR
+crossing, the value-type instance `this` direct-call (Area 4), and CLR-object
+`stind`/`ldind` via field hash remain deferred.
 
 ## Requirements
 
@@ -122,6 +124,79 @@ slots.
 - **THEN** the local's primitive bytes are zero and its reference fields (if
   any, with a binder) are null.
 
+### Requirement: CLR value-type by-value parameter reading (call ABI)
+
+A CLR value type passed BY VALUE as a method parameter SHALL be laid out in the
+callee param region as flat bytes sized by `GetPrimitiveSize(type)` via the
+SAME `AllocateNeoCallParamSlot` callee-layout helper used for all other
+parameter types. The call-lowering SHALL NOT use the caller source register's
+slot shape for a CLR struct parameter (the temporary caller-temp-slot fallback
+is REMOVED). The single source of truth for a CLR value type's flat-byte size
+is `GetNeoValueTypeManagedSize`.
+
+Both CLR-param readers -- the reflection fallback `CLRMethod.Invoke(byte*)` and
+the autogen redirect delegate emitted by `AppendArgumentCodeNeo` -- SHALL read
+a CLR struct parameter by its actual slot width via the `ReadNeo*`/
+`ReadNeoValueType` helpers, advancing the cursor by exactly the parameter's
+flat-byte size, so that the reader layout and the callee layout are byte-
+consistent.
+
+- A CLR struct WITH a registered `ValueTypeBinder` SHALL be read via the binder
+  (the binder maps ref fields).
+- A pure-primitive CLR struct (no ref fields) WITHOUT a binder SHALL be read
+  via `ReadNeoValueType` (flat bytes -> boxed `T`).
+- A CLR struct WITH ref fields and NO binder SHALL throw a clearly-tagged
+  `NotImplementedException` directing the user to register a binder.
+
+#### Scenario: CLR struct by-value parameter round-trip
+- WHEN a method declares a CLR value type parameter (e.g.
+  `int Sum(TestVector3NoBinding v)`) and is called with a CLR struct argument
+- THEN the callee receives the struct's primitive bytes unchanged (the sum of
+  its fields equals the value computed from the argument), and no
+  `ArgumentOutOfRangeException` is thrown (the K2 regression).
+
+### Requirement: CLR value-type by-value return value (call ABI)
+
+A CLR value type RETURN value SHALL be written into the caller's dest frame
+slot (sized by `AllocateLocalStackSpaces`) as flat bytes via
+`WriteNeoValueType` (or the binder for structs with refs), by both the
+reflection return path (`InvokeNeoClrMethod`) and the autogen
+`GetReturnValueCodeNeo` return path. The K2-family "reads a primitive field
+value as an mStack index" mis-copy SHALL NOT occur for a struct return.
+
+#### Scenario: CLR struct return value round-trip
+- WHEN a method returns a CLR value type (e.g. `TestVector3NoBinding Make(...)`)
+- THEN the caller's dest local holds the struct's primitive bytes unchanged,
+  and a subsequent field read on the returned value is correct.
+
+### Requirement: Boxed-ref-local to flat-bytes-param bridge (K2-FAM closure)
+
+When a CLR value type LOCAL (stored as a boxed-object reference per the
+`CLR value-type Box with and without ValueTypeBinder` requirement) is passed
+BY VALUE to a CLR method, the call param-setup SHALL unbox the local's
+primitive bytes into the callee's flat-bytes param slot (reusing the unbox
+helpers), NOT copy the 4-byte mStack index. This closes the K2-FAM pre-existing
+bug where a scalar/boxed-ref CLR value-type local was mis-read as an mStack
+index at the call boundary.
+
+**Status:** PARTIAL / DEFERRED (Step 13b apply pass 2026-07-04). The
+return-source shape (a CLR struct local obtained from a CLR method RETURN,
+which is stored as flat bytes by the return-value requirement) IS closed: that
+local is already flat bytes and works without a bridge, and is covered by the
+by-value parameter scenario. The Box/Initobj-source shape (a local created via
+Box/Initobj, then passed by value) remains DEFERRED: it is not exercised by any
+green scenario and has no clean test surface (it needs IL-side `ldfld`/`stfld`
+on CLR struct fields, a separate deferred concern). The Box/Initobj-source half
+is a documented accepted-known deferred item (silent wrong-result for that
+specific source shape), NOT a regression of a previously-green case.
+
+#### Scenario: CLR struct local passed by value
+- WHEN a CLR struct is declared as a local, assigned, and then passed by value
+  to a CLR method
+- THEN the callee observes the assigned field values (no mStack-index
+  misinterpretation). (DEFERRED for the Box/Initobj-source shape; the
+  return-source shape is covered by the by-value parameter scenario.)
+
 ### Requirement: constrained. callvirt specialization on a value type
 
 A `constrained.` + `callvirt` sequence whose constrained token resolves to a
@@ -173,3 +248,25 @@ value-type specialization needs more than the byref model provides (e.g.
 interface-on-VT constrained callvirt with cross-model signature matching), the
 arm SHALL throw a Step-17-tagged `NotImplementedException` rather than
 silently mis-dispatch.
+
+### Requirement: Out-of-scope deferrals (explicit, accepted-known)
+
+The following CLR value-type concerns remain DEFERRED and SHALL continue to
+throw a clearly-tagged `NotImplementedException` (NOT silently misbehave):
+
+- The value-type instance `this` direct-call lowering (`Unsafe.Unbox<T>` /
+  Area 4): a CLR struct *instance* method call where `this` is a struct is not
+  yet supported in the autogen wrapper (`// TODO: ValueType instance in Neo`).
+- CLR-method `ref`/`out` parameters: a byref Ref Slot crossing into a CLR
+  `ref T` argument (the IL-method byref path from `neo-byref` remains the
+  green target).
+- CLR-object `stind`/`ldind`/`stobj`/`ldobj` via field hash: a Ref Slot whose
+  `objectIndex` addresses a CLR object (not an `ILTypeInstance`) throws a
+  Step-17/13b-tagged NIE.
+- The Box/Initobj-source half of the boxed-ref-local to flat-bytes-param
+  bridge (K2-FAM): see that requirement's DEFERRED status.
+
+Also accepted-known (not a deferral, a pre-existing bug surfaced by 13b):
+`AllocateLocalStackSpaces` slot-reuse / liveness for 2+ simultaneous CLR
+struct locals (F-MAJ-1) yields a silent wrong result; target for the next
+optimizer-hardening pass.
