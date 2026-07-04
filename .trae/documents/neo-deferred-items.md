@@ -66,7 +66,8 @@ Insert these into the roadmap ordering:
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
 | K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **partial (Step 13b)** | flat-bytes path resolved; boxed-ref bridge deferred | pre-existing |
 | F-MAJ-1 | 2+ simultaneous CLR struct locals -> AllocateLocalStackSpaces slot-reuse -> silent wrong result | Step 13b | **[OPT-HARDEN-2]** | next optimizer-hardening / AllocateLocalStackSpaces | pre-existing (13b made reachable) |
-| Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **Step 18** | newobj completion | pre-existing (Step 10/11) |
+| Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **RESOLVED (Step 18, non-reproducible)** | — | not reproducible on HEAD (JIT dump: distinct frame regions + ref slots per register); same outcome as Q-STRUCT/Q-LONG |
+| Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **[VT-THIS-ADDR]** | D2: track a VT `this`/newobj-dest as an in-frame address for ALL field access (ctor stfld + caller ldfld) | blocked on VT field-access lowering consistency (mixed inline/heap stfld; addrAlias only tracks ldloca); Newobj arm NIE-tagged |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **[CATCH-COMPLETE]** | — (Step 15 enables the type check) | shared-engine gap |
@@ -169,13 +170,47 @@ Step 13b made it reachable (the CLR-struct-by-value feature now exists).
 `AllocateLocalStackSpaces` slot-reuse/liveness logic. The Step 13b tests work
 around it by holding a single CLR struct local at a time.
 
-### Q-NEWOBJ — Newobj dest/arg aliasing after `newarr` (Step 16 -> Step 18)
+### Q-NEWOBJ — Newobj dest/arg aliasing after `newarr` (Step 16 -> Step 18 -> RESOLVED)
 `new T(intArg)` immediately FOLLOWS a `newarr` collides in the Call/Newobj
 Push-scanning lowering. `new T(intArg)` alone (no array) works (TC7 green); the
 collision is in the call/newobj lowering (Step 10/11 territory), 0 diff lines
 added there by Step 16. Worked around in Step 16 TC4 via default-ctor + field-set.
-**Resolution:** fold into Step 18 (which completes newobj paths incl. IL
-value-type newobj), or a Step 10/11 revisit.
+**Resolution (Step 18 apply, 2026-07-04):** NOT REPRODUCIBLE on current HEAD.
+The Q-NEWOBJ reproducer (`newarr; new T(intArg); assert`) PASSES. A JIT dump of
+`localInfos` shows the newobj dest, the newarr array temp, and the int arg each
+get a DISTINCT frame byte region (`Offset`) AND a DISTINCT mStack ref slot
+(`RefOffset`); the planner's hypothesis (newarr doesn't decrement baseRegIdx ->
+array temp collides with newobj dest/arg in the mStack ref region) is disproven
+-- `AllocateLocalStackSpaces` already allocates distinct regions/ref-slots per
+register. Same outcome as Q-STRUCT / Q-LONG (OPT-HARDEN: suspected quirk already
+gone; Steps OPT-HARDEN/13b/17 likely resolved it). No fix shipped (a fix to the
+shared call/newobj lowering without a reproducing case would be worse than none).
+Step 16 TC4 restored to the real ctor-with-arg form (`new NeoStep16Item(5)`) and
+passes.
+
+### Q-VT-NEWOBJ — IL value-type `newobj` + `call VT ctor` via ldloca (Step 18 -> [VT-THIS-ADDR])
+A real (non-inlined) IL value-type `newobj` (emitted when the VT value is NOT a
+local -- e.g. a method return value, or a boxed/field/arg value) cannot be
+constructed correctly. The VT ctor's `this`-relative `stfld` lowers to a MIX of
+in-frame `_Inline` (writes the callee frame bytes) and heap
+`Stfld_*`/`GetNeoILInstance` (treats `this` as an mStack index -> ILTypeInstance),
+and the caller's subsequent field reads on the newobj result are non-inline
+(expect an mStack object index). The `addrAlias` folding only tracks
+`ldloca`-produced addresses, not a `this` param or a newobj dest, so the VT
+representation is inconsistent end-to-end. A heap-alloc + copy-back fallback is
+ALSO infeasible without first fixing the consistency. The C# compiler lowers
+`VT x = new VT(args)` on a local to `ldloca + call ctor`, which hits the SAME
+VT-`this` field-access issue (so the common local form is also affected). The
+Step 18 Newobj arm surfaces a clear Step-18-tagged NIE for the VT case (not a
+silent wrong result).
+**Resolution:** dedicated [VT-THIS-ADDR] follow-up -- the D2 JIT change: track a
+value-type `this` (param slot 0) and a VT newobj dest as an in-frame address for
+ALL field access (ctor stfld + caller ldfld), reusing/extending the Step 17
+byref/addrAlias machinery. Touches the Step 12 VT frame layout / the shared
+field-access lowering used by every VT instance method. Confirmed `ParamInfos[0]`
+for a VT ctor is sized as the in-frame value (`Size = TotalPrimitiveSize`,
+`RefCount = TotalReferenceCount`), NOT an 8-byte byref (`JITCompiler.cs:1332-
+1344`).
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was

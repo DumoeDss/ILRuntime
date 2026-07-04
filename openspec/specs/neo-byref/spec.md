@@ -192,3 +192,26 @@ All Step 17 machinery SHALL live behind `#if ENABLE_NEO_MODE`. The Legacy
 interpreter (`ExecuteR`, `ILIntepreter.Register.cs`) is the SEMANTIC reference
 for byref/ldloca/ldflda/stind/ldind dispatch (via the `ObjectTypes`
 discriminator) and SHALL NOT be modified by this change.
+
+### Requirement: Byref `this` for value-type constructor invocation -- DEFERRED (Step 18 / [VT-THIS-ADDR])
+
+The byref call-ABI SHALL additionally serve as the `this` parameter of an IL
+value-type constructor invoked via `newobj`. The `newobj` arm SHALL write a
+frame-native Ref Slot `(-1, destFrameByteOffset)` into the ctor's callee param
+region `this` slot (param slot 0), and the ctor SHALL treat that `this` as a
+managed pointer to the caller's frame slot. Field assignments in the ctor
+(`this.field = ...`) SHALL resolve through the existing `stind_*`/`stfld` /
+`_Inline` machinery into the caller's dest region, exactly as an explicit
+byref/out parameter would.
+
+This is intended as a new caller of the byref call-ABI (a byref `this`), not a
+change to the ABI itself. The detailed newobj-side contract is owned by the
+`neo-newobj` capability.
+
+**STATUS: DEFERRED.** IL value-type `newobj` (the only caller of a byref ctor
+`this`) was deferred in Step 18 -- the ctor's `this` is currently seeded as the
+in-frame declaring value type rather than an 8-byte byref, and resolving that
+inconsistency is the [VT-THIS-ADDR] change (tracked under `neo-value-types` and
+`neo-newobj`). Until that lands, a byref ctor `this` is not exercised by any
+newobj path; the byref call-ABI itself is unchanged and remains fully specified
+by the requirements above.

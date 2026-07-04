@@ -277,3 +277,31 @@ dest.
 - WHEN `b = a` is followed by `ldloca b` feeding a byref-escape consumer
 - THEN FCP SHALL NOT rewrite a later `b.field` read to `a.field`, because the
   address-escape makes `b`'s value potentially mutated through the Ref Slot.
+
+### Requirement: IL value-type construction via newobj -- DEFERRED (Step 18 / Q-VT-NEWOBJ / [VT-THIS-ADDR])
+
+The Neo VM SHALL support construction of an IL value type via the `newobj`
+instruction, using the caller's frame byte region (the dest register's slot,
+sized and aligned for the value type by the frame allocator) as the construction
+site. The `newobj` SHALL zero-initialize the dest region before invoking the
+ctor, and the ctor's `this` SHALL be a frame-native Ref Slot so that field
+assignments inside the ctor propagate into the caller's frame slot with no
+post-ctor copy-back. This is the value-type analog of the Step 8b reference-type
+newobj and relies on the Step 17 byref/Ref-Slot model for the ctor `this`.
+
+The detailed contract (frame zero-init, Ref-Slot `this`, ctor writeback, base-
+ctor chain, default-ctor and ctor-with-args scenarios) is owned by the
+`neo-newobj` capability.
+
+**STATUS: DEFERRED.** This requirement was targeted by Step 18 but is NOT yet
+delivered. The `ExecuteNeo` `Newobj` arm throws a loud Step-18-tagged
+`NotImplementedException` for the `newobj`-instruction form (see `neo-newobj`'s
+DEFERRED requirement). The blocker is a VT field-access lowering consistency
+mismatch: a VT ctor's `this` is laid out and seeded as the in-frame declaring
+value type (so `this.field =` rewrites to `_Inline` and writes the callee frame),
+but the caller passes `this` as an mStack index / Ref Slot, and `addrAlias` only
+tracks `ldloca`/`ldflda` addresses. The fix is the [VT-THIS-ADDR] change (track
+a VT `this` / newobj-dest as an in-frame address for ALL field access), which
+touches this capability's Step-12 frame layout and every VT instance method. IL
+value-type `newobj` remains a core Step-18 deliverable that is now deferred --
+the alternative was shipping a silently-wrong construction.

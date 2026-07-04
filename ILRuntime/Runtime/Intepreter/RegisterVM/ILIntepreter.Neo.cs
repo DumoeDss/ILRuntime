@@ -265,14 +265,33 @@ namespace ILRuntime.Runtime.Intepreter
             var redirectNeo = clrMethod.RedirectionNeo;
             if (redirectNeo != null)
             {
+                // The Neo Redirection owns the dest write for both call and
+                // newobj (the redirect delegate allocates/stores the result).
                 redirectNeo(this, targetBase, mStack, clrMethod, isNewobj, retDstPtr, targetRetRefBase);
                 return;
             }
 
             object res = clrMethod.Invoke(targetBase, mStack, isNewobj);
 
-            if (isNewobj || retDstPtr == null)
+            // Step 18 (D3): for a reflection-constructed newobj the returned
+            // object MUST be stored into the caller's dest (the early-return
+            // previously skipped this, so the dest was never filled). The
+            // redirect path already returned above (it owns its dest write).
+            // A non-newobj void/no-return also early-returns.
+            if (retDstPtr == null)
                 return;
+            if (isNewobj)
+            {
+                // The constructed object is a reference type; store it into the
+                // dest mStack ref slot and write the index to the dest byte
+                // offset (mirrors the reference-type return store below).
+                if (targetRetRefBase >= mStack.Count)
+                    mStack.Add(res);
+                else
+                    mStack[targetRetRefBase] = res;
+                *(int*)retDstPtr = targetRetRefBase;
+                return;
+            }
 
             IType retType = clrMethod.ReturnType;
             if (retType == null || retType == AppDomain.VoidType)
@@ -1595,26 +1614,101 @@ namespace ILRuntime.Runtime.Intepreter
                                         continue;
                                     }
 
-                                    var newobjType = targetMethod.DeclearingType as ILType;
-                                    if (newobjType == null)
-                                        throw new NotImplementedException("Neo Newobj CLR type is not implemented (Step 9)");
-                                    if (newobjType.IsDelegate)
-                                        throw new NotImplementedException("Neo Newobj delegate is not implemented");
-
-                                    dstRefOffset = ip->Operand3;
-                                    int newobjDstIdx = frameRefBase + dstRefOffset;
-
-                                    ins = newobjType.Instantiate(false);
-                                    mStack[newobjDstIdx] = ins;
-                                    *(int*)(frameBase + ip->DstOffset) = newobjDstIdx;
-
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
+
+                                    // dest register layout (stamped by the Optimizer
+                                    // Newobj lowering from localInfos[op.Register1]).
+                                    dstRefOffset = ip->Operand3;
+                                    int newobjDstIdx = frameRefBase + dstRefOffset;
+                                    byte* retDstPtr = frameBase + ip->DstOffset;
+
+                                    var ilNewobjType = targetMethod.DeclearingType as ILType;
+                                    if (ilNewobjType == null)
+                                    {
+                                        // Step 18 (D3): CLR-type newobj. Route to
+                                        // InvokeNeoClrMethod(isNewobj:true). The dest is a
+                                        // reference temp (4-byte mStack index + 1 ref slot),
+                                        // same shape as the IL ref-type newobj dest.
+                                        // InvokeNeoClrMethod stores the reflection-created
+                                        // object into the dest mStack ref slot + writes the
+                                        // index to the dest byte offset (the redirect path
+                                        // owns its own dest write).
+                                        if (targetMethod.DeclearingType is CLRType)
+                                        {
+                                            CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                            var clrCtor = targetMethod as CLRMethod;
+                                            InvokeNeoClrMethod(clrCtor, true, targetBase, mStack, retDstPtr, newobjDstIdx);
+
+                                            ip++;
+                                            continue;
+                                        }
+                                        // Delegate / unknown: keep the Step 19 NIE.
+                                        throw new NotImplementedException("Neo Newobj CLR type is not implemented (Step 9)");
+                                    }
+
+                                    if (ilNewobjType.IsDelegate)
+                                        throw new NotImplementedException("Neo Newobj delegate is not implemented");
+
+                                    if (ilNewobjType.IsValueType && !ilNewobjType.IsPrimitive && !ilNewobjType.IsEnum)
+                                    {
+                                        // Step 18 (D1) -- IL value-type newobj: DEFERRED.
+                                        //
+                                        // The design intent (D1) is to use the dest register's
+                                        // frame region as the construction site, passing the
+                                        // ctor a frame-native Ref Slot `(-1, destByteOff)` as
+                                        // `this` so `this.field =` writes land directly in the
+                                        // caller's frame with NO copy-back (no heap
+                                        // ILTypeInstance, avoiding the format-conversion anti-
+                                        // pattern).
+                                        //
+                                        // Apply-phase finding (JIT-dump-confirmed): this is
+                                        // blocked by a pre-existing field-access lowering
+                                        // inconsistency. A value-type ctor's `this`-relative
+                                        // stfld is lowered to a MIX of in-frame `_Inline`
+                                        // (writes the callee frame bytes) and heap
+                                        // `Stfld_*`/`GetNeoILInstance` (treats `this` as an
+                                        // mStack index -> ILTypeInstance). Likewise the
+                                        // CALLER's subsequent field reads on the newobj result
+                                        // are lowered non-inline (expect an mStack object
+                                        // index), not as in-frame reads of the dest bytes. The
+                                        // addrAlias folding only tracks ldloca-produced
+                                        // addresses, not a `this` param or a newobj dest, so
+                                        // the representation is inconsistent end-to-end.
+                                        //
+                                        // Making this consistent requires the D2 JIT change:
+                                        // a value-type `this` (and a VT newobj dest) must be
+                                        // tracked as an in-frame address for ALL field access
+                                        // (ctor writes + caller reads). That touches the
+                                        // Step 12 VT frame layout / the field-access lowering
+                                        // shared by every VT instance method -- too broad and
+                                        // risky for this step (the 84/84 smoke is the gate).
+                                        //
+                                        // A heap-alloc + copy-back fallback (Legacy-style) is
+                                        // also infeasible WITHOUT the consistency fix: the
+                                        // ctor's inline stflds would write the callee frame
+                                        // while its heap stflds write the ILTypeInstance, so
+                                        // the two diverge. Therefore the value-type newobj arm
+                                        // surfaces a clear Step-tagged NIE rather than shipping
+                                        // a silently-wrong construction. (Note: the C# compiler
+                                        // usually lowers `VT x = new VT(args)` on a local to
+                                        // `ldloca + call ctor`, which hits the same VT-`this`
+                                        // field-access issue -- that path is likewise deferred
+                                        // with this same root cause.)
+                                        throw new NotImplementedException(
+                                            "Neo Newobj IL value-type is not implemented (Step 18 D1 blocked on VT field-access lowering consistency; see D2)");
+                                    }
+
+                                    // IL reference-type newobj (Step 8b, unchanged).
+                                    ins = ilNewobjType.Instantiate(false);
+                                    mStack[newobjDstIdx] = ins;
+                                    *(int*)retDstPtr = newobjDstIdx;
+
                                     *(int*)targetBase = newobjDstIdx;
                                     CopyNeoCallArguments(ref map, frameBase, targetBase);
 
-                                    int targetRetRefBase = frameRefBase + ip->Operand3;
+                                    int targetRetRefBase = frameRefBase + dstRefOffset;
                                     mStack.Add(mStack[newobjDstIdx]); // push 'this'
 
                                     if (!InvokeNeoCallTarget(targetMethod, true, targetBase, mStack, null, targetRetRefBase, out unhandledException))

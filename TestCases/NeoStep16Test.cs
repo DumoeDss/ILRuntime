@@ -76,15 +76,15 @@ namespace TestCases
 
         // TC4 IL reference-type array: store/access an object, plus a null
         // element (ref-type arrays are created with null elements -- C# default).
-        // The item is built via the default ctor + a direct field set rather
-        // than `new T(int)`: the ctor-with-arg form following an array
-        // allocation tickles an unrelated newobj dest/arg-register aliasing
-        // quirk in the lowering, not the array store/load path under test.
+        // The item is now built with the real ctor-with-arg form
+        // (`new NeoStep16Item(5)`): the newobj dest/arg-register aliasing quirk
+        // that previously forced a default-ctor + field-set workaround is gone
+        // on current HEAD (verified by the Step 18 Q-NEWOBJ JIT dump -- every
+        // register gets a distinct frame region and mStack ref slot).
         public static void NeoStep16_TC4_RefTypeArray()
         {
             NeoStep16Item[] a = new NeoStep16Item[3];
-            NeoStep16Item item = new NeoStep16Item();
-            item.val = 5;
+            NeoStep16Item item = new NeoStep16Item(5);
             a[1] = item;
             if (a[0] != null)
             {
