@@ -1,0 +1,19 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner_opt" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "impl_opt2" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer_opt", "verdict": "CLEAN — 0 Blocker/0 Major/0 Minor/5 Info. ldloca-kill SOUND; Legacy-neutral CLEAN; over-kill correctness-safe. K1 causative (2/3 FAIL-on-HEAD -> 3/3 PASS)." } },
+    "review-loop": { "status": "done", "rounds": 1, "result": "clean — apply re-attempt (round-1 design was a no-op, corrected to ldloca-kill); no review-fix needed." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "deliveredScope": "K1 FIXED (FCP ldloca-kill, Neo-only, Legacy-neutral). Q-STRUCT + Q-LONG DEFERRED (not reproducible on HEAD — suspect locations pinned).",
+  "rounds": 1,
+  "openFindings": []
+}

@@ -24,8 +24,10 @@ a follow-up step NOT in the 26-step roadmap (e.g. Step 13b, optimizer-hardening)
 Insert these into the roadmap ordering:
 
 1. **[OPT-HARDEN]** Neo optimizer-correctness micro-step — slot it **before or
-   alongside Step 17**. Independent, low-risk, high-value (closes a silent
-   correctness bug). Covers: K1, quirk-struct-renumber, quirk-long-compare.
+   alongside Step 17**. **DONE (2026-07-04):** K1 FIXED via the FCP
+   `ldloca-kill` (Neo-only, Legacy-neutral). Q-STRUCT + Q-LONG were NOT
+   reproducible on current HEAD (probes pass) — left deferred with suspect
+   locations pinned (see §3).
 2. **Step 17 (Ref/out + ldloca/ldflda + stind/ldind)** — fold IN: `ldelema`
    (Step 16) and `constrained.`-on-VT (Step 13 area 3). The Step 17 Ref-Slot /
    byref / VT-address model is the prerequisite for both.
@@ -54,12 +56,12 @@ Insert these into the roadmap ordering:
 | D-LDELEMA | `ldelema` opcode | Step 16 | **Step 17** | Step 17 Ref-Slot/stind/ldind | roadmap gap |
 | D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **Step 17** | Step 17 byref/VT-this-address | roadmap gap |
 | D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **Step 13b** (new) | — (Step 17 first, recommended) | roadmap gap (highest value) |
-| K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **[OPT-HARDEN]** | — | pre-existing (silent correctness) |
+| K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **Step 13b area 5** | unified param layout | pre-existing |
 | K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **Step 13b area 5** | unified param layout + Move-path | pre-existing |
 | Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **Step 18** | newobj completion | pre-existing (Step 10/11) |
-| Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **[OPT-HARDEN]** | BCP/copy-prop fix | pre-existing |
-| Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **[OPT-HARDEN]** | conv/compare fix | pre-existing |
+| Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
+| Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **[CATCH-COMPLETE]** | — (Step 15 enables the type check) | shared-engine gap |
 | D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **opportunistic** | patch-infra step | optimization (non-functional) |
 | D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **opportunistic** | triggered by a test/feature | roadmap gap (rare) |
@@ -106,16 +108,22 @@ box/unbox mechanics would have made the diff unreviewable.
 Step 17 so the byref/param model informs the layout. This is the highest-value
 follow-up — it also closes K2 and K2-FAM.
 
-### K1 — FCP mis-propagates value-type Moves (Step 12b -> [OPT-HARDEN])
-After `b = a`, FCP rewrites later `b.field` reads to `a.field` even AFTER
-`a.field` is mutated, because FCP's kill condition (`Optimizer.FCP.cs`) only
-checks a whole-register write, not a field write via `ldloca; stfld`. Real
-`b = a; mutate(a); read(b.field)` is silently wrong. Pre-existing (verified by
-git-stash baseline; reproduced identically with/without Step 12b). The `Move_Vt`
-mechanism itself is correct. Out of 12b scope (roadmap 12b: "ensure BCP/FCP
-unaffected"). **Resolution:** dedicated optimizer fix in [OPT-HARDEN] — add a
-field-write kill to FCP (a `stfld` via `ldloca` on a propagated source must kill
-the propagation). High value (silent correctness bug).
+### K1 — FCP mis-propagates value-type Moves (Step 12b -> RESOLVED in OPT-HARDEN)
+After `b = a`, FCP rewrote later `b.field` reads to `a.field` even AFTER
+`a.field` was mutated, because FCP's kill condition (`Optimizer.FCP.cs`) only
+checked a whole-register write, not a field write via `ldloca; stfld`. Real
+`b = a; mutate(a); read(b.field)` was silently wrong.
+
+**RESOLVED (2026-07-04, OPT-HARDEN):** the corrected root cause is that the
+`Stfld_*_Inline` reaches the field indirectly through a `ldloca.s` address
+handle, so its `Register1` is the address temp, not the source local (the
+original "kill on stfld Register1" design was a no-op). The fix kills the
+propagation on the `Ldloca`/`Ldloca_S` itself: when the addressed local
+(`op.Register2`) equals the propagation's `xSrc` or `xDst`, kill it (taking an
+address = potential mutation through it). Gated `#if ENABLE_NEO_MODE`
+(Legacy-neutral, stash-verified). Regression test `NeoOptHardTest_K1_*`
+(FAIL-on-HEAD -> PASS-after). See
+`openspec/changes/archive/2026-07-04-implement-neo-opt-hardening/`.
 
 ### K2 / K2-FAM — Move-path boxed-ref CLR-VT-local (Step 12b / Step 13 -> Step 13b)
 - **K2:** the Step 8 VT-by-value param copy reads a primitive-field VALUE as an
@@ -137,18 +145,24 @@ added there by Step 16. Worked around in Step 16 TC4 via default-ctor + field-se
 **Resolution:** fold into Step 18 (which completes newobj paths incl. IL
 value-type newobj), or a Step 10/11 revisit.
 
-### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> [OPT-HARDEN])
-A struct local, followed by a field mutation, followed by an element read, hits
-an optimizer temp-renumber quirk (BCP/copy-prop). Basic struct store/load
-round-trips correctly (Step 16 TC5 green); the quirk is in optimizer temp
-renumbering, 0 diff lines there. Worked around in TC5. **Resolution:** [OPT-HARDEN]
-BCP/copy-prop fix.
+### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
+A struct local, followed by a field mutation, followed by an element read, was
+suspected to hit an optimizer temp-renumber quirk (BCP/copy-prop). **OPT-HARDEN
+probe result: NOT reproducible on current HEAD** — 6 probes pass (incl. the exact
+Step 16 TC5 array/mutation/read pattern + high-register-pressure variants); the
+JIT shows the ldelem dest is correctly distinct from the source local. Suspect
+location pinned (`Optimizer.BCP.cs:97-141` renumber) for recovery IF a
+reproducing case surfaces. No fix shipped (a guessed fix to the shared pass would
+be worse than none).
 
-### Q-LONG — long default-zero compare (conv.i8) quirk (Step 16 -> [OPT-HARDEN])
-A long default-zero compare (involving `conv.i8` + compare) mis-evaluates. Long
-store/load itself round-trips correctly (Step 16 TC2 green); the quirk is in
-conv.i8 + long-compare evaluation, 0 diff lines there. Worked around in TC2.
-**Resolution:** [OPT-HARDEN] conv/compare fix.
+### Q-LONG — long default-zero compare (conv.i8) quirk (Step 16 -> deferred)
+A long default-zero compare (involving `conv.i8` + compare) was suspected to
+mis-evaluate. **OPT-HARDEN probe result: NOT reproducible on current HEAD** — 3
+probes pass (array, scalar-local w/ register pressure, default-field); the conv
+readers and I8 compare/branch arms read `*(long*)` correctly; `InferPrimTag`→
+`_I8` widening is correct. Suspect location pinned (JIT branch
+type-specialization / `AllocateLocalStackSpaces` 4-vs-8-byte overlap) for
+recovery IF a reproducing case surfaces. No fix shipped.
 
 ### D-CHECKEX — `CheckExceptionType` NIE for non-CLRType catch types (Step 14 -> [CATCH-COMPLETE])
 The shared engine's `CheckExceptionType` (`ILIntepreter.cs:5835`) throws NIE for
@@ -196,4 +210,5 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
-(none yet — items move here as the steps above close them.)
+- **K1** — FCP value-type-move mis-propagation. Fixed in OPT-HARDEN (2026-07-04)
+  via the `ldloca-kill` (Neo-only, Legacy-neutral). See §3 K1.

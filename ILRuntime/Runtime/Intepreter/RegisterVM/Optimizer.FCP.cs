@@ -165,6 +165,28 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     break;
                                 }
                             }
+#if ENABLE_NEO_MODE
+                            // K1 (implement-neo-opt-hardening): taking the address
+                            // of a local (Ldloca/Ldloca_S) means it can be mutated
+                            // THROUGH that address by a later stfld/stind. The base
+                            // local whose address is taken is the opcode's source
+                            // register (already read into ySrc above). If that base
+                            // is the propagation source (xSrc) or dest (xDst), any
+                            // already-propagated field read is now potentially stale
+                            // -> kill the propagation conservatively. Neo-only: the
+                            // existing whole-register kill cannot see a field write
+                            // (stfld reports no dest register), so without this the
+                            // `b = a; a.n = v; read b.n` pattern is silently wrong.
+                            if (Y.Code == OpCodeREnum.Ldloca || Y.Code == OpCodeREnum.Ldloca_S)
+                            {
+                                if (ySrc >= 0 && (ySrc == xSrc || ySrc == xDst))
+                                {
+                                    postPropagation = false;
+                                    ended = true;
+                                    break;
+                                }
+                            }
+#endif
 
                             if(Y.Code == OpCodeREnum.Ret && !propagationInline)
                             {
@@ -298,6 +320,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                         break;
                                     }
                                 }
+#if ENABLE_NEO_MODE
+                                // K1 (implement-neo-opt-hardening): cross-block
+                                // counterpart of the in-block Ldloca kill. Taking
+                                // the address of the propagation source (xSrc) or
+                                // dest (xDst) means the local can be mutated through
+                                // that address in a successor block -> the pending
+                                // cross-block propagation cannot be safely removed.
+                                // Neo-only; base local is the Ldloca source (ySrc).
+                                if (Y.Code == OpCodeREnum.Ldloca || Y.Code == OpCodeREnum.Ldloca_S)
+                                {
+                                    if (ySrc >= 0 && (ySrc == xSrc || ySrc == xDst))
+                                    {
+                                        cannotRemove = true;
+                                        break;
+                                    }
+                                }
+#endif
                                 if(Y.Code == OpCodeREnum.Ret && !propagationInline)
                                 {
                                     isAbort = true;
