@@ -2,7 +2,7 @@
 
 > 基于 `object-model-neo-design.md` 设计方案  
 > 分支: `features/object-model-overhaul`  
-> 当前已完成: 新 Object Model 字段存储 (byte[]+AutoList)、特化 Ldfld/Stfld、StackSlotInfo、ExecuteNeo 骨架(仅 Ret)
+> 当前已完成: Steps 1-10、11(接口分派)、12(帧内值类型)、12b(Move_Vt)、13(Box/Unbox areas 1-2)、14(异常处理)、15(isinst/castclass)、16(数组 rank-1, 无 ldelema)。各步推迟项及"落到哪个后续步骤"的映射见配套文档 [`neo-deferred-items.md`](neo-deferred-items.md)
 
 ---
 
