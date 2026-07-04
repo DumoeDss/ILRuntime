@@ -177,9 +177,26 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             // existing whole-register kill cannot see a field write
                             // (stfld reports no dest register), so without this the
                             // `b = a; a.n = v; read b.n` pattern is silently wrong.
-                            if (Y.Code == OpCodeREnum.Ldloca || Y.Code == OpCodeREnum.Ldloca_S)
+                            if (Y.Code == OpCodeREnum.Ldloca || Y.Code == OpCodeREnum.Ldloca_S
+                                || Y.Code == OpCodeREnum.Ldarga || Y.Code == OpCodeREnum.Ldarga_S
+                                || Y.Code == OpCodeREnum.Ldflda || Y.Code == OpCodeREnum.Ldelema)
                             {
+                                // Step 17 (K1 extension): Ldflda/Ldarga/Ldelema are
+                                // now real address producers (a managed address can
+                                // escape and be mutated through). Treat the base
+                                // register they address (ySrc, and ySrc2 for
+                                // Ldelema's array) as a propagation-killer exactly
+                                // like Ldloca. Taking such an address = potential
+                                // mutation through it, so a prior field read of the
+                                // propagation source/dest is potentially stale.
                                 if (ySrc >= 0 && (ySrc == xSrc || ySrc == xDst))
+                                {
+                                    postPropagation = false;
+                                    ended = true;
+                                    break;
+                                }
+                                if (Y.Code == OpCodeREnum.Ldelema && ySrc2 >= 0
+                                    && (ySrc2 == xSrc || ySrc2 == xDst))
                                 {
                                     postPropagation = false;
                                     ended = true;
@@ -328,9 +345,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 // that address in a successor block -> the pending
                                 // cross-block propagation cannot be safely removed.
                                 // Neo-only; base local is the Ldloca source (ySrc).
-                                if (Y.Code == OpCodeREnum.Ldloca || Y.Code == OpCodeREnum.Ldloca_S)
+                                if (Y.Code == OpCodeREnum.Ldloca || Y.Code == OpCodeREnum.Ldloca_S
+                                    || Y.Code == OpCodeREnum.Ldarga || Y.Code == OpCodeREnum.Ldarga_S
+                                    || Y.Code == OpCodeREnum.Ldflda || Y.Code == OpCodeREnum.Ldelema)
                                 {
+                                    // Step 17 (K1 extension): Ldflda/Ldarga/Ldelema
+                                    // are real address producers; an address of the
+                                    // propagation source/dest taken in a successor
+                                    // block means the local can be mutated through
+                                    // it -> the pending cross-block propagation
+                                    // cannot be safely removed.
                                     if (ySrc >= 0 && (ySrc == xSrc || ySrc == xDst))
+                                    {
+                                        cannotRemove = true;
+                                        break;
+                                    }
+                                    if (Y.Code == OpCodeREnum.Ldelema && ySrc2 >= 0
+                                        && (ySrc2 == xSrc || ySrc2 == xDst))
                                     {
                                         cannotRemove = true;
                                         break;

@@ -19,12 +19,13 @@ byref/Ref-Slot capability (which will host `Ldelema`).
 
 Out of scope for this capability:
 
-- **`Ldelema` (address-of-element)** -- its result is a Ref Slot, but the full
-  Ref Slot / byref model (`stind`/`ldind`, `ldloca`/`ldflda` unified 8-byte
-  `(objIdx, offset)`, `ref`/`out` parameters, `fixed`) belongs to a later
-  capability (Step 17). `Ldelema`'s only consumers are those byref operations;
-  implementing it without them would be unexercisable dead code. It remains a
-  Step-tagged `NotImplementedException`.
+- **`Ldelema` (address-of-element)** -- `Ldelema` is implemented in
+  `ExecuteNeo` and produces a Ref Slot; its only consumers are the
+  `neo-byref` store/load-indirect opcodes (`stind_*`/`ldind_*`/`stobj`/`ldobj`).
+  The full Ref Slot / byref model (`stind`/`ldind`, `ldloca`/`ldflda` unified
+  8-byte `(objIdx, offset)`, `ref`/`out` parameters, `fixed`) belongs to the
+  `neo-byref` capability; the `Ldelema` arm here is only meaningful together
+  with those consumers.
 - **Generic-with-token `Code.Ldelem` / `Code.Stelem` and native-int
   `Code.Ldelem_I` / `Code.Ldelem_U8`** -- these variants are not enumerated by
   the JIT's `Translate` (which throws `NotImplementedException` for CIL codes
@@ -132,14 +133,25 @@ throw `NullReferenceException` before any element access.
 - THEN a `NullReferenceException` is thrown (surfaced through the Neo exception
   machinery) before any element access is attempted.
 
-### Requirement: Ldelema is out of scope
+### Requirement: Ldelema produces an element-address Ref Slot
 
-The Neo loop SHALL NOT implement `OpCodeREnum.Ldelema` in this capability. It SHALL
-remain a Step-tagged `NotImplementedException`. The Ref Slot / byref consumers it
-depends on (`stind`, `ldind`, `ref`/`out` parameters, `fixed`) belong to a later
-capability; implementing `Ldelema` without them would be unexercisable.
+`OpCodeREnum.Ldelema` SHALL be implemented in `ExecuteNeo` (this requirement
+supersedes the prior "Ldelema is out of scope" requirement). The arm SHALL
+produce a Ref Slot `(arrayMStackIndex, elementByteOffset)` where
+`elementByteOffset` is computed at runtime from the element index and the
+array's element layout, resolved from the array's CLR type (mirroring the
+existing `Ldelem`/`Stelem` array-kind resolution). `Ldelema`'s result SHALL be
+consumed only by the `neo-byref` store/load-indirect opcodes
+(`stind_*`/`ldind_*`/`stobj`/`ldobj`); the result is unexercisable without
+those consumers, which the `neo-byref` capability provides.
 
-#### Scenario: ldelema still reports unimplemented
+#### Scenario: ldelema address consumed by stind then ldind
+- WHEN `ldelema arr, i` produces a Ref Slot consumed by `stind_i4` and later by
+  `ldind_i4`
+- THEN the stored value SHALL be observable through the subsequent load, and
+  through a direct `Ldelem_I4` of the same element.
+
+#### Scenario: ldelema no longer reports unimplemented
 - WHEN `OpCodeREnum.Ldelema` is reached in `ExecuteNeo`
-- THEN it throws a Step-tagged `NotImplementedException` (deferred to the later
-  byref/Ref-Slot capability).
+- THEN it executes (producing a Ref Slot) instead of throwing a Step-tagged
+  `NotImplementedException`.

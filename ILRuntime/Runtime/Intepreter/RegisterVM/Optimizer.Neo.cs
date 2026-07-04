@@ -77,9 +77,366 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 }
             }
 
+            // Step 17 (addrAlias reconciliation): the address-alias folding is
+            // the fast path for the pure in-frame-VT pattern. It is only sound
+            // when EVERY consumer of a folded dest is itself foldable (an
+            // _Inline field op, Initobj, or another foldable ldflda). When a
+            // dest's address ESCAPES that window -- consumed by stind/ldind/
+            // stobj/ldobj, passed to a byref Call/Newobj/Push param, or any
+            // other opcode the alias model does not cover (Move, Box, etc.) --
+            // the dest MUST stay real so the runtime Ldloca/Ldflda arm
+            // produces a genuine 8-byte Ref Slot. This pass is strictly
+            // ADDITIVE: it only ever REMOVES a dest from addrAlias (making it
+            // real), never adds folding. So the Steps 12-16 fast paths that
+            // feed only _Inline/Initobj are untouched.
+            if (addrAlias != null)
+            {
+                // Collect the set of alias dests that escape. Removing a dest
+                // also invalidates any alias that inherits through it (a
+                // chained ldflda whose base escapes is real too).
+                HashSet<short> escaped = new HashSet<short>();
+                // Track alias registers that have at least one FOLDABLE consumer
+                // (an _Inline field op / Initobj / foldable ldflda reading them
+                // while live). Eval-stack registers are REUSED across multiple
+                // address computations in one method, so the same register can
+                // be a folded in-frame-VT address in one live range (consumed by
+                // _Inline) AND a genuine byref in another (consumed by stind/a
+                // byref call). Evicting such a MIXED register would orphan its
+                // _Inline consumers (which read the register as a folded frame
+                // offset, not a Ref Slot). So a register is evicted ONLY IF it
+                // has NO foldable consumer anywhere -- i.e. it is used PURELY
+                // for escaping addresses. Mixed-reuse registers stay folded
+                // (their escape consumer reverts to the pre-Step-17 junk/NIE
+                // behavior; the pure-byref cases that this step targets are the
+                // ones where the address register is dedicated to the byref).
+                HashSet<short> hasFoldableUse = new HashSet<short>();
+                // CRITICAL: at this (pre-lowering) stage registers are reused,
+                // so the same register number can be BOTH an ldloca dest AND a
+                // later unrelated value (a call result, etc.). We must only
+                // treat a register as "an escaping alias" while it actually
+                // holds the address. Track the set of alias dests that are
+                // CURRENTLY LIVE as we walk forward. An address producer
+                // (ldloca/ldflda) defines a live alias; any opcode that writes
+                // that register for another purpose kills it. A non-foldable
+                // READ of a live alias marks it escaped. This mirrors the
+                // linear-scan assumption of the alias-build pass above.
+                HashSet<short> liveAliases = new HashSet<short>();
+                for (int s = 0; s < body.Length; s++)
+                {
+                    OpCodeR op = body[s];
+                    bool isAddrProducer = op.Code == OpCodeREnum.Ldloca
+                        || op.Code == OpCodeREnum.Ldloca_S
+                        || op.Code == OpCodeREnum.Ldflda;
+
+                    // 1) Determine this opcode's READS (operands that, if they
+                    //    are a live alias, signal a byref escape).
+                    short readAddr1 = -1; // a register that, when read, is the address operand
+                    short readAddr2 = -1;
+                    bool readsAreFoldable = false;
+                    switch (op.Code)
+                    {
+                        case OpCodeREnum.Ldfld_I1_Inline:
+                        case OpCodeREnum.Ldfld_I2_Inline:
+                        case OpCodeREnum.Ldfld_I4_Inline:
+                        case OpCodeREnum.Ldfld_I8_Inline:
+                        case OpCodeREnum.Ldfld_U1_Inline:
+                        case OpCodeREnum.Ldfld_U2_Inline:
+                        case OpCodeREnum.Ldfld_U4_Inline:
+                        case OpCodeREnum.Ldfld_U8_Inline:
+                        case OpCodeREnum.Ldfld_R4_Inline:
+                        case OpCodeREnum.Ldfld_R8_Inline:
+                        case OpCodeREnum.Ldfld_Ref_Inline:
+                            // R2 = owning VT address. Foldable consumer.
+                            readAddr2 = op.Register2;
+                            readsAreFoldable = true;
+                            break;
+                        case OpCodeREnum.Stfld_I1_Inline:
+                        case OpCodeREnum.Stfld_I2_Inline:
+                        case OpCodeREnum.Stfld_I4_Inline:
+                        case OpCodeREnum.Stfld_I8_Inline:
+                        case OpCodeREnum.Stfld_U1_Inline:
+                        case OpCodeREnum.Stfld_U2_Inline:
+                        case OpCodeREnum.Stfld_U4_Inline:
+                        case OpCodeREnum.Stfld_U8_Inline:
+                        case OpCodeREnum.Stfld_R4_Inline:
+                        case OpCodeREnum.Stfld_R8_Inline:
+                        case OpCodeREnum.Stfld_Ref_Inline:
+                            // R1 = owning VT address. Foldable consumer.
+                            readAddr1 = op.Register1;
+                            readsAreFoldable = true;
+                            break;
+                        case OpCodeREnum.Initobj:
+                            // R1 = target address. Foldable consumer.
+                            readAddr1 = op.Register1;
+                            readsAreFoldable = true;
+                            break;
+                        case OpCodeREnum.Ldflda:
+                            // R2 = base address. Foldable IF the base is a live
+                            // alias (this ldflda inherits it). The dest becomes
+                            // a new live alias (handled below).
+                            readAddr2 = op.Register2;
+                            readsAreFoldable = true;
+                            break;
+                        case OpCodeREnum.Stind_I:
+                        case OpCodeREnum.Stind_I1:
+                        case OpCodeREnum.Stind_I2:
+                        case OpCodeREnum.Stind_I4:
+                        case OpCodeREnum.Stind_I8:
+                        case OpCodeREnum.Stind_R4:
+                        case OpCodeREnum.Stind_R8:
+                        case OpCodeREnum.Stind_Ref:
+                        case OpCodeREnum.Stobj:
+                            // R1 = address. Non-foldable escape.
+                            readAddr1 = op.Register1;
+                            break;
+                        case OpCodeREnum.Ldind_I:
+                        case OpCodeREnum.Ldind_I1:
+                        case OpCodeREnum.Ldind_I2:
+                        case OpCodeREnum.Ldind_I4:
+                        case OpCodeREnum.Ldind_I8:
+                        case OpCodeREnum.Ldind_R4:
+                        case OpCodeREnum.Ldind_R8:
+                        case OpCodeREnum.Ldind_U1:
+                        case OpCodeREnum.Ldind_U2:
+                        case OpCodeREnum.Ldind_U4:
+                        case OpCodeREnum.Ldind_Ref:
+                        case OpCodeREnum.Ldobj:
+                            // R2 = address. Non-foldable escape.
+                            readAddr2 = op.Register2;
+                            break;
+                        default:
+                            // Other opcodes do not consume a managed address
+                            // via a known operand slot in a way the alias model
+                            // tracks; they neither fold nor escape an alias.
+                            break;
+                    }
+
+                    // 2) Apply the read effect: a non-foldable read of a LIVE
+                    //    alias escapes it. A foldable read never escapes, but it
+                    //    RECORDS a foldable use of the register (used below to
+                    //    avoid evicting a register whose reuse mixes folded and
+                    //    real address computations).
+                    if (readsAreFoldable)
+                    {
+                        if (readAddr1 >= 0 && liveAliases.Contains(readAddr1))
+                            hasFoldableUse.Add(readAddr1);
+                        if (readAddr2 >= 0 && liveAliases.Contains(readAddr2))
+                            hasFoldableUse.Add(readAddr2);
+                    }
+                    else
+                    {
+                        if (readAddr1 >= 0 && liveAliases.Contains(readAddr1))
+                            escaped.Add(readAddr1);
+                        if (readAddr2 >= 0 && liveAliases.Contains(readAddr2))
+                            escaped.Add(readAddr2);
+                    }
+
+                    // Special-case Call-family: a byref parameter escapes the
+                    // arg register IF that arg is a live alias. Resolve the
+                    // declared signature to find which params are byref.
+                    if (op.Code == OpCodeREnum.Call || op.Code == OpCodeREnum.Callvirt
+                        || op.Code == OpCodeREnum.Callvirt_IL || op.Code == OpCodeREnum.Callvirt_CLR
+                        || op.Code == OpCodeREnum.Callvirt_Interface || op.Code == OpCodeREnum.Newobj)
+                    {
+                        var targetMethod = domain.GetMethod(op.Operand2);
+                        if (targetMethod != null)
+                        {
+                            int pCnt = targetMethod.ParameterCount;
+                            if (targetMethod.HasThis && op.Code != OpCodeREnum.Newobj) pCnt++;
+                            bool hasConstrained = op.Operand4 == 1;
+                            int pushCnt = hasConstrained ? pCnt : Math.Max(pCnt - 3, 0);
+                            int regCnt = pCnt - pushCnt;
+                            short[] srcRegs = new short[pCnt];
+                            if (regCnt > 0) srcRegs[pCnt - regCnt] = op.Register2;
+                            if (regCnt > 1) srcRegs[pCnt - regCnt + 1] = op.Register3;
+                            if (regCnt > 2) srcRegs[pCnt - regCnt + 2] = op.Register4;
+                            int foundPushes = 0;
+                            int scanIdx = s - 1;
+                            while (scanIdx >= 0 && foundPushes < pushCnt)
+                            {
+                                if (body[scanIdx].Code == OpCodeREnum.Push)
+                                {
+                                    srcRegs[pushCnt - 1 - foundPushes] = body[scanIdx].Register1;
+                                    foundPushes++;
+                                }
+                                scanIdx--;
+                            }
+                            for (int p = 0; p < pCnt; p++)
+                            {
+                                bool isByRefParam = false;
+                                int paramLogical;
+                                if (targetMethod.HasThis && op.Code != OpCodeREnum.Newobj && p == 0)
+                                {
+                                    isByRefParam = false; // `this` is not byref here
+                                }
+                                else
+                                {
+                                    if (targetMethod.HasThis && op.Code != OpCodeREnum.Newobj)
+                                        paramLogical = p - 1;
+                                    else
+                                        paramLogical = p - ((op.Code == OpCodeREnum.Newobj) ? 1 : 0);
+                                    if (paramLogical >= 0 && paramLogical < targetMethod.Parameters.Count)
+                                        isByRefParam = targetMethod.Parameters[paramLogical].IsByRef;
+                                }
+                                if (isByRefParam && srcRegs[p] >= 0 && liveAliases.Contains(srcRegs[p]))
+                                    escaped.Add(srcRegs[p]);
+                            }
+                        }
+                    }
+
+                    // 3) Kill liveness for any register this opcode WRITES (it
+                    //    is about to be redefined for another purpose), EXCEPT
+                    //    an address producer (its dest re-establishes an alias,
+                    //    handled in step 4) and EXCEPT foldable consumers
+                    //    (Ldfld_*_Inline/Stfld_*_Inline/Initobj read the address
+                    //    via R1/R2 but do not redefine it -- the same alias may
+                    //    feed several inline stores, e.g. `s.a=1; s.b=2`).
+                    if (!isAddrProducer && !readsAreFoldable
+                        && GetOpcodeDestRegister(ref op, out short writtenDst))
+                    {
+                        liveAliases.Remove(writtenDst);
+                    }
+                    // Some opcodes (Push, branches) have no dest register but
+                    // still must not carry stale liveness; GetOpcodeDestRegister
+                    // returns false for them, which is correct (they clobber
+                    // nothing). Initobj has a dest (the target) but it is an
+                    // address consumer, handled above as foldable.
+
+                    // 4) Establish liveness for an address producer's dest, but
+                    //    ONLY if it is a known alias AND it has not escaped.
+                    if (isAddrProducer)
+                    {
+                        short dest = op.Register1;
+                        if (addrAlias.ContainsKey(dest))
+                            liveAliases.Add(dest);
+                        else
+                            liveAliases.Remove(dest);
+                    }
+                }
+
+                // Evict escaped dests and propagate along the inheritance chain.
+                // Each alias's .Reg is the register it inherits from (an ldflda
+                // dest inherits from its base; an ldloca dest's .Reg is its
+                // source local, which is NOT an alias key). If ANY member of an
+                // inheritance chain is real (escaped), the ENTIRE chain must be
+                // real: a real ldflda reads its base's Ref Slot at runtime, so
+                // the base cannot stay folded (dead/uninitialized); conversely a
+                // real ldloca produces a Ref Slot, so an inheritor cannot fold
+                // its (now-pointer) operand. So an escape taints the whole chain
+                // (the connected component in the .Reg forest). Taint upward
+                // (inheritor -> base) and downward (base -> inheritors) to a
+                // fixed point, then evict every tainted alias.
+                //
+                // MIXED-REUSE GUARD: an alias register that ALSO has a foldable
+                // consumer (hasFoldableUse) is NEVER evicted, and taint does not
+                // cross it -- evicting it would orphan its _Inline consumers
+                // (which read it as a folded frame offset, not a Ref Slot). So a
+                // register that is reused for BOTH a folded in-frame-VT address
+                // AND a genuine byref stays folded; its byref consumer reverts to
+                // the pre-Step-17 behavior. The pure-byref cases this step
+                // targets (a register dedicated to the byref) are unaffected.
+                bool CanEvict(short r)
+                {
+                    return !hasFoldableUse.Contains(r);
+                }
+                HashSet<short> tainted = new HashSet<short>();
+                Queue<short> queue = new Queue<short>();
+                foreach (var e in escaped)
+                {
+                    if (CanEvict(e) && tainted.Add(e))
+                        queue.Enqueue(e);
+                }
+                // children[b] = set of alias keys whose .Reg == b.
+                Dictionary<short, List<short>> children = new Dictionary<short, List<short>>();
+                foreach (var kv in addrAlias)
+                {
+                    if (kv.Value.Reg != kv.Key)
+                    {
+                        if (!children.TryGetValue(kv.Value.Reg, out var list))
+                            children[kv.Value.Reg] = list = new List<short>();
+                        list.Add(kv.Key);
+                    }
+                }
+                // BFS the taint through the forest both directions, stopping at
+                // any register that has a foldable consumer (mixed-reuse guard).
+                while (queue.Count > 0)
+                {
+                    short cur = queue.Dequeue();
+                    // Up: if cur is an alias key, taint its base (.Reg) when that
+                    // base is itself an evictable alias key.
+                    if (addrAlias.TryGetValue(cur, out var curAlias))
+                    {
+                        short baseReg = curAlias.Reg;
+                        if (baseReg != cur && addrAlias.ContainsKey(baseReg)
+                            && CanEvict(baseReg) && tainted.Add(baseReg))
+                            queue.Enqueue(baseReg);
+                    }
+                    // Down: taint every child (inheritor) of cur that is evictable.
+                    if (children.TryGetValue(cur, out var kids))
+                    {
+                        foreach (var c in kids)
+                        {
+                            if (CanEvict(c) && tainted.Add(c))
+                                queue.Enqueue(c);
+                        }
+                    }
+                }
+                foreach (var t in tainted)
+                    addrAlias.Remove(t);
+            }
+
+            // B1: live-range-aware alias snapshot for the lowering walk. The
+            // static `addrAlias` map is built once over the whole body and --
+            // because eval-stack registers are REUSED across multiple address
+            // computations -- its entry for a reused register is the LAST
+            // address producer's base (last-write-wins). Resolving an _Inline
+            // field access through that static map therefore folds a range-1
+            // consumer to the range-2 base -> the field store/load lands on the
+            // wrong local (silent corruption; e.g. `p.x=7; ...; ref x` reuses
+            // one register for &p then &x). To fold each _Inline consumer to
+            // the base of ITS OWN live range, the lowering maintains a
+            // per-instruction `liveAliasMap` snapshot: an address producer
+            // (ldloca/ldarga/ldflda) establishes its dest's alias; any opcode
+            // that redefines a register for a non-address purpose drops it. The
+            // _Inline / Initobj consumers below resolve through `liveAliasMap`
+            // (falling back to the static map when liveAliasMap has no entry,
+            // which preserves the original behavior for non-reused registers).
+            // The static `addrAlias` is still authoritative for the gate's
+            // escape / eviction decision (it only needs the key-set and the
+            // inheritance forest, not the per-range base).
+            Dictionary<short, NeoAddressAlias> liveAliasMap = addrAlias != null
+                ? new Dictionary<short, NeoAddressAlias>()
+                : null;
+
+            // Resolve an _Inline / Initobj operand register to its owning
+            // in-frame-VT alias for the CURRENT instruction's live range:
+            // prefer the live-range-aware `liveAliasMap`; fall back to the
+            // static `addrAlias` when liveAliasMap has no entry (non-reused
+            // register, or a producer kind it does not model). When neither has
+            // an entry the register is its own base (Reg=reg, Offset=0) -- the
+            // original ResolveAddressAlias semantics.
+            NeoAddressAlias ResolveLiveAlias(short reg)
+            {
+                if (liveAliasMap != null && liveAliasMap.TryGetValue(reg, out NeoAddressAlias live))
+                    return live;
+                if (addrAlias != null && addrAlias.TryGetValue(reg, out NeoAddressAlias resolved))
+                    return resolved;
+                return new NeoAddressAlias { Reg = reg, Offset = 0 };
+            }
+
             for (int i = 0; i < body.Length; i++)
             {
                 OpCodeR op = body[i];
+                // B1: snapshot the LOGICAL register state BEFORE the lowering
+                // switch runs. In Neo mode DstOffset overlays Register1 and
+                // SrcOffset overlays Register2 (OpCodeR is LayoutKind.Explicit),
+                // so the per-opcode lowering cases -- which stamp byte offsets
+                // into DstOffset/SrcOffset -- DESTROY Register1/Register2. The
+                // live-alias maintenance below needs the original register
+                // numbers (both to read the address-producer dest/src and to ask
+                // GetOpcodeDestRegister whether the opcode writes a register and
+                // which), hence the snapshot copy `preOp` here.
+                OpCodeR preOp = op;
                 bool handled = true;
                 switch (op.Code)
                 {
@@ -386,6 +743,24 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Blei_Un_R8:
                     case OpCodeREnum.Bgei_R8:
                     case OpCodeREnum.Bgei_Un_R8:
+                        {
+                            // Branch-on-immediate / branch-on-register comparisons
+                            // read Register1 as a VALUE (the compared operand),
+                            // NOT as a managed address. They must therefore resolve
+                            // straight to the operand's own frame slot -- never
+                            // through the address-alias map. A reused eval-stack
+                            // register can be an ldloca/ldflda alias dest in one
+                            // live range AND hold a comparison value in a LATER
+                            // live range (e.g. `p.x=7; ref x; if (p.x==7)` reuses
+                            // one register for &p, &x, then the p.x load result);
+                            // routing the branch operand through the alias map
+                            // would redirect it to the alias base (the wrong local)
+                            // -> the branch reads the wrong slot (B1).
+                            short r1 = op.Register1;
+                            op.Operand3 = localInfos[r1].RefOffset;
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                        }
+                        break;
                     case OpCodeREnum.Initobj:
                         {
                             // Step 12: Initobj on an in-frame IL value type must
@@ -397,7 +772,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             // The target is typically an ldloca dest (the C#
                             // compiler emits `ldloca V; initobj` for
                             // default(struct)), so resolve through the alias map.
-                            short r1 = ResolveAddressAlias(addrAlias, op.Register1).Reg;
+                            short r1 = ResolveLiveAlias(op.Register1).Reg;
                             op.Operand3 = localInfos[r1].RefOffset;
                             op.DstOffset = (ushort)localInfos[r1].Offset;
                         }
@@ -505,7 +880,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         {
                             short r1 = op.Register1; // dest temp
                             // owning in-frame VT slot (possibly an ldloca/ldflda alias)
-                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register2);
+                            NeoAddressAlias owner = ResolveLiveAlias(op.Register2);
                             op.DstOffset = (ushort)localInfos[r1].Offset;
                             op.SrcOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
                             // Operand2 (field PrimitiveOffset) is left as-is.
@@ -523,7 +898,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Stfld_R8_Inline:
                         {
                             // owning in-frame VT slot (possibly an ldloca/ldflda alias)
-                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register1);
+                            NeoAddressAlias owner = ResolveLiveAlias(op.Register1);
                             short r2 = op.Register2; // value temp
                             op.DstOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
                             op.SrcOffset = (ushort)localInfos[r2].Offset;
@@ -539,7 +914,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldfld_Ref_Inline:
                         {
                             short r1 = op.Register1; // dest temp
-                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register2);
+                            NeoAddressAlias owner = ResolveLiveAlias(op.Register2);
                             op.Operand = localInfos[owner.Reg].RefOffset + op.Operand3; // source field abs ref index
                             op.Operand4 = localInfos[r1].RefOffset;                     // dest temp ref offset
                             op.DstOffset = (ushort)localInfos[r1].Offset;
@@ -548,7 +923,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         break;
                     case OpCodeREnum.Stfld_Ref_Inline:
                         {
-                            NeoAddressAlias owner = ResolveAddressAlias(addrAlias, op.Register1);
+                            NeoAddressAlias owner = ResolveLiveAlias(op.Register1);
                             short r2 = op.Register2; // value temp
                             op.Operand = localInfos[owner.Reg].RefOffset + op.Operand3; // dest field abs ref index
                             op.DstOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
@@ -638,6 +1013,70 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.SrcOffset = (ushort)localInfos[r2].Offset; // index byte offset
                             op.Operand4 = localInfos[r3].Offset; // value byte offset
                             op.Operand3 = localInfos[r3].RefOffset; // value ref slot (Ref/Any/VT)
+                        }
+                        break;
+                    // ---- Step 17: byref store/load-indirect + array-address ----
+                    // Stind_* / Stobj: R1 = address (Ref Slot temp), R2 = value.
+                    //   -> DstOffset = address temp byte offset;
+                    //      SrcOffset = value temp byte offset;
+                    //      (Stobj keeps its type token in Operand, untouched.)
+                    case OpCodeREnum.Stind_I:
+                    case OpCodeREnum.Stind_I1:
+                    case OpCodeREnum.Stind_I2:
+                    case OpCodeREnum.Stind_I4:
+                    case OpCodeREnum.Stind_I8:
+                    case OpCodeREnum.Stind_R4:
+                    case OpCodeREnum.Stind_R8:
+                    case OpCodeREnum.Stind_Ref:
+                    case OpCodeREnum.Stobj:
+                        {
+                            short r1 = op.Register1;
+                            short r2 = op.Register2;
+                            op.DstOffset = (ushort)localInfos[r1].Offset; // address
+                            op.SrcOffset = (ushort)localInfos[r2].Offset; // value
+                            // Stobj/Stind_Ref may need the value temp's ref slot
+                            // (a ref-typed store through the pointer). Stamp it
+                            // into Operand3 for the runtime arm.
+                            op.Operand3 = localInfos[r2].RefOffset;
+                        }
+                        break;
+                    // Ldind_* / Ldobj: R1 = dest, R2 = address (Ref Slot temp).
+                    //   -> DstOffset = dest byte offset;
+                    //      SrcOffset = address temp byte offset;
+                    //      (Ldobj keeps its type token in Operand, untouched.)
+                    //      Operand3 = dest ref slot (for Ref/VT results).
+                    case OpCodeREnum.Ldind_I:
+                    case OpCodeREnum.Ldind_I1:
+                    case OpCodeREnum.Ldind_I2:
+                    case OpCodeREnum.Ldind_I4:
+                    case OpCodeREnum.Ldind_I8:
+                    case OpCodeREnum.Ldind_R4:
+                    case OpCodeREnum.Ldind_R8:
+                    case OpCodeREnum.Ldind_U1:
+                    case OpCodeREnum.Ldind_U2:
+                    case OpCodeREnum.Ldind_U4:
+                    case OpCodeREnum.Ldind_Ref:
+                    case OpCodeREnum.Ldobj:
+                        {
+                            short r1 = op.Register1;
+                            short r2 = op.Register2;
+                            op.DstOffset = (ushort)localInfos[r1].Offset; // dest
+                            op.SrcOffset = (ushort)localInfos[r2].Offset; // address
+                            op.Operand3 = localInfos[r1].RefOffset; // dest ref slot (Ref/VT)
+                        }
+                        break;
+                    // Ldelema: R1 = dest (== array eval slot, reused), R2 = array
+                    // (same slot), R3 = index. Mirrors Ldelem's third-register
+                    // encoding: Operand4 = index byte offset. Produces a Ref Slot
+                    // (arrayMStackIdx, elementByteOffset) at runtime.
+                    case OpCodeREnum.Ldelema:
+                        {
+                            short r1 = op.Register1;
+                            short r2 = op.Register2;
+                            short r3 = op.Register3;
+                            op.DstOffset = (ushort)localInfos[r1].Offset;
+                            op.SrcOffset = (ushort)localInfos[r2].Offset; // array mStack idx
+                            op.Operand4 = localInfos[r3].Offset; // index byte offset
                         }
                         break;
                     case OpCodeREnum.Br:
@@ -816,6 +1255,51 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         break;
                 }
                 WarnUnhandledNeoLoweringOpcode(op.Code, handled);
+
+                // B1: maintain the live-range-aware alias snapshot for the next
+                // iteration's _Inline / Initobj consumers. An address producer
+                // establishes its dest's alias (mirroring the alias-build pass);
+                // any other opcode that redefines a register drops that
+                // register's alias (its prior address live range is over). This
+                // is what makes a REUSED register fold each consumer to the base
+                // of its OWN live range instead of the static map's last write.
+                if (liveAliasMap != null)
+                {
+                    if (op.Code == OpCodeREnum.Ldloca || op.Code == OpCodeREnum.Ldloca_S
+                        || op.Code == OpCodeREnum.Ldarga || op.Code == OpCodeREnum.Ldarga_S)
+                    {
+                        short aDest = preOp.Register1;
+                        short aSrc = preOp.Register2;
+                        // Only alias value-type sources; a reference local
+                        // produces a genuine pointer (ref/fixed/byref use)
+                        // consumed by the heap path, not the in-frame-VT inline
+                        // path (same guard as the alias-build pass).
+                        bool aSrcIsRef = localIsRef != null && aSrc >= 0
+                            && aSrc < localIsRef.Length && localIsRef[aSrc];
+                        if (aSrc >= 0 && aSrc < localInfos.Length && !aSrcIsRef)
+                        {
+                            liveAliasMap[aDest] = liveAliasMap.TryGetValue(aSrc, out NeoAddressAlias inh)
+                                ? new NeoAddressAlias { Reg = inh.Reg, Offset = inh.Offset }
+                                : new NeoAddressAlias { Reg = aSrc, Offset = 0 };
+                        }
+                        else
+                            liveAliasMap.Remove(aDest);
+                    }
+                    else if (op.Code == OpCodeREnum.Ldflda)
+                    {
+                        short aDest = preOp.Register1;
+                        short aSrc = preOp.Register2;
+                        if (liveAliasMap.TryGetValue(aSrc, out NeoAddressAlias inh))
+                            liveAliasMap[aDest] = new NeoAddressAlias { Reg = inh.Reg, Offset = inh.Offset + op.Operand2 };
+                        else
+                            liveAliasMap.Remove(aDest);
+                    }
+                    else if (GetOpcodeDestRegister(ref preOp, out short killed))
+                    {
+                        liveAliasMap.Remove(killed);
+                    }
+                }
+
                 body[i] = op;
             }
             frame.NeoExecuteBody = body;
@@ -845,6 +1329,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             // not here -- applying it here regresses CLR small-primitive calls.
             slot.Offset = offset;
             slot.RefOffset = refOffset;
+
+            // Step 17: a byref param is an 8-byte Ref Slot (contiguous, no
+            // per-param alignment, to keep the autogen ReadNeo* reader layout
+            // matched per this helper's NOTE). TypeForCLR strips the byref
+            // modifier, so detect IsByRef FIRST.
+            if (type != null && type.IsByRef)
+            {
+                slot.Size = 8;
+                slot.RefCount = 0;
+                offset += 8;
+                return slot;
+            }
 
             if (type.IsPrimitive || (type.TypeForCLR != null && type.TypeForCLR.IsEnum))
             {

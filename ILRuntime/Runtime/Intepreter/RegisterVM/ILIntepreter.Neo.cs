@@ -502,15 +502,30 @@ namespace ILRuntime.Runtime.Intepreter
                             // remains unimplemented; the dest temp is left as-is.)
                             case OpCodeREnum.Ldloca:
                             case OpCodeREnum.Ldloca_S:
-                                // Step 12: ldloca of an in-frame value-type local.
-                                // The address is resolved at offset-lowering time
-                                // (the dest is recorded in the address-alias map
-                                // with the underlying local + accumulated nested-
-                                // field byte offset), so the leaf _Inline field
-                                // access uses the folded absolute offset directly.
-                                // ldloca itself is therefore a no-op at runtime
-                                // for the in-frame-VT path. (Heap / genuine-byref
-                                // ldloca remains Step 6+ / Step 12b.)
+                            case OpCodeREnum.Ldarga:
+                            case OpCodeREnum.Ldarga_S:
+                                {
+                                    // Step 17: produce a real 8-byte Ref Slot =
+                                    // (-1, absoluteFrameOffset) -- a frame-native
+                                    // managed address. The optimizer's addrAlias
+                                    // folding still resolves the pure in-frame-VT
+                                    // `ldloca V; stfld/ldfld/initobj` pattern at
+                                    // compile time, in which case this dest is
+                                    // dead at runtime (writing the slot is
+                                    // harmless). When the address ESCAPES the
+                                    // folding window (byref param / stind / ldind
+                                    // / stobj / ldobj / ldelema / constrained
+                                    // box), the optimizer leaves this dest real
+                                    // and this arm produces the genuine Ref Slot.
+                                    // (ldloca/ldarga of a reference-typed slot is
+                                    // illegal in verifiable IL, so the source is
+                                    // always a value-type slot -> frame-native.)
+                                    // ip->SrcOffset = the source slot's frame byte
+                                    // offset (lowered from R2).
+                                    int dst = ip->DstOffset;
+                                    *(int*)(frameBase + dst + 0) = -1;            // frame-native
+                                    *(int*)(frameBase + dst + 4) = ip->SrcOffset; // absolute frame byte offset
+                                }
                                 break;
                             // Step 12: ldflda of a nested in-frame value-type
                             // field. Like ldloca, the address is resolved at
@@ -521,6 +536,35 @@ namespace ILRuntime.Runtime.Intepreter
                             // is therefore a no-op at runtime for the in-frame-VT
                             // path. (Heap-instance ldflda remains Step 6+.)
                             case OpCodeREnum.Ldflda:
+                                {
+                                    // Step 17: dispatch on the operand's Ref Slot
+                                    // objectIndex half. ip->Operand2 =
+                                    // field.PrimitiveOffset. ip->SrcOffset = the
+                                    // operand slot byte offset (lowered from R2).
+                                    // When the operand is an in-frame VT address
+                                    // (produced by a real ldloca/ldarga), its
+                                    // objectIndex half is -1 and the offset half
+                                    // is the VT base -> produce a frame-native
+                                    // Ref Slot. When the operand is a heap IL
+                                    // object, its slot holds an mStack index
+                                    // (objectIndex >= 0) -> produce
+                                    // (mStackIdx, fieldPrimOff).
+                                    int dst = ip->DstOffset;
+                                    int operandSlotOff = ip->SrcOffset;
+                                    int fieldPrimOff = ip->Operand2;
+                                    int objIdx = *(int*)(frameBase + operandSlotOff + 0);
+                                    if (objIdx == -1)
+                                    {
+                                        int vtBase = *(int*)(frameBase + operandSlotOff + 4);
+                                        *(int*)(frameBase + dst + 0) = -1;
+                                        *(int*)(frameBase + dst + 4) = vtBase + fieldPrimOff;
+                                    }
+                                    else
+                                    {
+                                        *(int*)(frameBase + dst + 0) = objIdx;
+                                        *(int*)(frameBase + dst + 4) = fieldPrimOff;
+                                    }
+                                }
                                 break;
                             case OpCodeREnum.Add:
                                 *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + ip->SrcOffset) + *(int*)(frameBase + ip->OperandOffset);
@@ -2412,6 +2456,280 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                 }
                                 break;
+                            // ---- Step 17: byref store/load-indirect dispatch ----
+                            // Each arm decodes the 8-byte Ref Slot address operand
+                            // (ip->DstOffset for Stind/Stobj, ip->SrcOffset for
+                            // Ldind/Ldobj) = (objectIndex:int, offset:int) and
+                            // dispatches: objectIndex == -1 -> frame-native byte
+                            // region; objectIndex >= 0 with an ILTypeInstance ->
+                            // pinned Primitives (ref il.Primitives[off]); a CLR
+                            // object target is DEFERRED (Step-17-tagged NIE).
+                            // Stind_* / Stobj: DstOffset = address, SrcOffset =
+                            // value. Ldind_* / Ldobj: DstOffset = dest, SrcOffset
+                            // = address.
+                            case OpCodeREnum.Stind_I1:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    sbyte v = *(sbyte*)(frameBase + ip->SrcOffset);
+                                    if (objIdx == -1) *(sbyte*)(frameBase + off) = v;
+                                    else { ins = GetNeoILInstance(mStack, objIdx); ins.Primitives[off] = (byte)v; }
+                                }
+                                break;
+                            case OpCodeREnum.Stind_I2:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    short v = *(short*)(frameBase + ip->SrcOffset);
+                                    if (objIdx == -1) *(short*)(frameBase + off) = v;
+                                    else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
+                                }
+                                break;
+                            case OpCodeREnum.Stind_I4:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    int v = *(int*)(frameBase + ip->SrcOffset);
+                                    if (objIdx == -1) *(int*)(frameBase + off) = v;
+                                    else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
+                                }
+                                break;
+                            case OpCodeREnum.Stind_I8:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    long v = *(long*)(frameBase + ip->SrcOffset);
+                                    if (objIdx == -1) *(long*)(frameBase + off) = v;
+                                    else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
+                                }
+                                break;
+                            case OpCodeREnum.Stind_R4:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    float v = *(float*)(frameBase + ip->SrcOffset);
+                                    if (objIdx == -1) *(float*)(frameBase + off) = v;
+                                    else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
+                                }
+                                break;
+                            case OpCodeREnum.Stind_R8:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    double v = *(double*)(frameBase + ip->SrcOffset);
+                                    if (objIdx == -1) *(double*)(frameBase + off) = v;
+                                    else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
+                                }
+                                break;
+                            case OpCodeREnum.Stind_I:
+                                // native-int store: same width as I4 on this VM.
+                                goto case OpCodeREnum.Stind_I4;
+                            case OpCodeREnum.Ldind_I1:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(sbyte*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = ins.Primitives[off]; }
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_U1:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(byte*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = ins.Primitives[off]; }
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_I2:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    int v;
+                                    if (objIdx == -1) v = *(short*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<short>(ref ins.Primitives[off]); }
+                                    *(int*)(frameBase + ip->DstOffset) = v;
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_U2:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    int v;
+                                    if (objIdx == -1) v = *(ushort*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<ushort>(ref ins.Primitives[off]); }
+                                    *(int*)(frameBase + ip->DstOffset) = v;
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_I4:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<int>(ref ins.Primitives[off]); }
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_U4:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    uint v;
+                                    if (objIdx == -1) v = *(uint*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<uint>(ref ins.Primitives[off]); }
+                                    *(uint*)(frameBase + ip->DstOffset) = v;
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_I8:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx == -1) *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); *(long*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<long>(ref ins.Primitives[off]); }
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_R4:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx == -1) *(float*)(frameBase + ip->DstOffset) = *(float*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); *(float*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<float>(ref ins.Primitives[off]); }
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_R8:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx == -1) *(double*)(frameBase + ip->DstOffset) = *(double*)(frameBase + off);
+                                    else { ins = GetNeoILInstance(mStack, objIdx); *(double*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<double>(ref ins.Primitives[off]); }
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_I:
+                                // native-int load: same width as I4 on this VM.
+                                goto case OpCodeREnum.Ldind_I4;
+                            case OpCodeREnum.Stind_Ref:
+                                {
+                                    // Store a managed reference through the pointer.
+                                    // Frame-native target: write the value's mStack
+                                    // index as a 4-byte slot at the offset (a ref-
+                                    // typed frame slot). Heap-IL ref field: write
+                                    // the ManagedObjects entry (off is the field's
+                                    // reference offset, stamped by Ldflda via the
+                                    // Operand3 marker -- not yet wired, so NIE for
+                                    // the heap-ref sub-case this step).
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    int vIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (objIdx == -1)
+                                    {
+                                        *(int*)(frameBase + off) = vIdx;
+                                    }
+                                    else
+                                    {
+                                        throw new NotImplementedException(
+                                            "Step 17: stind_ref on a heap IL ref field is deferred (ref-field Ref Slot encoding)");
+                                    }
+                                }
+                                break;
+                            case OpCodeREnum.Ldind_Ref:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx == -1)
+                                    {
+                                        // Frame-native: read the mStack index at the
+                                        // offset and materialize the object into the
+                                        // dest ref slot.
+                                        srcIdx = *(int*)(frameBase + off);
+                                        if (srcIdx >= 0)
+                                        {
+                                            dstIdx = frameRefBase + ip->Operand3;
+                                            mStack[dstIdx] = mStack[srcIdx];
+                                            *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                        }
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
+                                    }
+                                    else
+                                    {
+                                        throw new NotImplementedException(
+                                            "Step 17: ldind_ref on a heap IL ref field is deferred (ref-field Ref Slot encoding)");
+                                    }
+                                }
+                                break;
+                            // Stobj / Ldobj: value-type-sized copy through the
+                            // pointer. Operand = type token (sized via the domain).
+                            case OpCodeREnum.Stobj:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
+                                    int off = *(int*)(frameBase + ip->DstOffset + 4);
+                                    t = AppDomain.GetType(ip->Operand);
+                                    ilType = t as ILType;
+                                    int primSize = ilType != null ? ilType.TotalPrimitiveSize : AppDomain.GetPrimitiveSize(t);
+                                    if (objIdx == -1)
+                                    {
+                                        Unsafe.CopyBlock(frameBase + off, frameBase + ip->SrcOffset, (uint)primSize);
+                                    }
+                                    else
+                                    {
+                                        ins = GetNeoILInstance(mStack, objIdx);
+                                        // IL value-type field: copy primitives into
+                                        // Primitives and ref slots into ManagedObjects.
+                                        ref byte dstP = ref ins.Primitives[off];
+                                        Unsafe.CopyBlock(ref dstP, ref *(frameBase + ip->SrcOffset), (uint)primSize);
+                                    }
+                                }
+                                break;
+                            case OpCodeREnum.Ldobj:
+                                {
+                                    int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
+                                    int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    t = AppDomain.GetType(ip->Operand);
+                                    ilType = t as ILType;
+                                    int primSize = ilType != null ? ilType.TotalPrimitiveSize : AppDomain.GetPrimitiveSize(t);
+                                    if (objIdx == -1)
+                                    {
+                                        Unsafe.CopyBlock(frameBase + ip->DstOffset, frameBase + off, (uint)primSize);
+                                    }
+                                    else
+                                    {
+                                        ins = GetNeoILInstance(mStack, objIdx);
+                                        ref byte srcP = ref ins.Primitives[off];
+                                        Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)primSize);
+                                    }
+                                }
+                                break;
+                            // Step 17 (D-LDELEMA): produce a Ref Slot addressing
+                            // array element `elementIdx`. The green target is an
+                            // IL value-type array (ILTypeInstance[] with pre-
+                            // instantiated elements, the Step 16 representation):
+                            // resolve the element ILTypeInstance and park it on
+                            // mStack, then encode (mStackIdx, 0) so the consumers
+                            // (stind/ldind) hit the standard IL-instance Primitives
+                            // path on that element instance. The element reference
+                            // is rooted by mStack for the pointer's lifetime (the
+                            // frame's mStack range is torn down on method exit).
+                            case OpCodeREnum.Ldelema:
+                                {
+                                    int arrIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (arrIdx < 0) throw new NullReferenceException();
+                                    int elementIdx = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[arrIdx];
+                                    if (la is ILTypeInstance[] ilArr)
+                                    {
+                                        ILTypeInstance elem = ilArr[elementIdx];
+                                        if (elem == null)
+                                            throw new NullReferenceException();
+                                        int elemMStackIdx = mStack.Count;
+                                        mStack.Add(elem);
+                                        *(int*)(frameBase + ip->DstOffset + 0) = elemMStackIdx;
+                                        *(int*)(frameBase + ip->DstOffset + 4) = 0;
+                                    }
+                                    else
+                                    {
+                                        throw new NotImplementedException(
+                                            "Step 17: ldelema on a CLR primitive array is deferred (use direct indexing)");
+                                    }
+                                }
+                                break;
                             // Step 14: exception handling. Throw reads the exception
                             // object from its register-1 ref slot (Register1 is a raw
                             // register index -- Throw is NOT lowered by LowerNeoOffsets,
@@ -2478,6 +2796,22 @@ namespace ILRuntime.Runtime.Intepreter
                             // Step 14 (rare in C#). Remains a Step-tagged NIE.
                             case OpCodeREnum.Endfilter:
                                 throw new NotImplementedException("Neo: IL filter blocks (endfilter) are not implemented (Step 14, out of scope)");
+                            // Step 17 (D-CONSTRAINED): the JIT moves `Constrained`
+                            // to AFTER the callvirt (which it flags with
+                            // Operand4 == 1) and stamps the constrained type token
+                            // in Operand. Full constrained.-on-value-type dispatch
+                            // requires the callvirt to accept a byref `this` (the
+                            // struct's managed address produced by ldarga/ldloca)
+                            // and dispatch to the constrained type's concrete
+                            // override -- that callvirt-byref-this work is the
+                            // deferred sub-case (Step 13b / follow-up). Until then
+                            // the constrained callvirt NIEs at the call (its byref
+                            // `this` reads as a null object index); this arm throws
+                            // a Step-17-tagged NIE so the case is surfaced rather
+                            // than silently mishandled.
+                            case OpCodeREnum.Constrained:
+                                throw new NotImplementedException(
+                                    "Step 17: constrained.callvirt on a value type is deferred (callvirt byref-this dispatch lands in Step 13b / a follow-up)");
                             default:
                                 throw new NotImplementedException(string.Format("Neo: opcode {0} not yet implemented (Step 6)", code));
                         }
@@ -2590,7 +2924,12 @@ namespace ILRuntime.Runtime.Intepreter
                 throw new NullReferenceException();
             ILTypeInstance ins = mStack[objIndex] as ILTypeInstance;
             if (ins == null)
-                throw new InvalidCastException();
+                // A CLR object reached an IL-instance field/address path (ldfld/
+                // stfld heap arm, or stind/ldind/stobj/ldobj on an mStack target).
+                // CLR-object field access via field hash is deferred to Step 13b,
+                // so surface it as a Step-tagged NIE rather than a raw cast.
+                throw new NotImplementedException(
+                    "Step 17/13b: field/element access on a CLR object via the IL-instance path is deferred (CLR field-hash plumbing lands in Step 13b)");
             return ins;
         }
 

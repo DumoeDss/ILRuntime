@@ -1512,6 +1512,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 
         StackSlotInfo AllocateSlotForType(IType t, ref int offset, ref int refOffset)
         {
+            // Step 17: a byref-typed slot (ref/out parameter, byref local/temp)
+            // is a managed address = the 8-byte Ref Slot (objectIndex:int,
+            // offset:int). It owns no independent mStack reference of its own
+            // (RefCount==0) and is 4-aligned. This branch runs FIRST so the
+            // byref type is not mis-sized by the IsPrimitive/IsValueType
+            // branches below (TypeForCLR strips the byref modifier).
+            if (t != null && t.IsByRef)
+            {
+                offset = AlignUp(offset, 4);
+                StackSlotInfo byrefSlot = default;
+                byrefSlot.Offset = offset;
+                byrefSlot.RefOffset = refOffset;
+                byrefSlot.Size = 8;
+                byrefSlot.RefCount = 0;
+                offset += 8;
+                return byrefSlot;
+            }
             // Step 12: naturally align every slot. The alignment of a slot is
             // the max natural alignment among its fields (recursively, for
             // nested value types); a primitive uses its own size; a reference

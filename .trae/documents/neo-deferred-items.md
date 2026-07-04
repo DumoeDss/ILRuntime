@@ -53,8 +53,8 @@ Insert these into the roadmap ordering:
 
 | ID | Item | Surfaced by | Target | Unblocked by | Severity |
 |----|------|-------------|--------|--------------|----------|
-| D-LDELEMA | `ldelema` opcode | Step 16 | **Step 17** | Step 17 Ref-Slot/stind/ldind | roadmap gap |
-| D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **Step 17** | Step 17 byref/VT-this-address | roadmap gap |
+| D-LDELEMA | `ldelema` opcode | Step 16 | **RESOLVED (Step 17)** | Step 17 Ref-Slot/stind/ldind | resolved (IL VT array path; CLR primitive-array ldelema still NIE) |
+| D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **partial (Step 17)** | Step 17 byref/VT-this-address | arm exists, full VT dispatch DEFERRED (callvirt byref-this) |
 | D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **Step 13b** (new) | — (Step 17 first, recommended) | roadmap gap (highest value) |
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **Step 13b area 5** | unified param layout | pre-existing |
@@ -78,8 +78,18 @@ Step 16 implemented Newarr/Ldelem/Stelem/Ldlen but deferred `ldelema`. Its only
 consumers are `stind_*`/`ldind_*`, `fixed`, and `ref`/`out` params — all Step 17
 (the unified 8-byte Ref Slot `(objectIndex, offset)`). `ldelema` is a no-op to
 ship without those consumers (it would produce a ref nothing reads). Currently a
-Step-tagged NIE. **Resolution:** implement `ldelema` inside Step 17, producing
-`(arrayMStackIndex, elementOffset)` refs that Step 17's stind/ldind dispatch on.
+Step-tagged NIE. **Resolution (Step 17):** `ldelema` is implemented. For an IL value-type array
+(ILTypeInstance[] with pre-instantiated elements, the Step 16 representation)
+the arm resolves the element ILTypeInstance and parks it on mStack, encoding
+`(elementMStackIdx, 0)` so stind/ldind (and the heap stfld/ldfld that the C#
+compiler emits for `arr[i].field = v`) hit the standard IL-instance Primitives
+path on that element instance. A CLR primitive-array `ldelema` still throws a
+Step-17 NIE (deferred -- direct indexing covers that path). The addrAlias
+coexistence decision: the Step 12 folding stays the fast path; Step 17 adds a
+consumer-scan gate that evicts an alias dest (making its producer real) ONLY
+when the dest's address escapes the folding window AND the dest register is not
+reused for any surviving foldable (`_Inline`/`Initobj`) consumer -- purely
+additive, so Steps 12-16 are untouched (72/0 preserved).
 
 ### D-CONSTRAINED — `constrained.`-on-value-type (Step 13 area 3 -> Step 17)
 Step 13 deferred `constrained.` callvirt specialization on a value-type `this`
