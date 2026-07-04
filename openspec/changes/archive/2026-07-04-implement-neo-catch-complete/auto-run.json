@@ -1,0 +1,22 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner_cc" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "impl_cc" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer_cc", "verdict": "CLEAN SHIP — 0 Blocker/0 Major/1 Minor(F1 spec reconcile @archive)+1 Follow-up(F2). IL-branch construction CORRECT; test-deferral LEGITIMATE; ship-piece-alone WORTHWHILE." } },
+    "review-loop": { "status": "done", "rounds": 0, "result": "clean — no fix needed; F1 spec reconcile at archive; F2 follow-up recorded." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "deliveredScope": "CATCH-COMPLETE: CheckExceptionType IL branch (CanAssignTo reuse; NOT Neo-gated; Legacy-neutral). Closes the CheckExceptionType NIE (D-CHECKEX partial). D-CHECKEX end-to-end still needs Exception-adaptor + Throw-for-IL (F2 follow-up). No test (harness can't author ILType catch).",
+  "acceptedKnown": [
+    { "id": "D-CHECKEX", "severity": "partial", "summary": "CheckExceptionType IL branch shipped (closes the NIE). End-to-end IL-exception catch needs (a) System.Exception CrossBindingAdaptor (ILType.cs:1418 TypeLoadException without it) + (b) Throw handling for IL instances (both engines `as Exception` -> NRE). Positive IL-catch test reserved for that pass." }
+  ],
+  "rounds": 0,
+  "openFindings": []
+}

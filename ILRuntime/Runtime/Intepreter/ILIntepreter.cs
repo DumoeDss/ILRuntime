@@ -5832,7 +5832,40 @@ namespace ILRuntime.Runtime.Intepreter
                     return catchType.TypeForCLR.IsAssignableFrom(exception.GetType());
             }
             else
-                throw new NotImplementedException();
+            {
+                // Non-CLRType catch clause (typically an ILType). Resolve
+                // assignability of the thrown exception to the IL catch type by
+                // the runtime shape of the (already-unwrapped) exception object.
+                // (D-CHECKEX -- previously threw NIE.) The exception arg is
+                // already unwrapped by the callers
+                // (GetCorrespondingExceptionHandler / HandleException), so do
+                // NOT re-unwrap here.
+                if (exception == null)
+                    return false;
+                var exIl = exception as ILTypeInstance;
+                if (exIl != null)
+                {
+                    // IL-thrown exception whose runtime object is the IL
+                    // instance: exact ILType identity when explicit, else the
+                    // CanAssignTo base/interface walk (Step 15 infra).
+                    if (explicitMatch)
+                        return exIl.Type == catchType;
+                    return exIl.CanAssignTo(catchType);
+                }
+                // CLR exception caught by an IL catch clause: test whether the
+                // IL catch type's CLR projection is assignable from the thrown
+                // CLR type. A plain (non-adaptor) IL type has
+                // TypeForCLR == typeof(ILTypeInstance), which a CLR Exception
+                // is not assignable to -> correctly returns false (no false
+                // match); an IL type inheriting a CLR type via a
+                // CrossBindingAdaptor projects to that CLR type.
+                Type ctClr = catchType.TypeForCLR;
+                if (ctClr == null)
+                    return false;
+                if (explicitMatch)
+                    return exception.GetType() == ctClr;
+                return ctClr.IsAssignableFrom(exception.GetType());
+            }
         }
 #if NET_4_6 || NET_STANDARD_2_0
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

@@ -44,7 +44,12 @@ Insert these into the roadmap ordering:
 4. **Step 18 (value-type newobj + CLR newobj)** — fold IN: quirk-newobj-alias.
    (Step 18 already owns IL value-type newobj.)
 5. **[CATCH-COMPLETE]** small follow-up (anytime after Step 15) — closes
-   `CheckExceptionType`-NIE-for-non-CLRType.
+   `CheckExceptionType`-NIE-for-non-CLRType. **DONE (2026-07-04):** the
+   `CheckExceptionType` IL branch landed (CanAssignTo reuse; shared-engine;
+   Legacy-neutral). D-CHECKEX PARTIAL — the CheckExceptionType NIE is gone, but
+   end-to-end IL-exception catch still needs an Exception CrossBindingAdaptor +
+   Throw handling for IL instances (new follow-up D-IL-EXCEPTION-THROW). No
+   positive test yet (harness can't author an ILType catch clause).
 6. **Opportunistic** (no fixed slot; handle when triggered):
    - peephole + PatchKind.IsinstResult (Step 15) — when a patch-infra step lands.
    - Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim
@@ -70,7 +75,8 @@ Insert these into the roadmap ordering:
 | Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **[VT-THIS-ADDR]** | D2: track a VT `this`/newobj-dest as an in-frame address for ALL field access (ctor stfld + caller ldfld) | blocked on VT field-access lowering consistency (mixed inline/heap stfld; addrAlias only tracks ldloca); Newobj arm NIE-tagged |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
-| D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **[CATCH-COMPLETE]** | — (Step 15 enables the type check) | shared-engine gap |
+| D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **partial ([CATCH-COMPLETE])** | CheckExceptionType IL branch done; end-to-end needs adaptor + Throw | shared-engine gap (CheckExceptionType piece closed) |
+| D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **future** | System.Exception CrossBindingAdaptor + Throw `as Exception` handling for IL instances | new follow-up |
 | D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **opportunistic** | patch-infra step | optimization (non-functional) |
 | D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **opportunistic** | triggered by a test/feature | roadmap gap (rare) |
 | N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **opportunistic** | — | cosmetic nit |
@@ -231,14 +237,26 @@ readers and I8 compare/branch arms read `*(long*)` correctly; `InferPrimTag`→
 type-specialization / `AllocateLocalStackSpaces` 4-vs-8-byte overlap) for
 recovery IF a reproducing case surfaces. No fix shipped.
 
-### D-CHECKEX — `CheckExceptionType` NIE for non-CLRType catch types (Step 14 -> [CATCH-COMPLETE])
-The shared engine's `CheckExceptionType` (`ILIntepreter.cs:5835`) throws NIE for
-catch types that are not CLRType (i.e. an `ILType` catch clause). Neo catch
-matching uses this shared path (Step 14 does NOT use the `isinst` opcode for
-catch dispatch). So catching a thrown IL-typed exception into an `ILType` catch
-clause is not yet supported. **Resolution:** small [CATCH-COMPLETE] follow-up to
-extend `CheckExceptionType` for ILType catch types (Step 15's isinst/CanAssignTo
-enables the assignability check). Anytime after Step 15.
+### D-CHECKEX — `CheckExceptionType` NIE for non-CLRType catch types (Step 14 -> PARTIAL [CATCH-COMPLETE])
+The shared engine's `CheckExceptionType` (`ILIntepreter.cs:~5823`) threw NIE for
+catch types that are not CLRType (an `ILType` catch clause). Neo catch matching
+uses this shared path. **PARTIAL RESOLUTION (CATCH-COMPLETE, 2026-07-04):** the
+NIE is replaced with an IL branch — `exception as ILTypeInstance` → exact or
+`CanAssignTo(catchType)` (reuses Step 15's CanAssignTo) → else CLR fallback.
+Shared-engine (NOT Neo-gated); Legacy-neutral (the new branch is unreachable for
+every existing CLRType catch). D-CHECKEX's CheckExceptionType piece is CLOSED.
+**End-to-end IL-exception catch still needs more** (see D-IL-EXCEPTION-THROW),
+so no positive IL-catch test is authorable yet.
+
+### D-IL-EXCEPTION-THROW — end-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) (-> future)
+Even with D-CHECKEX's CheckExceptionType branch, throwing an IL-typed exception
+and catching it end-to-end is blocked on TWO more pieces: (a) a registered
+`System.Exception` `CrossBindingAdaptor` (an IL `class X : System.Exception`
+throws TypeLoadException at `ILType.cs:1418` without it); (b) the `Throw` opcode
+does `mStack[idx] as Exception` on BOTH engines (`ILIntepreter.Neo.cs:~3159`,
+`ILIntepreter.Register.cs:~5310`) → a plain IL class (an `ILTypeInstance`, not
+an Exception) NREs. Resolution: register an Exception adaptor + handle IL
+instances in Throw. The positive IL-catch test is reserved for that pass.
 
 ### D-PEEP — `box T; isinst U` peephole + `PatchKind.IsinstResult` (Step 15 -> opportunistic)
 The compile-time peephole (detect `box T; isinst U`, statically resolve) and the
