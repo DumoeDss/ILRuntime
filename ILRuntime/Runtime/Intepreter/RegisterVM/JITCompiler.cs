@@ -192,6 +192,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Stsfld:
                         type = domain.GetType((int)(code.OperandLong >> 32));
                         break;
+                    // VT-THIS-ADDR: a Newobj of an IL value type produces a dest
+                    // temp that must hold the FULL constructed VT (the runtime
+                    // Newobj IL-VT branch constructs it in the dest's frame byte
+                    // region). The temp-slot sizer (AllocateLocalStackSpaces)
+                    // sizes every temp to `maxSize` gathered from this list, so
+                    // the constructed VT MUST be in the gather set -- otherwise a
+                    // VT larger than 8 bytes (the default) gets an undersized
+                    // temp and a subsequent `Move` of the dest copies only the
+                    // first 8 bytes (silent truncation). Resolve the ctor and
+                    // gather its declaring type when it is an IL value type.
+                    case OpCodeREnum.Newobj:
+                        {
+                            var ctor = domain.GetMethod(code.Operand2);
+                            if (ctor != null && ctor.DeclearingType != null)
+                                type = ctor.DeclearingType;
+                        }
+                        break;
                 }
                 if (type != null && type.IsValueType && !type.IsPrimitive)
                 {
@@ -537,13 +554,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 if (TryRewriteFieldAccessForInline(ref rewritten, registerTypes))
                 {
                     op = rewritten;
-                    // The dest temp of an inline Ldfld holds a primitive value
-                    // (or, for Ldfld_Ref_Inline, a reference). Seed its type so
-                    // downstream typed-opcode specialization is correct.
-                    if (op.Code != OpCodeREnum.Ldfld_Ref_Inline)
-                        SetRegisterType(registerTypes, op.Register1, FieldTypeForInlineLdfld(op.Code));
-                    else
-                        SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
+                    // VT-THIS-ADDR: the dest-temp type seeding applies ONLY to an
+                    // inline Ldfld, where Register1 is the LOAD DESTINATION temp
+                    // (it now holds the field's primitive/ref value). For an inline
+                    // Stfld, Register1 is the OWNING in-frame VT (the address being
+                    // written to), NOT a destination -- stamping the field's type
+                    // there would clobber the owner's VT type and make every
+                    // SUBSEQUENT `this.field=` / `dest.field=` on the same owner
+                    // register fall back to the non-inline heap arm (the root cause
+                    // of the multi-field VT-ctor blocker). Seed Ldfld dest only.
+                    bool isInlineLdfld = IsInlineLdfldDestSeedable(op.Code);
+                    if (isInlineLdfld)
+                    {
+                        if (op.Code == OpCodeREnum.Ldfld_Ref_Inline)
+                            SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
+                        else
+                            SetRegisterType(registerTypes, op.Register1, FieldTypeForInlineLdfld(op.Code));
+                    }
                 }
                 switch (op.Code)
                 {
@@ -765,6 +792,29 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 SetRegisterType(registerTypes, op.Register1, srcType);
                         }
                         break;
+                    // VT-THIS-ADDR (D1): type the dest of a Newobj of an IL value
+                    // type as the constructed VT. The dest register holds the in-
+                    // frame VT (the runtime Newobj IL-VT branch constructs it in
+                    // the dest's frame byte/ref region), so the caller's
+                    // subsequent ldfld/stfld on the result MUST be recognized as
+                    // in-frame and rewritten to _Inline. Without this, the dest
+                    // stays untyped and the caller's field reads fall back to the
+                    // heap Ldfld_* arm (treating the dest as an mStack index ->
+                    // NullReferenceException / corruption). This mirrors the
+                    // Ldloca / Ldflda dest-typing rules above (the Newobj dest is
+                    // the third in-frame-VT address case). Reference-type and
+                    // delegate newobj are left untyped (the existing IL-ref /
+                    // CLR-newobj paths own those).
+                    case OpCodeREnum.Newobj:
+                        {
+                            var ctor = appdomain.GetMethod(op.Operand2);
+                            if (ctor != null && ctor.DeclearingType is ILType nt
+                                && nt.IsValueType && !nt.IsEnum && !nt.IsPrimitive)
+                            {
+                                SetRegisterType(registerTypes, op.Register1, nt);
+                            }
+                        }
+                        break;
                 }
                 body[i] = op;
             }
@@ -857,6 +907,32 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Stfld_R8: return OpCodeREnum.Stfld_R8_Inline;
                 case OpCodeREnum.Stfld_Ref: return OpCodeREnum.Stfld_Ref_Inline;
                 default: return code;
+            }
+        }
+
+        // VT-THIS-ADDR: true only for an inline Ldfld dest (Register1 = the
+        // loaded-value temp that should carry the field type). Inline Stfld
+        // opcodes are NOT seedable -- their Register1 is the OWNING in-frame VT,
+        // not a destination, and stamping the field type there would clobber the
+        // owner type for subsequent same-owner field accesses.
+        static bool IsInlineLdfldDestSeedable(OpCodeREnum code)
+        {
+            switch (code)
+            {
+                case OpCodeREnum.Ldfld_I1_Inline:
+                case OpCodeREnum.Ldfld_I2_Inline:
+                case OpCodeREnum.Ldfld_I4_Inline:
+                case OpCodeREnum.Ldfld_I8_Inline:
+                case OpCodeREnum.Ldfld_U1_Inline:
+                case OpCodeREnum.Ldfld_U2_Inline:
+                case OpCodeREnum.Ldfld_U4_Inline:
+                case OpCodeREnum.Ldfld_U8_Inline:
+                case OpCodeREnum.Ldfld_R4_Inline:
+                case OpCodeREnum.Ldfld_R8_Inline:
+                case OpCodeREnum.Ldfld_Ref_Inline:
+                    return true;
+                default:
+                    return false;
             }
         }
 

@@ -428,7 +428,8 @@ namespace ILRuntime.Runtime.Intepreter
             throw new InvalidOperationException(string.Format("Neo generic callvirt cannot dispatch non-IL object {0} to {1}.", thisObj.GetType().FullName, declaredMethod));
         }
 
-        internal unsafe byte* ExecuteNeo(ILMethod method, byte* esp, byte* retDst, int retRefBase, out bool unhandledException)
+        internal unsafe byte* ExecuteNeo(ILMethod method, byte* esp, byte* retDst, int retRefBase, out bool unhandledException,
+            byte* vtNewobjCallerDst = null, int vtNewobjCallerDstRefBase = -1, int vtNewobjCallerPrimSize = 0, int vtNewobjCallerRefCount = 0)
         {
 #if DEBUG
             if (method == null)
@@ -1653,51 +1654,81 @@ namespace ILRuntime.Runtime.Intepreter
 
                                     if (ilNewobjType.IsValueType && !ilNewobjType.IsPrimitive && !ilNewobjType.IsEnum)
                                     {
-                                        // Step 18 (D1) -- IL value-type newobj: DEFERRED.
+                                        // VT-THIS-ADDR (resolves Step 18 D1 / Q-VT-NEWOBJ): IL
+                                        // value-type newobj via the copy-back pattern, adapted
+                                        // from Legacy `*reg1 = *ins` to the Neo frame model.
                                         //
-                                        // The design intent (D1) is to use the dest register's
-                                        // frame region as the construction site, passing the
-                                        // ctor a frame-native Ref Slot `(-1, destByteOff)` as
-                                        // `this` so `this.field =` writes land directly in the
-                                        // caller's frame with NO copy-back (no heap
-                                        // ILTypeInstance, avoiding the format-conversion anti-
-                                        // pattern).
-                                        //
-                                        // Apply-phase finding (JIT-dump-confirmed): this is
-                                        // blocked by a pre-existing field-access lowering
-                                        // inconsistency. A value-type ctor's `this`-relative
-                                        // stfld is lowered to a MIX of in-frame `_Inline`
-                                        // (writes the callee frame bytes) and heap
-                                        // `Stfld_*`/`GetNeoILInstance` (treats `this` as an
-                                        // mStack index -> ILTypeInstance). Likewise the
-                                        // CALLER's subsequent field reads on the newobj result
-                                        // are lowered non-inline (expect an mStack object
-                                        // index), not as in-frame reads of the dest bytes. The
-                                        // addrAlias folding only tracks ldloca-produced
-                                        // addresses, not a `this` param or a newobj dest, so
-                                        // the representation is inconsistent end-to-end.
-                                        //
-                                        // Making this consistent requires the D2 JIT change:
-                                        // a value-type `this` (and a VT newobj dest) must be
-                                        // tracked as an in-frame address for ALL field access
-                                        // (ctor writes + caller reads). That touches the
-                                        // Step 12 VT frame layout / the field-access lowering
-                                        // shared by every VT instance method -- too broad and
-                                        // risky for this step (the 84/84 smoke is the gate).
-                                        //
-                                        // A heap-alloc + copy-back fallback (Legacy-style) is
-                                        // also infeasible WITHOUT the consistency fix: the
-                                        // ctor's inline stflds would write the callee frame
-                                        // while its heap stflds write the ILTypeInstance, so
-                                        // the two diverge. Therefore the value-type newobj arm
-                                        // surfaces a clear Step-tagged NIE rather than shipping
-                                        // a silently-wrong construction. (Note: the C# compiler
-                                        // usually lowers `VT x = new VT(args)` on a local to
-                                        // `ldloca + call ctor`, which hits the same VT-`this`
-                                        // field-access issue -- that path is likewise deferred
-                                        // with this same root cause.)
-                                        throw new NotImplementedException(
-                                            "Neo Newobj IL value-type is not implemented (Step 18 D1 blocked on VT field-access lowering consistency; see D2)");
+                                        // The callee ctor's `this` (param slot 0) is laid out
+                                        // and typed as the in-frame VT value
+                                        // (AllocateLocalStackSpaces sizes ParamInfos[0] as
+                                        // TotalPrimitiveSize/TotalReferenceCount; the type-spec
+                                        // pass seeds registerTypes[0] = declaringType), so the
+                                        // ctor's `this.field =` lowers to `_Inline` and writes
+                                        // the CALLEE frame's slot-0 byte/ref region. The Neo
+                                        // frame-native Ref-Slot zero-copy mechanism does NOT
+                                        // apply here because the `_Inline` arm writes through
+                                        // the owning slot's frame bytes directly (it does not
+                                        // dereference a Ref Slot), and the caller's dest region
+                                        // is a SEPARATE frame buffer from the callee's slot-0
+                                        // region. So: zero-init the caller's dest, copy the
+                                        // caller's dest region INTO the callee's slot-0 region
+                                        // (pre-call, so a ctor reading an existing field sees
+                                        // the zero/default), copy the ctor args to slots [1..],
+                                        // invoke, then copy the callee's slot-0 region BACK to
+                                        // the caller's dest region (post-call, picking up the
+                                        // ctor's writes). No heap ILTypeInstance; no mStack
+                                        // `this` push; the inline-stfld seeding fix above makes
+                                        // every same-owner `this.field=` resolve consistently.
+                                        var ilCtor = targetMethod as ILMethod;
+                                        var ctorFrame = ilCtor.CompiledFrame;
+                                        // Resolve the callee slot-0 (this) primitive offset.
+                                        // For a HasThis VT ctor ParamInfos[0] is the in-frame
+                                        // value (the ref offset / count are read inside
+                                        // ExecuteNeo's Ret-arm copy-back via ParamInfos[0]).
+                                        var thisSlot = ctorFrame.ParamInfos[0];
+                                        int thisPrimOff = thisSlot.Offset;
+
+                                        int vtPrimSize = ilNewobjType.TotalPrimitiveSize;
+                                        int vtRefCount = ilNewobjType.TotalReferenceCount;
+
+                                        // 1) Zero-init the caller's dest region (prim + refs)
+                                        //    so a ctor that sets only SOME fields leaves the
+                                        //    rest at the default (matches Initobj semantics).
+                                        if (vtPrimSize > 0)
+                                            Unsafe.InitBlock(frameBase + ip->DstOffset, 0, (uint)vtPrimSize);
+                                        for (int i = 0; i < vtRefCount; i++)
+                                            mStack[newobjDstIdx + i] = null;
+
+                                        // 2) Seed the callee's slot-0 PRIMITIVE bytes with the
+                                        //    caller's dest prim bytes (pre-call). ExecuteNeo
+                                        //    reserves the callee's slot-0 REF region as nulls
+                                        //    itself (the in-frame-VT zero-init); the ctor's ref
+                                        //    writes to slot-0 are copied back to the caller's
+                                        //    dest by ExecuteNeo's cleanup BEFORE the mStack pop
+                                        //    (see the vtNewobjCallerDst path in ExecuteNeo).
+                                        if (vtPrimSize > 0)
+                                            Unsafe.CopyBlock(targetBase + thisPrimOff, frameBase + ip->DstOffset, (uint)vtPrimSize);
+
+                                        // 3) Copy the remaining ctor args (slots [1..]). The
+                                        //    lowering built the NeoCallParamMap skipping slot 0.
+                                        CopyNeoCallArguments(ref map, frameBase, targetBase);
+
+                                        // 4) Invoke the ctor directly via ExecuteNeo (not
+                                        //    InvokeNeoCallTarget) so we can pass the caller's dest
+                                        //    region for the slot-0 -> dest copy-back. ExecuteNeo
+                                        //    performs that copy-back in its cleanup BEFORE popping
+                                        //    the callee's mStack reservation -- the ref half MUST
+                                        //    be copied before the pop (the slot-0 ref entries are
+                                        //    removed by the pop). retDst=null: a constructor has
+                                        //    no return value (the dest is filled via the slot-0
+                                        //    copy-back, not via a return write).
+                                        ExecuteNeo(ilCtor, targetBase, null, -1, out unhandledException,
+                                            frameBase + ip->DstOffset, newobjDstIdx, vtPrimSize, vtRefCount);
+                                        if (unhandledException)
+                                            return null;
+
+                                        ip++;
+                                        continue;
                                     }
 
                                     // IL reference-type newobj (Step 8b, unchanged).
@@ -1842,6 +1873,23 @@ namespace ILRuntime.Runtime.Intepreter
                                             *(int*)retDst = -1;
                                         }
                                     }
+                                }
+                                // VT-THIS-ADDR: when this ExecuteNeo invocation is a
+                                // value-type ctor called from the runtime Newobj IL-VT
+                                // branch (vtNewobjCallerDst != null), copy the slot-0
+                                // (this) region back to the caller's dest BEFORE the
+                                // mStack pop below -- the slot-0 ref entries are removed
+                                // by the pop, so the ref half MUST be copied first.
+                                if (vtNewobjCallerDst != null)
+                                {
+                                    var ctorFrameR = method.CompiledFrame;
+                                    var thisSlotR = ctorFrameR.ParamInfos[0];
+                                    int thisPrimOffR = thisSlotR.Offset;
+                                    int thisRefOffR = thisSlotR.RefOffset;
+                                    if (vtNewobjCallerPrimSize > 0)
+                                        Unsafe.CopyBlock(vtNewobjCallerDst, frameBase + thisPrimOffR, (uint)vtNewobjCallerPrimSize);
+                                    for (int i = 0; i < vtNewobjCallerRefCount; i++)
+                                        mStack[vtNewobjCallerDstRefBase + i] = mStack[frameRefBase + thisRefOffR + i];
                                 }
                                 mStack.RemoveRange(frameRefBase, mStack.Count - frameRefBase);
                                 returned = true;
@@ -3095,6 +3143,12 @@ namespace ILRuntime.Runtime.Intepreter
                     }
                 }
             }
+
+            // VT-THIS-ADDR: the slot-0 -> caller-dest copy-back for a value-type
+            // ctor invoked via the runtime Newobj IL-VT branch is performed in
+            // the Ret arm ABOVE (before the mStack pop, which removes the slot-0
+            // ref entries). Nothing to do here on the exception-unwind path: a
+            // ctor that throws abandons the construction (no copy-back).
 
             // Unwind: pop frame, truncate mStack back to entry baseline.
             // Frames stack popping: best-effort (BasePointer compares by pointer).

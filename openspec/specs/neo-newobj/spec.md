@@ -120,52 +120,72 @@ The following remain unimplemented and SHALL continue to throw a Step-tagged
   via the `IsDelegate` arm for an IL-defined delegate) -- not a silent wrong
   result, and not a blanket CLR NIE.
 
-### Requirement: IL value-type newobj -- DEFERRED (Q-VT-NEWOBJ / [VT-THIS-ADDR])
+### Requirement: IL value-type newobj
 
-The IL value-type `newobj` path is **DEFERRED**. The `ExecuteNeo` `Newobj` arm
-SHALL throw a loud, Step-18-tagged `NotImplementedException`
-(`"Neo Newobj IL value-type is not implemented (Step 18 D1 blocked on VT
-field-access lowering consistency; see D2)"`) when the constructor's declaring
-type is an IL value type, rather than constructing a silently-wrong object.
+The `ExecuteNeo` `Newobj` arm SHALL construct an IL value type using the
+caller's frame byte region (the dest register's slot, sized and aligned for the
+value type by `AllocateLocalStackSpaces`) as the construction site. The arm
+SHALL NOT allocate a heap `ILTypeInstance` for the value-type case. The
+construction steps SHALL be:
 
-The intended design (to be delivered by the [VT-THIS-ADDR] follow-up): the arm
-SHALL NOT allocate a heap `ILTypeInstance`; it SHALL zero-initialize the dest
-register's frame byte region (the construction site) and pass the ctor a
-frame-native **Ref Slot** `(-1, destFrameByteOffset)` as `this`, so the ctor's
-`this.field =` writes propagate into the caller's dest slot with no post-ctor
-copy-back.
+1. **Zero-initialize** the dest region (`Unsafe.InitBlock(..., 0,
+   TotalPrimitiveSize)`) and null every one of the dest's `TotalReferenceCount`
+   ref slots, matching `Initobj` semantics (a ctor may set only some fields).
+2. **Seed the ctor's `this`** (callee param slot 0) with a frame-native address
+   of the caller's dest region, so the ctor's `this.field =` writes land in the
+   caller's dest slot (the `neo-byref` capability owns the seeding mechanism).
+3. **Copy the remaining ctor args** into callee param slots [1..] via the
+   standard `CopyNeoCallArguments` path.
+4. **Invoke the ctor** via `InvokeNeoCallTarget(ctor, isNewobj=true, ...)`. No
+   mStack `this` object is pushed (contrast the IL reference-type path); no
+   post-ctor copy-back is performed (the frame-native `this` makes the ctor's
+   writes land directly in the caller's dest region).
 
-The blocker is a VT field-access lowering consistency mismatch: a VT ctor's
-`this` (param slot 0) is laid out and seeded as the in-frame declaring value
-type (NOT an 8-byte byref), so `this.field =` rewrites to `_Inline` and writes
-the callee's own frame slot; meanwhile the caller passes `this` as an mStack
-index or a Ref Slot, and `addrAlias` only tracks `ldloca`/`ldflda`-produced
-addresses -- never a `this` param or a newobj dest -- so the caller's and
-callee's VT representations never agree. A heap-instance-`this` fallback is NOT
-simpler: the callee still seeds `this` as the VT type and lays out an in-frame
-VT-sized slot, so a heap index would be reinterpreted as a frame offset. The fix
-is the D2 change (track a VT `this` / newobj-dest as an in-frame address for ALL
-field access), which touches Step 12 and every VT instance method -- too broad
-for Step 18.
+The newobj-dest-as-in-frame-VT contract -- the dest register of a VT `newobj`
+SHALL be typed as the constructed VT by the JIT type-specialization pass so the
+caller's subsequent field reads/writes lower to `_Inline` -- is owned by the
+`neo-value-types` capability.
 
-The **local form** `VT x = new VT(args)` (the common C# idiom) compiles to
-`ldloca x; call ctor`, NOT a `newobj` instruction, so it bypasses this NIE and
-crashes opaquely (`NullReferenceException` at the first `stfld`) -- the same
-VT-`this` root cause, folded into [VT-THIS-ADDR]. It is pre-existing (Step 12
-tests use only `default(T)` + direct field-set, never a user ctor).
+The arm SHALL continue to throw a loud, tagged `NotImplementedException` for
+the **non-goals** (delegate newobj, no-binder CLR-VT-with-reference-fields
+newobj, generic-parameter VT newobj) rather than constructing a silently-wrong
+object.
 
-#### Scenario: IL value-type newobj throws a tagged NIE (newobj-instruction form)
+#### Scenario: IL value-type newobj with a parameterless ctor
 
-- **WHEN** an IL method emits a real `newobj` of an IL value type (e.g. `return
-  new S(args);` for a non-inlined result)
-- **THEN** the `Newobj` arm SHALL throw the Step-18-tagged
-  `NotImplementedException`; it SHALL NOT silently mis-construct the value type.
+- **WHEN** an IL method emits `new S()` for an IL value type `S` with a
+  parameterless ctor (which may be a no-op or set defaults), and reads a field
+  of the result
+- **THEN** the dest region is zero-initialized, the ctor runs, and the field
+  read returns either the zero default or the value the ctor assigned.
 
-#### Scenario: IL value-type local-form ctor (deferred, opaque crash)
+#### Scenario: IL value-type newobj with a ctor that sets fields
 
-- **WHEN** an IL method executes `S x = new S(args);` (compiles to `ldloca x;
-  call ctor`)
-- **THEN** until [VT-THIS-ADDR] lands, the ctor's first `this.field =`
-  NullRefs opaquely. This is a known pre-existing failure, tracked under
-  Q-VT-NEWOBJ-local / [VT-THIS-ADDR], not a regression introduced by this
-  capability.
+- **WHEN** an IL method emits `new S(args)` whose ctor sets one or more fields
+  via `this.field = ...`, and the caller reads those fields
+- **THEN** every field the ctor assigned reads back with the assigned value
+  (primitive and reference fields alike), with no heap `ILTypeInstance`
+  allocated for the value type and no post-ctor copy-back.
+
+#### Scenario: IL value-type local-form ctor (`VT x = new VT(args)`)
+
+- **WHEN** an IL method executes `S x = new S(args);` (compiles to
+  `ldloca x; call S::ctor`) and reads `x.field`
+- **THEN** the ctor's `this.field =` writes land in the caller's frame slot for
+  `x`, the subsequent `x.field` read returns the assigned value, and no opaque
+  `NullReferenceException` is thrown.
+
+#### Scenario: IL value-type newobj result survives intervening operations
+
+- **WHEN** an IL method constructs `new S(args)`, performs unrelated operations
+  that reuse eval-stack registers, and only then reads a field of the result
+- **THEN** the field read returns the ctor-assigned value (no stale/clobbered
+  value from the intervening operations).
+
+#### Scenario: Non-goals remain NIE-tagged
+
+- **WHEN** an IL method emits a delegate `newobj` (`new Action(foo)`), a
+  no-binder CLR-VT-with-reference-fields `newobj`, or a generic-parameter VT
+  `newobj`
+- **THEN** the `Newobj` arm SHALL throw the corresponding tagged
+  `NotImplementedException`; it SHALL NOT silently mis-construct.

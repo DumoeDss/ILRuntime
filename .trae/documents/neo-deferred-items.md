@@ -72,7 +72,8 @@ Insert these into the roadmap ordering:
 | K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **partial (Step 13b)** | flat-bytes path resolved; boxed-ref bridge deferred | pre-existing |
 | F-MAJ-1 | 2+ simultaneous CLR struct locals -> AllocateLocalStackSpaces slot-reuse -> silent wrong result | Step 13b | **[OPT-HARDEN-2]** | next optimizer-hardening / AllocateLocalStackSpaces | pre-existing (13b made reachable) |
 | Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **RESOLVED (Step 18, non-reproducible)** | — | not reproducible on HEAD (JIT dump: distinct frame regions + ref slots per register); same outcome as Q-STRUCT/Q-LONG |
-| Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **[VT-THIS-ADDR]** | D2: track a VT `this`/newobj-dest as an in-frame address for ALL field access (ctor stfld + caller ldfld) | blocked on VT field-access lowering consistency (mixed inline/heap stfld; addrAlias only tracks ldloca); Newobj arm NIE-tagged |
+| Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **RESOLVED in [VT-THIS-ADDR]** | RESOLVED 2026-07-05: inline-stfld owner-type clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back runtime branch | fixed; full NeoStep smoke 99/99 |
+| F-2 / INLINER-REFONLY-VT | ref-only VT (prim-size 0) local `new S(refArgs)` mis-compiles: inlined `stfld.ref.inline` writes don't survive to the following in-frame `ldfld.ref` read | neo-vt-this-addr re-review (F-1 probe) | **future** (fold into K2-FAM bridge or [OPT-HARDEN-3]) | JITCompiler inliner ref-fold over a 0-prim-size VT local | pre-existing (latent) |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **partial ([CATCH-COMPLETE])** | CheckExceptionType IL branch done; end-to-end needs adaptor + Throw | shared-engine gap (CheckExceptionType piece closed) |
@@ -194,29 +195,53 @@ shared call/newobj lowering without a reproducing case would be worse than none)
 Step 16 TC4 restored to the real ctor-with-arg form (`new NeoStep16Item(5)`) and
 passes.
 
-### Q-VT-NEWOBJ — IL value-type `newobj` + `call VT ctor` via ldloca (Step 18 -> [VT-THIS-ADDR])
-A real (non-inlined) IL value-type `newobj` (emitted when the VT value is NOT a
-local -- e.g. a method return value, or a boxed/field/arg value) cannot be
-constructed correctly. The VT ctor's `this`-relative `stfld` lowers to a MIX of
-in-frame `_Inline` (writes the callee frame bytes) and heap
-`Stfld_*`/`GetNeoILInstance` (treats `this` as an mStack index -> ILTypeInstance),
-and the caller's subsequent field reads on the newobj result are non-inline
-(expect an mStack object index). The `addrAlias` folding only tracks
-`ldloca`-produced addresses, not a `this` param or a newobj dest, so the VT
-representation is inconsistent end-to-end. A heap-alloc + copy-back fallback is
-ALSO infeasible without first fixing the consistency. The C# compiler lowers
-`VT x = new VT(args)` on a local to `ldloca + call ctor`, which hits the SAME
-VT-`this` field-access issue (so the common local form is also affected). The
-Step 18 Newobj arm surfaces a clear Step-18-tagged NIE for the VT case (not a
-silent wrong result).
-**Resolution:** dedicated [VT-THIS-ADDR] follow-up -- the D2 JIT change: track a
-value-type `this` (param slot 0) and a VT newobj dest as an in-frame address for
-ALL field access (ctor stfld + caller ldfld), reusing/extending the Step 17
-byref/addrAlias machinery. Touches the Step 12 VT frame layout / the shared
-field-access lowering used by every VT instance method. Confirmed `ParamInfos[0]`
-for a VT ctor is sized as the in-frame value (`Size = TotalPrimitiveSize`,
-`RefCount = TotalReferenceCount`), NOT an 8-byte byref (`JITCompiler.cs:1332-
-1344`).
+### Q-VT-NEWOBJ — IL value-type `newobj` + `call VT ctor` via ldloca (Step 18 -> RESOLVED in [VT-THIS-ADDR])
+**RESOLVED 2026-07-05.** Full NeoStep smoke 99/99 green (91 baseline + 8 new
+TC8-TC15); Legacy-neutral. The apply-phase JIT-dump probes found the
+propose-time root-cause hypothesis was PARTLY right but missed the true
+load-bearing bug. Four fixes (all Neo-only):
+1. **(LOAD-BEARING, pre-existing) inline-stfld owner-type clobber.**
+   `TypeSpecializeNeoOpcodes` seeded the dest-temp type after EVERY inline
+   rewrite -- including `Stfld_*_Inline`, where `Register1` is the OWNING VT,
+   not a destination. This clobbered the owner's VT type, so the 2nd+
+   `this.field=` on the same owner fell back to the heap arm (NRE). Fix: seed
+   dest type ONLY for inline Ldfld (`IsInlineLdfldDestSeedable` helper). This
+   single fix turned the common inlined `new VT(args)` local form green.
+2. **D1 Newobj-dest typing** (as proposed): `case Newobj:` in the type-spec
+   pass seeds `registerTypes[op.Register1] = ilVtType`. Needed for the
+   non-inlined path (factory `S Make() { return new S(args); }`).
+3. **Newobj dest temp sizing**: `GatherValueTypes` did NOT include Newobj, so
+   a VT > 8 bytes got an undersized dest temp and the subsequent Move
+   truncated to 8 bytes (silent field corruption). Added `case Newobj:`.
+4. **D2 runtime copy-back** (NOT frame-native Ref Slot -- the `_Inline` arm
+   writes through the owning slot's frame bytes directly, and caller dest is
+   a separate frame buffer). Zero-init caller dest; copy dest prim INTO
+   callee slot-0 (pre-call); copy ctor args; invoke; copy callee slot-0 BACK
+   to caller dest. Ref-half runs in the Ret arm BEFORE the mStack pop
+   (ExecuteNeo's `RemoveRange` destroys the slot-0 ref entries; added 4
+   optional `vtNewobjCallerDst*` params to `ExecuteNeo`).
+D3 (addrAlias VT-`this` root) was NOT needed -- the `ResolveLiveAlias`
+fallback already resolves param slot 0 correctly. `Stfld_Value` (whole-VT-
+into-VT-field store) is a SEPARATE Step 12b deferred item (TC10 adapted to
+avoid it). See `openspec/changes/neo-vt-this-addr/design.md` "Apply-phase
+findings" for full detail.
+
+### F-2 / INLINER-REFONLY-VT — ref-only VT local newobj inliner mis-compile (-> future)
+Surfaced by the neo-vt-this-addr re-review F-1 probe (`NeoStep18_TC16`:
+`struct S { string a; string b; }`, TotalPrimitiveSize == 0). A ref-only VT
+local constructed via `new S(refArgs)` (which the C# compiler + Neo inliner
+lower to `initobj` + `stfld.ref.inline` -- NO `newobj`, so the F-1 Ret-arm
+copy-back path is never entered) mis-compiles: the inlined `stfld.ref.inline`
+writes do NOT survive to the following in-frame `ldfld.ref` read. Pre-existing
+(latent -- the factory-return path that would force a real `newobj` is blocked
+by the separate return-NIE at `ILIntepreter.Neo.cs:1861-1862` for a 0-prim/
+multi-ref return). Confirmed NOT caused by neo-vt-this-addr: reverting the F-1
+gate fix reproduces the identical failure, and TC11 (prim-size 4, reachable
+Ret-arm ref-copy shape) passes. The reviewer did NOT ship a failing test
+(would regress the smoke for an out-of-scope bug). **Resolution:** future --
+fold into the K2-FAM bridge child (ref-field handling on VTs) or a small
+[OPT-HARDEN-3] inliner-hardening. Suspect: the JIT inliner's ref-fold over a
+0-prim-size VT local in `JITCompiler.cs`.
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
@@ -302,3 +327,7 @@ assert the exception type/identity; opportunistic cleanup.
   ReadNeoValueType. See §3 K2/K2-FAM.
 - **D-LDELEMA** — `ldelema` opcode. Fixed in Step 17 (2026-07-04, IL VT array
   path; CLR primitive-array ldelema still NIE). See §3 D-LDELEMA.
+- **Q-VT-NEWOBJ / [VT-THIS-ADDR]** — IL value-type `newobj` + `call VT ctor`
+  via ldloca. Fixed in [VT-THIS-ADDR] (2026-07-05): inline-stfld owner-type
+  clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back
+  runtime branch. Full NeoStep smoke 99/99. See §3 Q-VT-NEWOBJ.

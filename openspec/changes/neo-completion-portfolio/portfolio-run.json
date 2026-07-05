@@ -1,0 +1,100 @@
+{
+  "parent": "neo-completion-portfolio",
+  "kind": "portfolio",
+  "pipeline": "auto-decompose",
+  "childPipeline": "small-feature",
+  "tier": "A",
+  "createdAt": "2026-07-05",
+  "policy": "serial-by-default (shared interpreter/JIT files); parallel only on proven file-disjoint independence + Tier A. User authorized full autonomy: skip gates, commit+push after each clean child.",
+  "planner": null,
+  "executionOrder": [
+    "neo-vt-this-addr",
+    "neo-opt-harden-2",
+    "neo-il-exception-throw",
+    "neo-step13-area4",
+    "neo-step17-completion",
+    "neo-k2fam-bridge",
+    "neo-step19-delegate",
+    "neo-step20-async",
+    "neo-array-completion",
+    "neo-peephole-isinst",
+    "neo-opportunistic-cleanup",
+    "neo-step22-generic-template",
+    "neo-step23-neoassembly",
+    "neo-step24-ilrt-neoc",
+    "neo-step25-runtime-loader",
+    "neo-step26-perf-validation"
+  ],
+  "children": {
+    "neo-vt-this-addr": {
+      "pipeline": "small-feature", "wave": 1, "scope": "[Q-VT-NEWOBJ] IL value-type newobj + call VT ctor via ldloca; D2 in-frame VT-this/newobj-dest field-access lowering",
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-value-types",
+      "completedDate": "2026-07-05", "smoke": "99/99", "review": "APPROVE (F-1 resolved round 1; F-2 recorded deferred)"
+    },
+    "neo-opt-harden-2": {
+      "pipeline": "small-feature", "wave": 1, "scope": "[F-MAJ-1] AllocateLocalStackSpaces slot-reuse/liveness with 2+ CLR struct locals",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-il-exception-throw": {
+      "pipeline": "small-feature", "wave": 1, "scope": "[D-IL-EXCEPTION-THROW] System.Exception CrossBindingAdaptor + Throw handling for IL instances",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-exceptions"
+    },
+    "neo-step13-area4": {
+      "pipeline": "small-feature", "wave": 2, "scope": "[D-13B Area4] CLR binding Unsafe.Unbox<T> direct-call + value-type-this + CLR ref/out + CLR stind/ldind",
+      "prerequisites": ["neo-vt-this-addr"], "dependsOn": ["neo-vt-this-addr"], "status": "pending", "capability": "neo-boxing"
+    },
+    "neo-step17-completion": {
+      "pipeline": "small-feature", "wave": 2, "scope": "[D-CONSTRAINED + Stobj/Ldobj + generic-byref + CLR-array ldelema] constrained.-on-VT full dispatch",
+      "prerequisites": ["neo-vt-this-addr"], "dependsOn": ["neo-vt-this-addr"], "status": "pending", "capability": "neo-byref"
+    },
+    "neo-k2fam-bridge": {
+      "pipeline": "small-feature", "wave": 2, "scope": "[K2-FAM] boxed-ref CLR-VT-local bridge (Box/Initobj source passed by value)",
+      "prerequisites": ["neo-vt-this-addr", "neo-step13-area4"], "dependsOn": ["neo-vt-this-addr", "neo-step13-area4"], "status": "pending", "capability": "neo-boxing"
+    },
+    "neo-step19-delegate": {
+      "pipeline": "small-feature", "wave": 3, "scope": "[Step 19] ldftn/ldvirtftn + DelegateAdapter.InvokeILMethod Neo calling convention + multicast",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-dispatch"
+    },
+    "neo-step20-async": {
+      "pipeline": "small-feature", "wave": 3, "scope": "[Step 20] Builder redirect + frame-to-heap copy + ILAsyncContext; sync+async paths",
+      "prerequisites": ["neo-step19-delegate"], "dependsOn": ["neo-step19-delegate"], "status": "pending", "capability": "neo-dispatch"
+    },
+    "neo-array-completion": {
+      "pipeline": "small-feature", "wave": 4, "scope": "[D-ARR] Stelem_I arm + generic/native Ldelem/Stelem JIT enum + multi-dim",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-arrays"
+    },
+    "neo-peephole-isinst": {
+      "pipeline": "small-feature", "wave": 4, "scope": "[D-PEEP] box T;isinst U fusion + PatchKind.IsinstResult (needs patch-infra)",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-type-checks"
+    },
+    "neo-opportunistic-cleanup": {
+      "pipeline": "small-feature", "wave": 4, "scope": "[N-CGTUN + N-TC2] cgt-un comment nit + Step14 TC2 tighten",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-type-checks"
+    },
+    "neo-step22-generic-template": {
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 22] PatchEntry + templateBody+patches + CloneAndPatch runtime instantiation",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-step23-neoassembly": {
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 23] .neo binary format (header + tables) + serializer/deserializer + roundtrip",
+      "prerequisites": ["neo-step22-generic-template"], "dependsOn": ["neo-step22-generic-template"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-step24-ilrt-neoc": {
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 24] ilrt_neoc standalone precompile CLI",
+      "prerequisites": ["neo-step23-neoassembly"], "dependsOn": ["neo-step23-neoassembly"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-step25-runtime-loader": {
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 25] .neo runtime loader + ILType/ILMethod Cecil-decoupling dual-path",
+      "prerequisites": ["neo-step23-neoassembly", "neo-step24-ilrt-neoc"], "dependsOn": ["neo-step23-neoassembly", "neo-step24-ilrt-neoc"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-step26-perf-validation": {
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 26] benchmarks + reflection/thread-safety edge cases + debugger adaptation",
+      "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
+    }
+  },
+  "runnableFrontier": ["neo-opt-harden-2"],
+  "completedChildren": ["neo-vt-this-addr"],
+  "interruptedChildren": [],
+  "escalatedChildren": [],
+  "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."
+}
