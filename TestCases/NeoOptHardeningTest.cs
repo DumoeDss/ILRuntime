@@ -86,5 +86,170 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // ====================================================================
+        // F-MAJ-1 probes (change: neo-opt-harden-2). Two+ simultaneously-live
+        // CLR struct locals -> silent wrong result. The D6 return-write path
+        // writes a struct return's flat bytes (12 for Vector3) into a dest slot
+        // AllocateLocalStackSpaces declares as a 4-byte boxed-ref -> 8-byte
+        // overflow corrupts the neighbouring local. See change design.md.
+        // Prefix `NeoOptHardTest_Fmaj1_` keeps these OUT of the `NeoStep` smoke
+        // filter (run under the `NeoOptHardTest_` filter, mirroring K1).
+        // ====================================================================
+
+        // (1) Exact reproducer: two CLR struct locals v, w; combined check.
+        //     FAILS on HEAD (DivideByZero on the combined check). PASSES after.
+        public static void NeoOptHardTest_Fmaj1_TwoClrStructLocals()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f);
+            ILRuntimeTest.TestFramework.TestVector3NoBinding w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 1f, 1f);
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v); // expect 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(w); // expect 3
+            if (r1 != 600 || r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (2a) Isolation control: only r1 != 600 check. FAILS on HEAD alone
+        //      (proves the corruption is NOT an r1<->r2 cross-clobber).
+        public static void NeoOptHardTest_Fmaj1_IsolationR1()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f);
+            ILRuntimeTest.TestFramework.TestVector3NoBinding w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 1f, 1f);
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v); // expect 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(w); // expect 3
+            if (r1 != 600)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (2b) Isolation control: only r2 != 3 check. FAILS on HEAD alone.
+        public static void NeoOptHardTest_Fmaj1_IsolationR2()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f);
+            ILRuntimeTest.TestFramework.TestVector3NoBinding w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 1f, 1f);
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v); // expect 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(w); // expect 3
+            if (r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (3) Three simultaneous CLR struct locals. Stresses the overflow
+        //     direction. FAILS on HEAD where the overflow is real.
+        public static void NeoOptHardTest_Fmaj1_ThreeStructLocals()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(10f, 20f, 30f);  // 60
+            ILRuntimeTest.TestFramework.TestVector3NoBinding w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 2f, 3f);     // 6
+            ILRuntimeTest.TestFramework.TestVector3NoBinding x =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 0f, 0f);   // 100
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v);
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(w);
+            int r3 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(x);
+            if (r1 != 60 || r2 != 6 || r3 != 100)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (4) Live-range overlap across a method call. Construct v, an
+        //     intervening method call that touches the frame, construct w, then
+        //     Sum(v). The fix must not be order-dependent. FAILS on HEAD.
+        public static void NeoOptHardTest_Fmaj1_LiveRangeOverlapAcrossCall()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f); // 600
+            int touch = ILRuntimeTest.TestFramework.TestCLRBinding.TouchFrame(41);  // 42
+            ILRuntimeTest.TestFramework.TestVector3NoBinding w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 1f, 1f);      // 3
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v); // 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(w); // 3
+            if (r1 != 600 || r2 != 3 || touch != 42)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (5) Scoped reuse / no-frame-bloat guard. Disjoint-scope reuse: v goes
+        //     out of scope (last use passed) before w is declared. The fix MUST
+        //     NOT balloon the frame (the monotonic allocator never reused v's
+        //     slot; this change must not disable that). PASSES throughout.
+        public static void NeoOptHardTest_Fmaj1_ScopedReuseNoFrameBloat()
+        {
+            int r1;
+            {
+                ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                    ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f);
+                r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v); // 600
+            }
+            int r2;
+            {
+                ILRuntimeTest.TestFramework.TestVector3NoBinding w =
+                    ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 1f, 1f);
+                r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(w); // 3
+            }
+            if (r1 != 600 || r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (6a) Boundary: 4-byte struct. A 4-byte struct MUST pass on HEAD (no
+        //      overflow; the slot is 4 bytes). Regression guard: the fix must
+        //      not over-correct a size-4 struct. PASSES throughout.
+        public static void NeoOptHardTest_Fmaj1_StructSize4()
+        {
+            ILRuntimeTest.TestFramework.TestStruct4 v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestStruct4(600);
+            ILRuntimeTest.TestFramework.TestStruct4 w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestStruct4(3);
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestStruct4(v); // 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestStruct4(w); // 3
+            if (r1 != 600 || r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (6b) Boundary: 8-byte struct. Overflows a 4-byte slot by 4 bytes.
+        //      FAILS on HEAD where the overflow is real.
+        public static void NeoOptHardTest_Fmaj1_StructSize8()
+        {
+            ILRuntimeTest.TestFramework.TestStruct8 v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestStruct8(400, 200);  // 600
+            ILRuntimeTest.TestFramework.TestStruct8 w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestStruct8(1, 2);      // 3
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestStruct8(v); // 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestStruct8(w); // 3
+            if (r1 != 600 || r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (8) Two CLR int returns control. The documented control: a primitive
+        //     return writes 4 bytes into a 4-byte slot -> no overflow -> passes.
+        //     MUST pass on HEAD and after (the fix must not regress the primitive
+        //     path). PASSES throughout.
+        public static void NeoOptHardTest_Fmaj1_TwoClrIntReturns()
+        {
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.MakeIntA(); // 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.MakeIntB(); // 3
+            if (r1 != 600 || r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
     }
 }

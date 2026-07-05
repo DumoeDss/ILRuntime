@@ -1474,7 +1474,38 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     }
                     else
                     {
-                        // CLR value type stored as a reference (mStack index).
+#if ENABLE_NEO_MODE
+                        // F-MAJ-1 (neo-opt-harden-2): in Neo mode a CLR value-type
+                        // LOCAL is stored as FLAT MANAGED BYTES, NOT a boxed-ref.
+                        // The D6 CLR-struct return-write path (InvokeNeoClrMethod)
+                        // writes the struct's flat bytes (GetNeoValueTypeManagedSize,
+                        // e.g. 12 for Vector3) via WriteNeoValueType into this slot,
+                        // and the D2 by-value-param read byte-copies the same flat
+                        // bytes out. Declaring the slot as a 4-byte boxed-ref (the
+                        // Legacy shape) UNDER-SIZED it: a 12-byte flat write
+                        // overflowed 8 bytes into the neighbouring local, silently
+                        // corrupting any method with 2+ simultaneously-live CLR
+                        // struct locals (each Sum() read then resolved a corrupted
+                        // mStack index). The fix makes the declaration AGREE with
+                        // the actual flat-bytes runtime representation. Mirrors the
+                        // callee param layout (AllocateNeoCallParamSlot) so a local
+                        // passed by value and a param agree. A CLR struct WITH a
+                        // registered ValueTypeBinder (managedCount > 0) is not
+                        // supported by the reflection-fallback D6 return path (it
+                        // NIEs upstream); RefCount stays 0 -- the binder path is
+                        // owned by the autogen redirects.
+                        int clrVtSize = Optimizer.GetNeoValueTypeManagedSize(ivt.TypeForCLR);
+                        offset = AlignUp(offset, clrVtSize >= 8 ? 4 : clrVtSize);
+                        slot.Offset = offset;
+                        slot.RefOffset = refOffset;
+                        slot.Size = clrVtSize;
+                        slot.RefCount = 0;
+                        offset += clrVtSize;
+                        // localIsRef[locVarRegStart + i] stays false (default).
+#else
+                        // Legacy (ExecuteR): a CLR value-type local is a boxed-ref
+                        // (mStack index). Legacy never reaches the Neo D6/D2 flat-
+                        // bytes arms, so the under-sizing is harmless there.
                         offset = AlignUp(offset, 4);
                         slot.Offset = offset;
                         slot.RefOffset = refOffset;
@@ -1483,6 +1514,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         offset += 4;
                         refOffset++;
                         localIsRef[locVarRegStart + i] = true;
+#endif
                     }
                 }
                 else if (!vt.IsValueType)

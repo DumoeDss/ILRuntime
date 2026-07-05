@@ -80,5 +80,30 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // ---- F-MAJ-1 regression (neo-opt-harden-2): two simultaneously-live
+        //      CLR struct locals. The D6 return-write path writes a struct
+        //      return's flat bytes (12 for Vector3) into a dest slot
+        //      AllocateLocalStackSpaces previously declared as a 4-byte boxed-ref
+        //      -> 8-byte overflow corrupted the neighbouring local -> both Sum()
+        //      reads resolved corrupted mStack indices -> silently wrong. The
+        //      fix declares a CLR-VT local as flat bytes (Size =
+        //      GetNeoValueTypeManagedSize), matching the D6 write + D2 read.
+        //      This is the EXACT reproducer promoted from NeoOptHardTest_Fmaj1_
+        //      TwoClrStructLocals so the NeoStep smoke catches a future
+        //      regression. FAILS on HEAD (DivideByZero); PASSES after the fix. ----
+        public static void NeoStep13bTwoClrStructLocalsRegression()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f);
+            ILRuntimeTest.TestFramework.TestVector3NoBinding w =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 1f, 1f);
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v); // expect 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(w); // expect 3
+            if (r1 != 600 || r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
     }
 }

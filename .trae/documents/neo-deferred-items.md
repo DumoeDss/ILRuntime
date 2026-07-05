@@ -70,7 +70,7 @@ Insert these into the roadmap ordering:
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
 | K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **partial (Step 13b)** | flat-bytes path resolved; boxed-ref bridge deferred | pre-existing |
-| F-MAJ-1 | 2+ simultaneous CLR struct locals -> AllocateLocalStackSpaces slot-reuse -> silent wrong result | Step 13b | **[OPT-HARDEN-2]** | next optimizer-hardening / AllocateLocalStackSpaces | pre-existing (13b made reachable) |
+| F-MAJ-1 | 2+ simultaneous CLR struct locals -> silent wrong result (representation mismatch, NOT slot-reuse) | Step 13b | **RESOLVED ([OPT-HARDEN-2])** | dump-confirmed: D6 return-write flat-bytes into a 4-byte boxed-ref local slot overflowed 8 bytes into the neighbour; fixed by declaring a CLR-VT local as flat-bytes (Option B, gated `#if ENABLE_NEO_MODE`) | pre-existing (13b made reachable); fixed 2026-07-05 |
 | Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **RESOLVED (Step 18, non-reproducible)** | — | not reproducible on HEAD (JIT dump: distinct frame regions + ref slots per register); same outcome as Q-STRUCT/Q-LONG |
 | Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **RESOLVED in [VT-THIS-ADDR]** | RESOLVED 2026-07-05: inline-stfld owner-type clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back runtime branch | fixed; full NeoStep smoke 99/99 |
 | F-2 / INLINER-REFONLY-VT | ref-only VT (prim-size 0) local `new S(refArgs)` mis-compiles: inlined `stfld.ref.inline` writes don't survive to the following in-frame `ldfld.ref` read | neo-vt-this-addr re-review (F-1 probe) | **future** (fold into K2-FAM bridge or [OPT-HARDEN-3]) | JITCompiler inliner ref-fold over a 0-prim-size VT local | pre-existing (latent) |
@@ -165,17 +165,37 @@ address = potential mutation through it). Gated `#if ENABLE_NEO_MODE`
   ldfld/stfld on CLR struct fields for a clean reproducer. Pre-existing; not a
   13b regression.
 
-### F-MAJ-1 — AllocateLocalStackSpaces slot-reuse with 2+ CLR struct locals (Step 13b -> [OPT-HARDEN-2])
-A method holding 2+ simultaneous CLR struct locals (+ int locals) hits a
-slot-reuse/liveness bug in `JITCompiler.AllocateLocalStackSpaces`: one struct
-local's 12-byte slot is corrupted while another is live -> silent wrong result
-(a combined `r1!=600 || r2!=3` check fails though each passes in isolation; not
-an r1<->r2 clobber). Pre-existing (stash-proven: pre-13b the pattern was an
-unsupported-NIE, not broken; struct-specific — two CLR-INT-return locals pass).
-Step 13b made it reachable (the CLR-struct-by-value feature now exists).
-**Resolution:** next optimizer-hardening step ([OPT-HARDEN-2]) — the
-`AllocateLocalStackSpaces` slot-reuse/liveness logic. The Step 13b tests work
-around it by holding a single CLR struct local at a time.
+### F-MAJ-1 — CLR struct local representation mismatch (Step 13b -> RESOLVED in [OPT-HARDEN-2])
+A method holding 2+ simultaneous CLR struct locals computed a silently wrong
+result (a combined `r1!=600 || r2!=3` check failed though each sub-check failed
+in isolation too; not an r1<->r2 clobber). The prior 13b-review hypothesis
+("`AllocateLocalStackSpaces` slot-reuse/liveness") was DISPROVEN at propose:
+that method allocates strictly monotonic non-overlapping regions (no reuse
+logic). **Resolution ([OPT-HARDEN-2], 2026-07-05, dump-confirmed):** the true
+root cause is a representation mismatch. The Step-13b D6 CLR-struct return-
+write (`ILIntepreter.Neo.cs` InvokeNeoClrMethod) writes the struct's FLAT
+managed bytes (`retSz = GetNeoValueTypeManagedSize`, e.g. 12 for Vector3) via
+`WriteNeoValueType` into the caller's dest local slot, but
+`AllocateLocalStackSpaces` DECLARED a CLR value-type local as a 4-byte boxed-
+ref (`Size=4, RefCount=1, isRef=true`). A 12-byte flat write into a 4-byte slot
+overflowed 8 bytes into the neighbouring local -> both `Sum()` reads resolved
+corrupted mStack indices -> both individually wrong. The D2 by-value-param read
+already byte-copies flat bytes from the local's Offset (so the runtime
+representation was ALWAYS flat bytes; only the declaration lied -- the 13b
+single-local tests passed despite the under-sizing because the overflow hit an
+empty neighbour). Candidate (2) (`CleanupRegister` compaction) was REFUTED by
+the dump (distinct regions). **Fix:** Option B -- declare a CLR value-type
+LOCAL as flat bytes (`Size = GetNeoValueTypeManagedSize`, `RefCount=0`,
+`localIsRef=false`), mirroring the callee param layout
+(`AllocateNeoCallParamSlot`), gated `#if ENABLE_NEO_MODE` so Legacy keeps the
+boxed-ref path. Option A (boxed-ref write) was REJECTED: it would break the D2
+caller-local -> callee-param byte-copy (would copy the 4-byte mStack index +
+garbage). Legacy-neutral (stash-toggle: same 7 pre-existing Legacy NeoStep
+failures with and without the fix). Full NeoStep smoke 100/100 (99 baseline +
+promoted `NeoStep13bTwoClrStructLocalsRegression`); 9 `NeoOptHardTest_Fmaj1_*`
+probes all green. **Note for future changes:** `AllocateLocalStackSpaces` has
+NO slot-reuse/liveness logic -- do not mis-attribute this fix to a liveness
+allocator (it is a representation-sizing fix, period).
 
 ### Q-NEWOBJ — Newobj dest/arg aliasing after `newarr` (Step 16 -> Step 18 -> RESOLVED)
 `new T(intArg)` immediately FOLLOWS a `newarr` collides in the Call/Newobj
@@ -331,3 +351,10 @@ assert the exception type/identity; opportunistic cleanup.
   via ldloca. Fixed in [VT-THIS-ADDR] (2026-07-05): inline-stfld owner-type
   clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back
   runtime branch. Full NeoStep smoke 99/99. See §3 Q-VT-NEWOBJ.
+- **F-MAJ-1** — 2+ simultaneous CLR struct locals silent-wrong-result. Fixed
+  in [OPT-HARDEN-2] (2026-07-05, dump-confirmed): the CLR-VT local declaration
+  in `AllocateLocalStackSpaces` under-sized a flat-bytes local as a 4-byte
+  boxed-ref; the D6 return-write's 12-byte flat write overflowed 8 bytes into
+  the neighbour. Option B (declare flat-bytes), gated `#if ENABLE_NEO_MODE`,
+  Legacy-neutral (stash-toggle). Full NeoStep smoke 100/100. See §3 F-MAJ-1.
+

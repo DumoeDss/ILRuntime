@@ -408,3 +408,170 @@ repurposed to a complex ctor (static helper call + 2 fields).
 **No shared-pass change.** All fixes are Neo-only. The 7 pre-existing Legacy
 NeoStep-filter failures (NeoStep15_TC6, NeoNaNR8, ...) are unrelated to this
 change (present without it; the new TC8-TC15 all pass on Legacy too).
+
+## Findings -- neo-opt-harden-2 (2026-07-05, propose)
+
+**Prior worded root cause DISPROVEN against current code (Q-NEWOBJ moment).**
+The 13b review labeled F-MAJ-1 "`AllocateLocalStackSpaces` slot-reuse /
+liveness" and the portfolio seed repeated it. Reading the method at propose
+DISPROVES the mechanism as worded: `AllocateLocalStackSpaces`
+(`JITCompiler.cs:1394-1587`) allocates a STRICTLY MONOTONIC, non-overlapping
+`Offset` / `RefOffset` per surviving local/temp register. The locals loop
+(`:1455-1514`) and the temp loop (`:1536-1548`) only ADVANCE the `offset` /
+`refOffset` cursors; there is NO liveness analysis and NO slot reuse. Every
+surviving register index gets a distinct `[Offset, Offset+Size)` byte region
+and a distinct `[RefOffset, RefOffset+RefCount)` ref region. The propose-time
+hypothesis ("a slot is reusable only after the LAST use of its current
+occupant") describes an allocator that DOES NOT EXIST in this code. A fix that
+"invents a liveness-aware slot allocator" would be a no-op at best (mirrors the
+K1 original-attempt no-op and the Q-NEWOBJ disproven-collision outcome). This
+finding is recorded in the spec delta so a future change does NOT mis-attribute
+the F-MAJ-1 fix to slot-reuse logic that does not exist.
+
+**Leading candidate root cause (code-grounded, fits the FULL symptom
+signature): D6 return-write / local-slot REPRESENTATION MISMATCH.** The
+Step-13b D6 CLR-struct-return branch (`ILIntepreter.Neo.cs:315-330`) writes the
+return's FLAT managed bytes (`retSz = GetNeoValueTypeManagedSize(...)`, e.g. 12
+for a Vector3) via `WriteNeoValueType` into the caller's dest frame byte slot.
+But `AllocateLocalStackSpaces` declares a CLR value-type LOCAL as `Size=4,
+RefCount=1, localIsRef=true` (`:1475-1486`) -- a BOXED-OBJECT-REFERENCE slot
+(an mStack index), NOT flat bytes. A 12-byte flat write into a 4-byte slot
+OVERFLOWS by 8 bytes into the neighbouring local's region. Why this fits better
+than the liveness hypothesis:
+- **Struct-specific:** only structs with managed size > 4 overflow. The
+  two-CLR-int-return control writes 4 bytes into 4-byte slots -> no overflow ->
+  passes (matches the reviewer's control).
+- **Each value individually wrong when both live:** the 2nd struct's return
+  overflow corrupts the 1st struct's slot (its neighbour); both `Sum` reads
+  then resolve corrupted mStack indices -> both sub-checks fail independently
+  (matches the reviewer's isolation finding exactly).
+- **Not an r1<->r2 clobber:** the corrupted bytes are the neighbour's mStack
+  INDEX, not the r1/r2 int values (matches the reviewer's "not a cross-clobber"
+  finding).
+- **Pre-existing:** the boxed-ref-vs-flat-bytes disagreement is as old as the
+  Step-12 `Size=4, RefCount=1` CLR-VT-local declaration; pre-13b the D6 path
+  NIE'd before reaching the write, so it was unreachable, not silently wrong
+  (matches the stash-toggle proof).
+
+**Fallback candidate: `CleanupRegister` compaction** (`Optimizer.RegisterCleanup.cs`,
+runs at `JITCompiler.cs:491` BEFORE `AllocateLocalStackSpaces` at `:514`).
+LIKELY REFUTED (locals are indexed by `locVarRegStart + i` with `locVarRegStart
+= paramCnt` protected from compaction), but dump-confirm at apply.
+
+**Fix LOCKED at apply from the dump, NOT at propose (provisional).** Two
+representation-consistent options for candidate (1):
+- **Option A (write-side, Neo-only, PREFERRED):** the D6 return-write stores a
+  BOXED REFERENCE (mStack index) into the 4-byte ref slot, mirroring the
+  reference-type return store (`:332+`) and the newobj arm (`:283-293`). Neo-
+  only (the D6 arm is in `ILIntepreter.Neo.cs`); LOWEST Legacy risk. Depends on
+  D2 (`ReadNeoValueType`) reading a boxed ref for a Make-sourced local
+  consistently (the K2-FAM partial path) -- probe at apply.
+- **Option B (declare-side, SHARED):** declare a CLR-VT LOCAL dest as flat
+  bytes (`Size = GetNeoValueTypeManagedSize`, `RefCount=0`) in
+  `AllocateLocalStackSpaces:1475-1486`. SHARED engine -- MUST be gated
+  `#if ENABLE_NEO_MODE` OR confirmed Legacy-neutral (stash-toggle NeoStep
+  smoke, K1 pattern). Needs `Move_Vt` / by-value-param copy to treat the local
+  as flat bytes.
+
+**If the dump refutes BOTH candidates** (offsets distinct AND write fits yet
+symptom persists): F-MAJ-1 -> DEFERRED (Q-STRUCT/Q-LONG/Q-NEWOBJ outcome); ship
+NO guessed fix; pin the dump + reproducer. The design includes this fallback
+explicitly (Block 5).
+
+**Key decisions locked.**
+- D1: the fix is dump-gated; the prior worded root cause is disproven and is
+  NOT the fix (no liveness allocator exists).
+- D2: leading fix = Option A (write-side boxed-ref), Neo-only; fallback Option
+  B (declare-side flat-bytes) gated `#if ENABLE_NEO_MODE` if D2/Move_Vt forces
+  it.
+- D3: `AllocateLocalStackSpaces` is NOT the fix site for the leading candidate
+  (no reuse logic to fix); the spec records this to prevent mis-attribution.
+- D4: adversarial probes MANDATORY (8 probes incl. the exact reproducer,
+  isolation controls, 3+ locals, live-range-overlap-across-call,
+  scoped-reuse-no-frame-bloat, struct-size-4/8 boundary, int-return control,
+  single-local regression). Step 17 B1 / OPT-HARDEN K1 lesson binding.
+
+**Files the implementer will touch (dump-locked; Legacy is the REFERENCE):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- the D6
+  CLR-struct-return branch `:315-330` (Option A fix site; Neo-only).
+- `ILRuntime/Runtime/Intepreter/RegisterVM/JITCompiler.cs` --
+  `AllocateLocalStackSpaces:1475-1486` (Option B fix site; SHARED -- gate
+  `#if ENABLE_NEO_MODE`). NOT a liveness-allocator change.
+- `ILRuntime/Runtime/Intepreter/RegisterVM/Optimizer.RegisterCleanup.cs` --
+  ONLY if candidate (2) is dump-confirmed (SHARED; gate `#if ENABLE_NEO_MODE`).
+- `TestCases/NeoOptHardeningTest.cs` (extend) -- `NeoOptHardTest_Fmaj1_*`
+  probes (separate filter, mirrors K1).
+- `TestCases/NeoStep13bTest.cs` (extend) -- promote the exact reproducer as
+  `NeoStep13bTwoClrStructLocalsRegression` (smoke catches future regressions).
+
+**Regression risk: MEDIUM.** The fix site is a representation-consistency gap
+(not the broad field-access discriminator touched by neo-vt-this-addr). Gate:
+full `NeoStep` smoke (99/99 baseline) + Legacy 518/519 stash-toggle for any
+shared-engine edit. Adversarial probes MANDATORY.
+
+**Baseline note.** NeoStep smoke is now 99/99 at HEAD (after neo-vt-this-addr).
+The promoted F-MAJ-1 reproducer FAILS on HEAD and turns green after the fix;
+the 8 `NeoOptHardTest_Fmaj1_*` probes run under a separate filter.
+
+## Findings -- neo-opt-harden-2 (apply, 2026-07-05)
+
+**RESOLVED.** F-MAJ-1 FIXED via Option B (declare-side flat-bytes). NeoStep
+smoke now 100/100 (99 baseline + promoted `NeoStep13bTwoClrStructLocalsRegression`).
+Legacy-neutral (stash-toggle: same 7 pre-existing Legacy NeoStep failures with
+and without the fix). All 9 `NeoOptHardTest_Fmaj1_*` probes green.
+
+**Dump-confirmed root cause (candidate 1 CONFIRMED, candidate 2 REFUTED).** A
+`frame.LocalInfos` dump for the reproducer on HEAD showed the two CLR struct
+locals (`v`, `w`) got DISTINCT, non-overlapping regions (`Offset=0` vs `4`,
+distinct `RefOffset`) -- REFUTING candidate (2) `CleanupRegister` compaction.
+But each slot was declared `Size=4, RefCount=1, isRef=True` (boxed-ref), while
+the D6 return-write wrote `retSz=12` flat bytes -> 8-byte overflow into the
+neighbour. CONFIRMING candidate (1).
+
+**The D2/Move_Vt consistency probe INVERTED the propose-time ranking.** Option
+A (write-side boxed-ref, was "PREFERRED") would BREAK D2: the by-value param
+read (`CLRMethod.Invoke`) + the optimizer's caller-local -> callee-param copy
+(`CopyNeoCallArguments`, `primSize = dstInfo.Size`) ALREADY byte-copies N flat
+bytes from the caller local's Offset. So the local's RUNTIME representation
+was ALWAYS flat bytes (D6 wrote flat bytes, D2 read flat bytes); only the SLOT
+DECLARATION lied. The 13b single-local tests passed DESPITE the under-sized
+declaration because the overflow hit an empty neighbour. Option B (declare
+flat bytes, `Size = GetNeoValueTypeManagedSize, RefCount=0, localIsRef=false`)
+mirrors the callee param layout (`AllocateNeoCallParamSlot`) and is the minimal
+representation-consistency fix. Gated `#if ENABLE_NEO_MODE` in the SHARED
+`AllocateLocalStackSpaces`; Legacy keeps `Size=4, RefCount=1`.
+
+**Key lesson (re-affirms OPT-HARDEN K1 + Q-* closures).** The propose-time
+PREFERRED option (A) was wrong; only the apply-time DUMP + D2-consistency probe
+locked the right fix (B). The dump-gated discipline is binding: probe BEFORE
+fixing, and STOP if the designed fix is wrong. Here the fix differed from the
+propose-time ranking but BOTH candidates were testable from the dump -- the
+process worked exactly as designed.
+
+**Scoped-reuse probe observation.** `NeoOptHardTest_Fmaj1_ScopedReuseNoFrameBloat`
+was DESIGNED as a "PASS throughout" regression guard but FAILS on HEAD: the C#
+compiler does NOT narrow struct-local register liveness for `{ }` block scope
+(both remain simultaneously-live method locals, distinct IL variable indices).
+This is consistent with candidate (1) (a 2-live-struct-locals case). After the
+fix it passes. No frame-size regression: the monotonic allocator never reused
+slots (propose-time finding holds).
+
+**Out of scope (noted, NOT fixed).** `GatherValueTypes` + the temp-register
+sizer (`maxSize` loop at `JITCompiler.cs:1566-1580`) only handle `ILType`, not
+CLR structs. A temp register that must hold a CLR struct > 8 bytes (e.g. a
+`Box`/`Stobj` intermediate) would be under-sized. The F-MAJ-1 reproducer does
+NOT exercise this (the Make() return dest is the LOCAL, not a temp). Separate
+pre-existing gap; flag for a future optimizer-hardening step if a reproducer
+lands. A CLR struct local WITH a registered ValueTypeBinder (managedCount > 0)
+is declared `RefCount=0` here (the reflection-fallback D6 return path NIEs
+ref-field structs upstream); the binder path is owned by autogen redirects.
+
+**Build-cache gotcha (earned).** `dotnet build` on ILRuntime/ILRuntimeTestBase
+sometimes reports "0 errors" in ~2-3s WITHOUT re-emitting the DLL when the
+source change is small (incremental hash hit). To CONFIRM a rebuild took
+effect, check the DLL mtime is newer than the source (`stat -c %Y`), and grep
+the built DLL in UTF-16 (`strings -e l <dll> | grep <literal>`) for any new
+string literal you added -- ASCII `strings` will NOT find .NET UTF-16 string
+literals. This bit me during the dump-probe iteration (a stale DLL silently
+ran the OLD code).
+

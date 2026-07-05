@@ -142,6 +142,37 @@ namespace ILRuntimeTest.TestFramework
             LoadAsset("123", obj);
         }
 
+        // ---- F-MAJ-1 helpers (host C#; read by the IL side via the reflection
+        //      fallback). Mirror the Make/Sum pattern for the boundary structs
+        //      and the int-return control. ----
+        public static TestStruct4 MakeTestStruct4(int a)
+        {
+            return new TestStruct4(a);
+        }
+        public static int SumTestStruct4(TestStruct4 v)
+        {
+            return v.a;
+        }
+        public static TestStruct8 MakeTestStruct8(int a, int b)
+        {
+            return new TestStruct8(a, b);
+        }
+        public static int SumTestStruct8(TestStruct8 v)
+        {
+            return v.a + v.b;
+        }
+        // Two CLR int returns (the documented control: primitive writes 4 bytes
+        // into a 4-byte slot; no overflow). Different values to distinguish them.
+        public static int MakeIntA() { return 600; }
+        public static int MakeIntB() { return 3; }
+        // A method that touches the frame between two Make() calls (live-range
+        // overlap probe): returns an int the caller must observe so the compiler
+        // does not dead-code-eliminate the call.
+        public static int TouchFrame(int x)
+        {
+            return x + 1;
+        }
+
 #if TEST_MISSING_METHOD
         public int missingField;
         public void MissingMethodGeneric<T>(T obj)
@@ -166,4 +197,21 @@ namespace ILRuntimeTest.TestFramework
     {
     }
 #endif
+
+    // ---- F-MAJ-1 boundary structs (managed sizes 4 and 8 bytes; pure primitive).
+    //      Used by the NeoOptHardTest_Fmaj1_StructSize4 / ...Size8 probes to test
+    //      the overflow onset: a 4-byte struct must NOT overflow a 4-byte slot;
+    //      an 8-byte struct overflows by 4. ----
+    public struct TestStruct4
+    {
+        public int a;
+        public TestStruct4(int a) { this.a = a; }
+    }
+
+    public struct TestStruct8
+    {
+        public int a;
+        public int b;
+        public TestStruct8(int a, int b) { this.a = a; this.b = b; }
+    }
 }
