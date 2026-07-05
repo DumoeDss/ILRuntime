@@ -5307,7 +5307,16 @@ namespace ILRuntime.Runtime.Intepreter
                             case OpCodeREnum.Throw:
                                 {
                                     objRef = GetObjectAndResolveReference((r + ip->Register1));
-                                    var ex = mStack[objRef->Value] as Exception;
+                                    object o = mStack[objRef->Value];
+                                    // D-IL-EXCEPTION-THROW (shared-engine): an IL-typed
+                                    // exception operand is an ILTypeInstance (not a CLR
+                                    // Exception) -- unwrap CLRInstance (the adaptor's
+                                    // Adapter, a real CLR Exception). The first `as`
+                                    // still succeeds for every CLR-Exception operand, so
+                                    // this fallback is unreachable for existing code.
+                                    Exception ex = o as Exception;
+                                    if (ex == null && o is ILTypeInstance ili)
+                                        ex = ili.CLRInstance as Exception;
                                     throw ex;
                                 }
                             case OpCodeREnum.Rethrow:

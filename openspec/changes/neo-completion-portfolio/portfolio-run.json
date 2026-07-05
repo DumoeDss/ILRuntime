@@ -38,7 +38,8 @@
     },
     "neo-il-exception-throw": {
       "pipeline": "small-feature", "wave": 1, "scope": "[D-IL-EXCEPTION-THROW] System.Exception CrossBindingAdaptor + Throw handling for IL instances",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-exceptions"
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-exceptions",
+      "completedDate": "2026-07-05", "smoke": "Neo 108/108 + Legacy-neutral", "review": "APPROVE (0 Blocker/Major; doc-only Minors); F-4/NEO-IL-EX-FIELDACCESS recorded deferred; D-CHECKEX also fully resolved"
     },
     "neo-step13-area4": {
       "pipeline": "small-feature", "wave": 2, "scope": "[D-13B Area4] CLR binding Unsafe.Unbox<T> direct-call + value-type-this + CLR ref/out + CLR stind/ldind",
@@ -93,8 +94,8 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-il-exception-throw"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2"],
+  "runnableFrontier": ["neo-step13-area4", "neo-step19-delegate", "neo-array-completion", "neo-peephole-isinst", "neo-opportunistic-cleanup", "neo-step22-generic-template"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

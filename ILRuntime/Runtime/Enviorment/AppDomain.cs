@@ -229,6 +229,13 @@ namespace ILRuntime.Runtime.Enviorment
             });
 
             RegisterCrossBindingAdaptor(new Adapters.AttributeAdapter());
+            // D-IL-EXCEPTION-THROW: built-in System.Exception adaptor so an IL
+            // `class X : System.Exception` loads (base-type resolution at
+            // ILType.cs:1412-1418 looks up CrossBindingAdaptors by CLR base type
+            // and throws TypeLoadException without this). The nested Adapter IS
+            // a CLR Exception, so an IL exception instance's CLRInstance is a
+            // real Exception the Throw opcode can unwrap. Engine-agnostic.
+            RegisterCrossBindingAdaptor(new Adapters.ExceptionAdaptor());
 
             debugService = new Debugger.DebugService(this);
 

@@ -3205,7 +3205,19 @@ namespace ILRuntime.Runtime.Intepreter
         {
             if (objIndex < 0)
                 throw new NullReferenceException();
-            Exception ex = mStack[objIndex] as Exception;
+            object o = mStack[objIndex];
+            Exception ex = o as Exception;
+            // D-IL-EXCEPTION-THROW: an IL-typed exception operand is an
+            // ILTypeInstance (not a CLR Exception) -- unwrap its CLRInstance,
+            // which is the ExceptionAdaptor's Adapter (a real CLR Exception)
+            // established in the ILTypeInstance ctor. This is the same
+            // IL<->CLR bridge used for CLR-method dispatch on an IL instance
+            // (ILIntepreter.cs:2936 / AppDomain.cs:1450). The first `as` still
+            // succeeds for every existing CLR-Exception operand, so this
+            // fallback is unreachable for existing code (byte-identical Legacy
+            // path on the CLR-Exception case).
+            if (ex == null && o is ILTypeInstance ili)
+                ex = ili.CLRInstance as Exception;
             if (ex == null)
                 throw new NullReferenceException();
             return ex;

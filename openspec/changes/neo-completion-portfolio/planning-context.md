@@ -671,3 +671,204 @@ follow-up. Full detail recorded in
 `.trae/documents/neo-deferred-items.md` (F-3 / NEO-BYREF-THIS, §2 master table +
 §3 detail).
 
+### `[NEO-IL-EX-FIELDACCESS]` -- reading IL fields/methods off a caught IL exception is broken on Neo (from neo-il-exception-throw apply)
+
+Surfaced by the neo-il-exception-throw apply (OQ1/OQ2). Now that an IL exception
+can be THROWN + CAUGHT end-to-end (this change), reading IL-declared fields or
+methods off the CAUGHT exception object via the standard cross-binding-adaptor
+bridge turns out to be broken on Neo. **Pre-existing gap, NOT introduced** by
+neo-il-exception-throw -- the change only registers an adaptor and adds an
+unwrap fallback; it does NOT touch callvirt-on-CLR-interface /
+`appdomain.Invoke` instance-method / `ILTypeInstance` indexer machinery. The
+gap was simply unreachable before (no IL exception could be caught).
+
+Four distinct broken read paths (each blocked by a separate pre-existing Neo
+mechanism):
+1. `((CrossBindingAdaptorType)e).ILInstance` bridge -> `callvirt` on a CLR
+   interface against the `Adapter` receiver -> ExecuteNeo throws
+   `InvalidCastException` ("Object does not match target type").
+2. `e.GetType()` -> NIE (`callvirt.clr` on `Object.GetType`).
+3. `appdomain.Invoke(instanceMethod, e)` -> NRE: the public `Run`/`Invoke`
+   re-entry path (`ILIntepreter.cs:87-120`) ignores the `instance` argument
+   under `ENABLE_NEO_MODE` (Step-6 entry shim handles only no-arg static
+   methods).
+4. `ILTypeInstance.this[index]` indexer -> returns `null` under
+   `ENABLE_NEO_MODE` (Legacy-only `StackObject[] fields`; Neo uses
+   `byte[] Primitives + AutoList`).
+
+Workaround used in the probes: `e is MyEx` (isinst -- the same opcode the catch
+matcher uses, known-good on the `Adapter`).
+
+**Route:** Step 13 Area 4 (CLR binding codegen overhaul + cross-binding-adaptor
+completion) or a dedicated cross-binding-adaptor follow-up. The fix touches Neo
+callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry +
+`ILTypeInstance` Neo indexer (independent mechanisms; a single follow-up likely
+closes all four for the caught-exception shape). Full detail recorded in
+`.trae/documents/neo-deferred-items.md` (F-4 / NEO-IL-EX-FIELDACCESS, §2 master
+table + §3 detail).
+
+## Findings -- neo-il-exception-throw (2026-07-05, propose)
+
+Closes **D-IL-EXCEPTION-THROW** (the second half of the exception follow-up
+sequence; CATCH-COMPLETE closed the `CheckExceptionType` matcher, which was
+necessary-but-not-sufficient). Two independent gaps, both verified against
+current code:
+
+- **(a) Load-time TypeLoadException.** `ILType.cs:1412-1418` throws
+  `TypeLoadException("Cannot find Adaptor for:System.Exception")` for an IL
+  `class X : System.Exception` because no `System.Exception`
+  `CrossBindingAdaptor` is registered. Only `AttributeAdapter` ships as a
+  built-in (`AppDomain.cs:231`); the test harness
+  (`ILRuntimeTestBase/Adapters/helper.cs:22-29`) registers several others but
+  none for `System.Exception`.
+- **(b) Run-time Throw NRE.** `Throw` does `mStack[idx] as Exception` on BOTH
+  engines (Neo `GetNeoException` at `ILIntepreter.Neo.cs:3204-3212`, Legacy arm
+  at `ILIntepreter.Register.cs:5307-5312`). For an IL exception the slot holds
+  an `ILTypeInstance`, NOT an `Exception` -- `as Exception` is null -> NRE.
+  The CLR `Exception` lives at `ILTypeInstance.CLRInstance` (the adaptor's
+  `Adapter`), established in the `ILTypeInstance` ctor (`:352-361` via
+  `FirstCLRBaseType.CreateCLRInstance`).
+
+**Decision LOCKED: SHARED-engine fix, NOT Neo-only (mirrors CATCH-COMPLETE).**
+Both the adaptor registration (`AppDomain`, engine-agnostic) and the Throw
+`as Exception` bug exist IDENTICALLY in `ExecuteNeo` and `ExecuteR`. Legacy has
+the SAME bug -- it has NEVER thrown an IL exception successfully. So fixing
+both arms is a genuine Legacy improvement, not a Neo workaround. NOT gated
+`#if ENABLE_NEO_MODE`. Gate: new positive IL-catch tests pass on BOTH engines
+(Neo `Debug_Neo` AND plain `Debug` + `useRegister=true`) + 518/519 Legacy
+baseline holds. The CATCH-COMPLETE archive set this exact precedent under the
+same `neo-exceptions` capability.
+
+**Adaptor registration site: BUILT-IN, not test-harness.** The ExceptionAdaptor
+goes in the `AppDomain` ctor (`AppDomain.cs:231`, next to `AttributeAdapter`),
+NOT in `ILRuntimeTestBase/Adapters/helper.cs`. Rationale: the Throw-unwrap
+requires the IL exception's `CLRInstance` to BE a CLR `Exception`, which only
+happens if the adaptor created it -- so the adaptor is a runtime prerequisite,
+not a test convenience. Any consumer (Unity host, AOT loader) gets IL
+exceptions working without registering an adaptor. The `.neo` AOT runtime
+loader (Step 25) will need to register the same adaptor -- flagged for that
+child. New file: `ILRuntime/Runtime/Adapters/ExceptionAdaptor.cs` (nested
+`Adapter : System.Exception, CrossBindingAdaptorType`, mirrors
+`AttributeAdapter`; forwards `ToString()`; `Message` only if OQ2 decides the
+`ILInstance`-bridge read is awkward).
+
+**Throw-unwrap mechanism: reuse `ILTypeInstance.CLRInstance`.** When the throw
+operand is not directly an `Exception`, fall back to
+`((ILTypeInstance)o).CLRInstance as Exception`; if still null, NRE (throwing a
+non-exception object is invalid -- unreachable from C#, which requires the
+throw operand to be `Exception`-typed, so this is a defensive guard only).
+This is the SAME bridge ILRuntime already uses for CLR-method dispatch on an IL
+instance (`ILIntepreter.cs:2936`, `Register.cs:3557`, `Extensions.cs:311`,
+`AppDomain.cs:1450`). NOT a new mechanism.
+
+**Catch-slot representation subtlety (OQ1, resolve at apply).** The Throw arm
+throws the CLR `Adapter` (an `Exception`), so the catch slot stores the
+`Adapter` (CLR view), NOT the `ILTypeInstance`. Implications:
+- `catch (System.Exception e)` -> CLRType arm, `IsAssignableFrom(typeof(Adapter))`
+  true; `e.Message` reads via the forwarded member.
+- `catch (MyEx e)` (IL catch type) -> `CheckExceptionType` IL branch; the
+  thrown `Adapter` is NOT an `ILTypeInstance`, so the branch's
+  `exception as ILTypeInstance` is null and it falls to the
+  `TypeForCLR.IsAssignableFrom` fallback. The IL catch type's `TypeForCLR` is
+  the adaptor's `Adapter` type, so the match succeeds.
+- Reading an IL-declared field off the caught `e` requires
+  `((CrossBindingAdaptorType)e).ILInstance` (the standard cross-domain bridge).
+  Probe 7 (message field) uses this bridge OR a forwarded `Message` (OQ2).
+Confirm at apply via a temp `Console.WriteLine` in the catch arm.
+
+**Files the implementer will touch (shared-engine; Legacy Throw is the SAME
+bug, fixed identically -- NOT a Neo workaround):**
+- `ILRuntime/Runtime/Adapters/ExceptionAdaptor.cs` (new) -- the adaptor.
+- `ILRuntime/Runtime/Enviorment/AppDomain.cs:231` -- register it (built-in).
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs:3204-3212` --
+  `GetNeoException` unwrap fallback.
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Register.cs:5307-3312`
+  -- Legacy `Throw` arm, IDENTICAL unwrap (NOT Neo-gated).
+- `TestCases/NeoStep14Test.cs` (extend) -- 8 adversarial probes
+  (`NeoStep14_ILEx_*`); the `NeoStep` filter catches them.
+
+**Regression risk: MEDIUM.** Throw is on the rare throw path (low hot-path
+risk); the unwrap is a strict generalization (`o as Exception` first, IL
+fallback unreachable for any existing CLR-Exception operand -> byte-identical).
+The bigger surface is the AppDomain ctor (every AppDomain gains the adaptor)
++ the shared Throw arm. Adversarial probes MANDATORY (8 probes incl. catch-by-
+base, catch-by-exact, derived-before-base ordering, rethrow, cross-frame,
+message-field, mixed-with-CLR; Step 17 B1 / OPT-HARDEN K1 lesson binding). The
+biggest design risk is the catch-slot representation (OQ1) -- probes must read
+IL fields via the `ILInstance` bridge, not directly off the caught `e`.
+
+**Baseline note.** NeoStep smoke is 100/100 at HEAD (after neo-opt-harden-2).
+The 8 new probes FAIL on HEAD (NRE on throw) and turn green after the fix --
+proves load-bearing (mirrors the F-MAJ-1 / Q-VT-NEWOBJ stash-toggle proof).
+
+**Side-benefit watch.** Handoff §4 currently says `throw new ILExceptionType()`
+is NOT green-testable (needs the Exception-adaptor). After this change it IS.
+Check at verify whether any existing NeoStep case (or broader suite) was
+avoiding IL-typed throws and can now use them; note in ship log. Also: the
+CATCH-COMPLETE `CheckExceptionType` IL branch becomes reachable end-to-end
+for the first time (probe 3.1 exercises it) -- it was dead code before this
+change since no IL exception could be thrown.
+
+
+## Findings -- neo-il-exception-throw (apply, 2026-07-05)
+
+**RESOLVED.** D-IL-EXCEPTION-THROW closed. Both gaps fixed (shared-engine):
+(a) load-time TypeLoadException via a built-in `ExceptionAdaptor`
+(`Adapter : System.Exception, CrossBindingAdaptorType`, mirrors `AttributeAdapter`
+precisely, forwards `ToString()` only); (b) run-time Throw NRE via an
+`ILTypeInstance.CLRInstance as Exception` fallback in BOTH `GetNeoException`
+(Neo) and the `Throw` arm (Legacy), NOT `#if ENABLE_NEO_MODE`-gated. NeoStep
+smoke 108/108 (100 baseline + 8 new `NeoStep14_ILEx_*`). All 8 probes pass on
+BOTH engines. Stash-toggle: with the fix stashed, the test session CRASHES at
+load with the exact `TypeLoadException: Cannot find Adaptor for:System.Exception`
+at `ILType.cs:1418` (gap a is load-bearing). Legacy-neutral confirmed: the 9
+full-suite Legacy failures are all PRE-EXISTING (NeoOptHardening K1,
+NeoStep13 ClrStruct, NeoStep14 TC1/TC5/TC8, NeoStep15 TC6, NeoStep6 NeoNaNR8);
+the 3 NeoStep14 TC failures reproduce with the ORIGINAL Throw arm (reverted
+temporarily), so the Throw-unwrap is exonerated -- it is byte-identical for CLR
+Exception operands (`o as Exception` succeeds first, IL fallback unreachable).
+
+**OQ1 RESOLVED: the Neo catch slot holds the CLR `Adapter` (NOT the ILTypeInstance).**
+Confirmed via a temp `Console.WriteLine` in the catch-handler slot-store
+(`ILIntepreter.Neo.cs:3105`): `ex.GetType == ExceptionAdaptor+Adapter`. The
+`CheckExceptionType` IL branch's `TypeForCLR.IsAssignableFrom` fallback handles
+the Adapter-for-an-IL-catch-type match (the IL catch type's `TypeForCLR` IS the
+Adapter type). Declaring `catch (MyEx e)` works -- `e` holds the Adapter and is
+usable opaquely. The CATCH-COMPLETE IL branch is now reachable end-to-end for
+the first time (was dead code -- no IL exception could be thrown before).
+
+**OQ2 RESOLVED: minimal adaptor (forward `ToString()` only, NOT `Message`).**
+Two paths block IL-field/Message reads off a caught IL exception on Neo:
+1. `appdomain.Invoke(getMessage, instance)` re-entry does NOT push `this` for
+   instance methods under `ENABLE_NEO_MODE` (`ILIntepreter.cs:87-120` Step-6
+   entry shim handles only no-arg static methods) -> IL `get_Message` override
+   NREs.
+2. `ILTypeInstance.this[index]` indexer returns `null` under `ENABLE_NEO_MODE`
+   (Legacy-only `StackObject[] fields`; Neo uses `byte[] Primitives+AutoList`).
+3. The `((CrossBindingAdaptorType)e).ILInstance` bridge requires callvirt on a
+   CLR interface against the Adapter receiver -> ExecuteNeo throws
+   `InvalidCastException` "Object does not match target type". `e.GetType()`
+   also NIEs (`callvirt.clr Object.GetType`).
+Probe 3.7 asserts via `e is MyEx` (isinst -- the same opcode the catch matcher
+uses, known-good on the Adapter). Reading IL fields off a caught IL exception
+is a FOLLOW-UP (depends on Neo callvirt-on-CLR-interface / appdomain.Invoke
+instance-method / Neo indexer support). The `MyEx` class retains its `Msg` field
++ `Message` override for the throw side.
+
+**Stale-DLL gotcha (re-affirms opt-harden-2 finding).** `dotnet build
+TestCases` reported "0 errors" WITHOUT re-emitting the DLL on a small source
+edit (incremental hash hit). A probe change appeared not to take effect until
+`--no-incremental` forced a rebuild. ALWAYS use `--no-incremental` for the
+TestCases build after editing test source, and verify DLL mtime > source mtime.
+This caused a confusing false-failure iteration during probe 7 development.
+
+**Files touched (all confirmed, working tree UNCOMMITTED):**
+- `ILRuntime/Runtime/Adapters/ExceptionAdaptor.cs` (NEW)
+- `ILRuntime/Runtime/Enviorment/AppDomain.cs:231` (register built-in)
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs:3204`
+  (`GetNeoException` unwrap)
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Register.cs:5307`
+  (Legacy `Throw` arm, IDENTICAL unwrap, NOT Neo-gated)
+- `TestCases/NeoStep14Test.cs` (8 `NeoStep14_ILEx_*` probes + `MyEx`/`DerivedEx`)
+
+**Did NOT git commit/push** (per process discipline; LEAD commits after review).

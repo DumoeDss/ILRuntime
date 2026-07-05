@@ -75,10 +75,11 @@ Insert these into the roadmap ordering:
 | Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **RESOLVED in [VT-THIS-ADDR]** | RESOLVED 2026-07-05: inline-stfld owner-type clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back runtime branch | fixed; full NeoStep smoke 99/99 |
 | F-2 / INLINER-REFONLY-VT | ref-only VT (prim-size 0) local `new S(refArgs)` mis-compiles: inlined `stfld.ref.inline` writes don't survive to the following in-frame `ldfld.ref` read | neo-vt-this-addr re-review (F-1 probe) | **future** (fold into K2-FAM bridge or [OPT-HARDEN-3]) | JITCompiler inliner ref-fold over a 0-prim-size VT local | pre-existing (latent) |
 | F-3 / NEO-BYREF-THIS | `new ClrStruct(args)` (CLR struct ctor via byref-`this`) hits a pre-existing reflection gap at `CLRMethod.Invoke:353` (ctor `this` read as a 4-byte mStack index, but the byref `this` is an 8-byte Ref Slot from `ldloca`) | neo-opt-harden-2 re-review | **future** (Step 17 byref-completeness / `[NEO-BYREF-THIS]` follow-up) | `CLRMethod.Invoke` byref-this-to-CLR-struct-ctor | pre-existing (NOT a regression; fails identically on `f673b9c9`) |
+| F-4 / NEO-IL-EX-FIELDACCESS | Reading IL-declared fields/methods off a CAUGHT IL exception via the adaptor bridge is broken on Neo (4 broken read paths: `((CrossBindingAdaptorType)e).ILInstance` callvirt-on-CLR-interface -> InvalidCastException; `e.GetType()` callvirt.clr -> NIE; `appdomain.Invoke` instance-method -> NRE under ENABLE_NEO_MODE; `ILTypeInstance.this[index]` indexer -> null under ENABLE_NEO_MODE) | neo-il-exception-throw apply (OQ1/OQ2) | **future** (Step 13 Area 4 / cross-binding-adaptor follow-up) | Neo callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry + `ILTypeInstance` Neo indexer | pre-existing (NOT introduced; surfaces only because IL exceptions can now be thrown + caught); workaround `e is MyEx` (isinst) |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
-| D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **partial ([CATCH-COMPLETE])** | CheckExceptionType IL branch done; end-to-end needs adaptor + Throw | shared-engine gap (CheckExceptionType piece closed) |
-| D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **future** | System.Exception CrossBindingAdaptor + Throw `as Exception` handling for IL instances | new follow-up |
+| D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **RESOLVED ([CATCH-COMPLETE] + neo-il-exception-throw)** | CheckExceptionType IL branch + Exception-adaptor + Throw-for-IL all landed | shared-engine gap (fully closed; IL branch now reachable end-to-end) |
+| D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **RESOLVED (neo-il-exception-throw)** | System.Exception CrossBindingAdaptor (built-in) + Throw `as Exception` IL-instance unwrap on BOTH engines | shared-engine gap (closed 2026-07-05; F-4 / NEO-IL-EX-FIELDACCESS follow-up surfaced) |
 | D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **opportunistic** | patch-infra step | optimization (non-functional) |
 | D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **opportunistic** | triggered by a test/feature | roadmap gap (rare) |
 | N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **opportunistic** | — | cosmetic nit |
@@ -298,6 +299,48 @@ dedicated `[NEO-BYREF-THIS]` follow-up. The fix would teach
 `objIdx == -1`) and read the struct bytes directly, instead of the 4-byte
 mStack-index read.
 
+### F-4 / NEO-IL-EX-FIELDACCESS — reading IL fields/methods off a caught IL exception is broken on Neo (-> future)
+Surfaced by the neo-il-exception-throw apply (OQ1/OQ2). Once an IL exception
+can be THROWN + CAUGHT end-to-end (this change), reading IL-declared fields or
+methods off the CAUGHT exception object via the standard cross-binding-adaptor
+bridge turns out to be broken on Neo. **PRE-EXISTING gap, NOT introduced by
+neo-il-exception-throw** -- the change only (1) registers an adaptor and (2)
+adds an unwrap fallback; it does NOT touch callvirt-on-CLR-interface /
+`appdomain.Invoke` instance-method / `ILTypeInstance` indexer machinery. The
+gap was simply unreachable before (no IL exception could be caught), so it was
+invisible.
+
+Four distinct broken read paths (each blocked by a separate pre-existing Neo
+mechanism; the exception-throw change exposed all of them at once):
+1. **`((CrossBindingAdaptorType)e).ILInstance` bridge** -- the standard
+   cross-domain pattern requires `callvirt` on a CLR interface
+   (`CrossBindingAdaptorType::get_ILInstance`) against the `Adapter` receiver;
+   ExecuteNeo throws `InvalidCastException` ("Object does not match target
+   type") for that callvirt-on-CLR-interface-where-receiver-is-the-Adapter
+   shape.
+2. **`e.GetType()`** -- NIE (`callvirt.clr` on `Object.GetType`).
+3. **`appdomain.Invoke(instanceMethod, e)`** -- NRE: the public `Run`/`Invoke`
+   re-entry path (`ILIntepreter.cs:87-120`) ignores the `instance` argument
+   under `ENABLE_NEO_MODE` (the Step-6 entry shim handles only no-arg static
+   methods), so an IL `get_Message` override has no `this`.
+4. **`ILTypeInstance.this[index]` indexer** -- returns `null` under
+   `ENABLE_NEO_MODE` (Legacy-only `StackObject[] fields` path; Neo uses
+   `byte[] Primitives + AutoList ManagedObjects`).
+
+The probe tests (`NeoStep14_ILEx_MessageField` et al.) use the `e is MyEx`
+(isinst) workaround -- isinst is the same opcode the catch matcher uses and is
+known-good on the `Adapter`. The `MyEx` class retains its `Msg` field +
+`Message` override on the throw side; forwarding will activate once the
+callvirt/indexer gaps close.
+
+The reviewer did NOT ship a failing test for the broken read paths (would
+regress the smoke for an out-of-scope bug). **Resolution:** future -- route to
+Step 13 Area 4 (CLR binding codegen overhaul + cross-binding-adaptor
+completion) or a dedicated cross-binding-adaptor follow-up. The fix touches
+Neo callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry +
+`ILTypeInstance` Neo indexer (all independent mechanisms; a single follow-up
+likely closes all four for the caught-exception shape).
+
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
 suspected to hit an optimizer temp-renumber quirk (BCP/copy-prop). **OPT-HARDEN
@@ -317,26 +360,65 @@ readers and I8 compare/branch arms read `*(long*)` correctly; `InferPrimTag`→
 type-specialization / `AllocateLocalStackSpaces` 4-vs-8-byte overlap) for
 recovery IF a reproducing case surfaces. No fix shipped.
 
-### D-CHECKEX — `CheckExceptionType` NIE for non-CLRType catch types (Step 14 -> PARTIAL [CATCH-COMPLETE])
-The shared engine's `CheckExceptionType` (`ILIntepreter.cs:~5823`) threw NIE for
-catch types that are not CLRType (an `ILType` catch clause). Neo catch matching
-uses this shared path. **PARTIAL RESOLUTION (CATCH-COMPLETE, 2026-07-04):** the
-NIE is replaced with an IL branch — `exception as ILTypeInstance` → exact or
-`CanAssignTo(catchType)` (reuses Step 15's CanAssignTo) → else CLR fallback.
-Shared-engine (NOT Neo-gated); Legacy-neutral (the new branch is unreachable for
-every existing CLRType catch). D-CHECKEX's CheckExceptionType piece is CLOSED.
-**End-to-end IL-exception catch still needs more** (see D-IL-EXCEPTION-THROW),
-so no positive IL-catch test is authorable yet.
+### D-CHECKEX — `CheckExceptionType` NIE for non-CLRType catch types (Step 14 -> RESOLVED [CATCH-COMPLETE] + neo-il-exception-throw)
+RESOLVED 2026-07-05. The shared engine's `CheckExceptionType`
+(`ILIntepreter.cs:~5823`) threw NIE for catch types that are not CLRType (an
+`ILType` catch clause). Neo catch matching uses this shared path. **RESOLUTION
+in two stages:**
+- **(CATCH-COMPLETE, 2026-07-04):** the NIE is replaced with an IL branch —
+  `exception as ILTypeInstance` → exact or `CanAssignTo(catchType)` (reuses
+  Step 15's CanAssignTo) → else CLR fallback. Shared-engine (NOT Neo-gated);
+  Legacy-neutral (the new branch is unreachable for every existing CLRType
+  catch). D-CHECKEX's CheckExceptionType piece was CLOSED at this stage, but
+  the branch was DEAD CODE (no IL exception could be thrown yet).
+- **(neo-il-exception-throw, 2026-07-05):** the IL branch is now REACHABLE
+  end-to-end for the first time -- an IL exception class can finally be loaded
+  (Exception-adaptor) and thrown (Throw-unwrap), so the IL-catch matcher
+  branch actually fires for a thrown IL exception. See D-IL-EXCEPTION-THROW.
 
-### D-IL-EXCEPTION-THROW — end-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) (-> future)
-Even with D-CHECKEX's CheckExceptionType branch, throwing an IL-typed exception
-and catching it end-to-end is blocked on TWO more pieces: (a) a registered
-`System.Exception` `CrossBindingAdaptor` (an IL `class X : System.Exception`
-throws TypeLoadException at `ILType.cs:1418` without it); (b) the `Throw` opcode
-does `mStack[idx] as Exception` on BOTH engines (`ILIntepreter.Neo.cs:~3159`,
-`ILIntepreter.Register.cs:~5310`) → a plain IL class (an `ILTypeInstance`, not
-an Exception) NREs. Resolution: register an Exception adaptor + handle IL
-instances in Throw. The positive IL-catch test is reserved for that pass.
+D-CHECKEX is now FULLY RESOLVED (both the matcher piece and the end-to-end
+reachability). See `openspec/changes/archive/2026-07-05-neo-il-exception-throw/`.
+
+### D-IL-EXCEPTION-THROW — end-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) (-> RESOLVED)
+RESOLVED 2026-07-05. Even with D-CHECKEX's CheckExceptionType branch, throwing
+an IL-typed exception and catching it end-to-end was blocked on TWO more pieces:
+(a) a registered `System.Exception` `CrossBindingAdaptor` (an IL
+`class X : System.Exception` throws TypeLoadException at `ILType.cs:1418`
+without it); (b) the `Throw` opcode does `mStack[idx] as Exception` on BOTH
+engines (`ILIntepreter.Neo.cs:~3204`, `ILIntepreter.Register.cs:~5307`) → a
+plain IL class (an `ILTypeInstance`, not an Exception) NREs.
+
+**Resolution (neo-il-exception-throw, shared-engine, NOT Neo-gated):**
+1. NEW `ExceptionAdaptor` (`ILRuntime/Runtime/Adapters/ExceptionAdaptor.cs`):
+   nested `Adapter : System.Exception, CrossBindingAdaptorType` mirroring
+   `AttributeAdapter` exactly; forwards `ToString()` only (Message forwarding
+   blocked by separate pre-existing Neo gaps -- see F-4). Registered as a
+   built-in in the `AppDomain` ctor (~line 231, next to `AttributeAdapter`).
+2. Throw-unwrap in BOTH arms: after `o as Exception`, fall back to
+   `((ILTypeInstance)o).CLRInstance as Exception` (the adaptor's `Adapter`,
+   which IS-A CLR `Exception`); else the existing NullReferenceException guard.
+   Sites: Neo `GetNeoException` (`ILIntepreter.Neo.cs:~3204`) + Legacy `Throw`
+   (`ILIntepreter.Register.cs:~5307`). Byte-identical for existing CLR-Exception
+   operands (the first `as` succeeds; IL fallback unreachable).
+
+**Verification:** Neo 108/108 (100 baseline + 8 `NeoStep14_ILEx_*`); Legacy
+617 tests / 9 failed (ALL pre-existing; the 3 NeoStep14 TC failures are
+`ArgumentOutOfRangeException` in `List.set_Item` for CLR-exception tests, where
+the IL fallback is unreachable -> Throw-unwrap exonerated). Stash-toggle: with
+the fix stashed, the whole session crashes at `TestSession.LoadTest()` with
+`TypeLoadException: Cannot find Adaptor for:System.Exception` (gap a load-
+bearing). Review APPROVED (0 Blocker/Major; doc-only M1 methodology + M2
+breaking-change callout).
+
+**Side-benefit:** CATCH-COMPLETE's `CheckExceptionType` IL branch is now
+exercised end-to-end for the first time.
+
+**Surfaced F-4 / NEO-IL-EX-FIELDACCESS** (pre-existing Neo gap; reading
+IL-declared fields/methods off a caught IL exception via the adaptor bridge is
+broken -- see F-4 detail). Workaround: `e is MyEx` (isinst). Route to Step 13
+Area 4 / cross-binding-adaptor follow-up.
+
+See `openspec/changes/archive/2026-07-05-neo-il-exception-throw/ship-log.md`.
 
 ### D-PEEP — `box T; isinst U` peephole + `PatchKind.IsinstResult` (Step 15 -> opportunistic)
 The compile-time peephole (detect `box T; isinst U`, statically resolve) and the
@@ -375,6 +457,17 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
+- **D-IL-EXCEPTION-THROW** — End-to-end IL-exception catch. Fixed in
+  neo-il-exception-throw (2026-07-05, shared-engine): built-in
+  `ExceptionAdaptor` + Throw `as Exception` IL-instance unwrap in BOTH Neo
+  `GetNeoException` and Legacy `Throw`. NeoStep smoke 108/108; Legacy-neutral
+  (9 pre-existing failures, Throw-unwrap exonerated). CATCH-COMPLETE's
+  `CheckExceptionType` IL branch now reachable end-to-end. Surfaced F-4 /
+  NEO-IL-EX-FIELDACCESS (pre-existing). See §3 D-IL-EXCEPTION-THROW.
+- **D-CHECKEX** — `CheckExceptionType` NIE for non-CLRType catch types. Now
+  FULLY RESOLVED: CATCH-COMPLETE (2026-07-04) closed the matcher piece;
+  neo-il-exception-throw (2026-07-05) made the IL branch reachable end-to-end
+  (was dead code before). See §3 D-CHECKEX.
 - **K1** — FCP value-type-move mis-propagation. Fixed in OPT-HARDEN (2026-07-04)
   via the `ldloca-kill` (Neo-only, Legacy-neutral). See §3 K1.
 - **K2** — Step 8 VT-by-value param copy (reads primitive as mStack index).
