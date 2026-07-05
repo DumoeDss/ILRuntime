@@ -575,3 +575,99 @@ string literal you added -- ASCII `strings` will NOT find .NET UTF-16 string
 literals. This bit me during the dump-probe iteration (a stale DLL silently
 ran the OLD code).
 
+## Findings -- neo-opt-harden-2 (review-fix, 2026-07-05)
+
+**RESOLVED (review-loop round 1).** The F-MAJ-1 declare-side fix (Option B:
+CLR-VT local = flat bytes, RefCount=0) left THREE runtime consumer arms
+assuming the OLD boxed-ref representation. The fixer (non-author) dump-gated
+each and fixed the three reachable ones; smoke stayed green (NeoOptHard 16/16,
+NeoStep 100/100, Legacy byte-identical). A 4th arm of the same defect class
+(Unbox_Any) was found via the dump -- the reviewer's sweep table missed it
+because the C# `(T)obj` cast compiles to `unbox.any`, not the `castclass` the
+reviewer expected.
+
+**The three reachable broken arms (all in `ILIntepreter.Neo.cs`, Neo-only):**
+- **M1 Initobj CLR-struct/enum:** wrote a boxed default into
+  `mStack[frameRefBase+RefOffset]` -- RefOffset STALE (RefCount=0) -> clobbered
+  a neighbour ref slot. Fix: `Unsafe.InitBlock(DstOffset, 0, clrVtSize)`.
+- **M2 Box CLR-struct/enum:** read the first 4 flat bytes as an mStack index
+  -> OOB. Fix: `ReadNeoValueType(clrType, frameBase, ref off, sz)` (cached
+  typed reader -> independent boxed copy).
+- **Unbox_Any CLR-struct DEST (the dump-surprise):** wrote a boxed clone into
+  `mStack[frameRefBase+dstRefOffset]` (STALE) + a 4-byte index into the flat
+  bytes -- the WRITE-side twin of M2. Fix: `WriteNeoValueType(obj, DstOffset,
+  unbxSz)`.
+
+**M3 Isinst/Castclass: NOT BROKEN (no fix).** The reviewer INFERRED this from
+M2's shape but did not probe it. The dump showed `(T)obj` -> `unbox.any` (not
+`castclass`) and `is`/`as` always go through a prior Box, so the isinst/
+castclass source is ALWAYS a boxed-ref `object`-typed local, never flat bytes.
+The existing boxed-ref path is correct and the flat-bytes-source case is
+unreachable. NO speculative flat-bytes branch was added (would be untested dead
+code).
+
+**Discriminator insight (durable).** For Box/Unbox_Any NO runtime
+discriminator is needed: Box's source is always a value operand (flat bytes
+under the new model); Unbox_Any's dest is always a value-typed local (flat
+bytes). For Isinst/Castclass the source is always a boxed-ref (the compiler
+boxes first). So the per-arm TYPE TOKEN determines the representation
+unconditionally -- no per-slot `IsRef`/`RefCount` flag needs to be stamped at
+lowering. (This contrasts with a potential `Box` of an already-boxed source,
+which is a compiler no-op and never emitted.)
+
+**M1 reproduction subtlety (earned).** `new T()` at declaration order does NOT
+reproduce M1 in isolation: the C# compiler emits `ldloca;initobj` BEFORE the
+neighbour ref slot is populated, so the clobber is overwritten by the
+neighbour's later write (accidental correctness -- exactly as the reviewer
+noted). To make M1 OBSERVABLE the probe must RE-init the struct via
+`v = default(T)` AFTER the canary neighbour is established, so the stale-
+RefOffset write lands on an already-live ref slot.
+
+**CLI filter gotcha (earned).** The ILRuntimeTestCLI name filter is a simple
+`Contains` substring (`Program.cs:54`); it does NOT support regex or `|`
+alternation. A filter like `"A|B|C"` runs 0 tests silently. Run each probe
+name separately, or use a common substring prefix (the `Fmaj1_` prefix works).
+
+**Dump-noise gotcha (earned).** `Debug_Neo`'s `OUTPUT_JIT_RESULT` prints JIT
+for EVERY method in the assembly (including async state machines), so
+`grep`-ing for a specific opcode in the dump floods. To dump-gate a specific
+arm, add a temporary `Console.WriteLine` INSIDE the runtime arm (it fires only
+when that arm executes for the probe method), run the single probe, then
+remove the diagnostic. This was how M1/M2/Unbox_Any slot shapes were
+confirmed and how M3's "isinst didn't fire" was discovered.
+
+**Lesson re-affirmed.** The reviewer's blast-radius sweep is the load-bearing
+deliverable but is NOT exhaustive -- it missed Unbox_Any (the inverse of Box).
+A dump-gate on the ACTUAL failing opcode (not the opcode the reviewer
+hypothesised) is the only way to find the real defect class. The green smoke
+hid M1/M2/Unbox_Any because no existing test exercised `default(ClrStruct)` /
+`object o = clrStruct` / `(ClrStruct)obj` on a CLR struct local in Neo mode.
+
+## Follow-ups discovered
+
+### `[NEO-BYREF-THIS]` -- `new ClrStruct(args)` byref-`this` ctor reflection gap (from neo-opt-harden-2 re-review)
+
+Surfaced by the neo-opt-harden-2 round-1 completeness sweep. A DIRECT
+`new ClrStruct(args)` in interpreted IL (e.g.
+`new TestVector3NoBinding(100f,200f,300f)`) fails with
+`ArgumentOutOfRangeException` at `CLRMethod.Invoke:353`. **Pre-existing -- NOT
+a regression** (fails identically on `f673b9c9`, pre-F-MAJ-1 / pre-round-1).
+
+Key finding: the C# compiler does NOT emit `newobj` for `new ClrStruct(...)`
+assigned to a local -- it lowers to `initobj r1; ldloca.s r8, r1; push r8; call
+ClrStruct::.ctor(...)`. The struct is constructed IN-PLACE via a byref `this`,
+NOT via `InvokeNeoClrMethod(isNewobj:true)`. So the newobj-boxed-ref-write path
+is GENUINELY UNREACHABLE for this pattern. The actual failure is `CLRMethod.Invoke`
+reading the ctor `this` as a 4-byte mStack index, while the byref `this` is an
+8-byte Ref Slot from `ldloca` (`objIdx == -1`).
+
+Same defect class as the byref-`this`-via-callvirt-on-a-CLR-struct gap and the
+broader "CLRMethod.Invoke reflection fallback only handles a 4-byte mStack-index
+`this`, not a frame-native byref" limitation. It is NOT the F-MAJ-1
+boxed-ref-vs-flat-bytes defect class.
+
+**Route:** Step 17 byref-completeness work, or a dedicated `[NEO-BYREF-THIS]`
+follow-up. Full detail recorded in
+`.trae/documents/neo-deferred-items.md` (F-3 / NEO-BYREF-THIS, §2 master table +
+§3 detail).
+

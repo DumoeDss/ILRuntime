@@ -1930,18 +1930,17 @@ namespace ILRuntime.Runtime.Intepreter
                                 }
                                 else
                                 {
-                                    // Step 13: CLR value type Initobj.
-                                    // In the Neo frame a CLR value-type local is stored as
-                                    // a BOXED object reference (a 4-byte mStack index slot,
-                                    // RefCount = 1; see JITCompiler.AllocateLocalStackSpaces
-                                    // CLR-VT branch). So Initobj materializes a default
-                                    // boxed instance and installs its mStack index. This
-                                    // works uniformly for pure-primitive CLR structs and
-                                    // for CLR structs with reference fields, with or without
-                                    // a registered ValueTypeBinder -- the binder is only
-                                    // required for the flat-bytes representation used by CLR
-                                    // struct array elements / by-value params / IL-typed
-                                    // fields, which is deferred to Step 13b.
+                                    // Step 13 / F-MAJ-1 review-fix: CLR value type Initobj.
+                                    // A Neo CLR value-type LOCAL (struct OR enum) is stored as
+                                    // FLAT MANAGED BYTES (Size = GetNeoValueTypeManagedSize,
+                                    // RefCount = 0, isRef = false; see
+                                    // JITCompiler.AllocateLocalStackSpaces CLR-VT branch under
+                                    // ENABLE_NEO_MODE). Initobj therefore ZEROES the flat-bytes
+                                    // region -- mirroring the IL-VT Initobj branch above and the
+                                    // CLR-primitive branch below -- and does NOT touch mStack /
+                                    // RefOffset (there is no ref slot: RefCount = 0). Zeroing is
+                                    // correct for both pure-primitive CLR structs (default = all
+                                    // fields zero) and CLR enums (default = underlying zero).
                                     CLRType clrInitType = t as CLRType;
                                     if (clrInitType == null)
                                     {
@@ -1963,22 +1962,17 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        // CLR struct OR CLR enum local: held as a boxed object
-                                        // reference (a CLR value type with !IsPrimitive -- which
-                                        // includes enums -- is allocated as a 4-byte mStack index
-                                        // slot via the CLR-VT branch; see
-                                        // JITCompiler.AllocateLocalStackSpaces). Materialize a
-                                        // default boxed instance. CreateDefaultInstance yields the
-                                        // enum's zero value (the default boxed enum). This works
-                                        // with or without a registered ValueTypeBinder -- the
-                                        // binder is only required for the flat-bytes representation
-                                        // used by CLR struct array elements / by-value params /
-                                        // IL-typed fields, which is deferred to Step 13b.
-                                        object def = clrInitType.CreateDefaultInstance();
-                                        int initRefOff = ip->Operand3;
-                                        int initDstIdx = frameRefBase + initRefOff;
-                                        mStack[initDstIdx] = def;
-                                        *(int*)(frameBase + ip->DstOffset) = initDstIdx;
+                                        // CLR struct OR CLR enum local: flat bytes; zero them.
+                                        // (Pre-F-MAJ-1 this arm installed a boxed default into
+                                        // mStack[frameRefBase+RefOffset]; with RefCount=0 the
+                                        // stamped RefOffset is STALE -- it belongs to a
+                                        // neighbouring ref slot -- so the write silently
+                                        // corrupted that neighbour. The flat-bytes region is
+                                        // already zeroed by frame init, but Initobj must still
+                                        // re-zero it for the `v = default(T)` re-init case.)
+                                        int csz = Optimizer.GetNeoValueTypeManagedSize(clrInitType.TypeForCLR);
+                                        if (csz > 0)
+                                            Unsafe.InitBlock(frameBase + ip->DstOffset, 0, (uint)csz);
                                     }
                                 }
                                 break;
@@ -2049,25 +2043,26 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        // A CLR value-type (struct OR enum) local is held as a
-                                        // boxed object reference (a CLR value type with
-                                        // !IsPrimitive -- which includes enums -- is allocated
-                                        // as a 4-byte mStack index slot via the CLR-VT branch;
-                                        // see JITCompiler.AllocateLocalStackSpaces), so boxing
-                                        // reads that mStack slot. To preserve value semantics
-                                        // (a later mutation of the source local must not affect
-                                        // the boxed copy) the box is an independent shallow copy
-                                        // via MemberwiseClone. PerformMemberwiseClone works on a
-                                        // boxed enum the same as a boxed struct (a boxed enum IS
-                                        // a boxed System.Enum-derived value type). The
-                                        // ValueTypeBinder is optional for this local path -- it
-                                        // is mandatory only for the flat-bytes array/param
-                                        // representation deferred to Step 13b; structs-with-refs
-                                        // -and-no-binder therefore work for locals (no Step-13b
-                                        // NIE here, unlike the design's flat-bytes assumption).
-                                        srcIdx = *(int*)(frameBase + ip->SrcOffset);
-                                        obj = srcIdx >= 0 ? mStack[srcIdx] : null;
-                                        boxed = obj != null ? clrBoxType.PerformMemberwiseClone(obj) : null;
+                                        // F-MAJ-1 review-fix: a Neo CLR value-type (struct OR
+                                        // enum) LOCAL is stored as FLAT MANAGED BYTES (Size =
+                                        // GetNeoValueTypeManagedSize, RefCount = 0; see
+                                        // JITCompiler.AllocateLocalStackSpaces CLR-VT branch
+                                        // under ENABLE_NEO_MODE). Box reads the flat bytes and
+                                        // boxes them via the cached typed reader
+                                        // (ReadNeoValueType -> Unsafe.ReadUnaligned<T> + Box),
+                                        // which yields an INDEPENDENT boxed copy, preserving
+                                        // value semantics. (Pre-F-MAJ-1 this arm read a 4-byte
+                                        // mStack index from the flat bytes -- garbage as an
+                                        // index -> wrong object / OOB.) The Box opcode's source
+                                        // is always a value-typed operand, so the flat-bytes
+                                        // read is correct here unconditionally; the boxed-REF
+                                        // source shape (an already-boxed struct typed as
+                                        // object) never reaches Box (re-boxing an object is a
+                                        // compiler no-op) -- that case is handled by the
+                                        // Isinst/Castclass arms instead.
+                                        int bsz = Optimizer.GetNeoValueTypeManagedSize(clrBoxType.TypeForCLR);
+                                        int boxOff = ip->SrcOffset;
+                                        boxed = ReadNeoValueType(clrBoxType.TypeForCLR, frameBase, ref boxOff, bsz);
                                     }
                                     dstIdx = frameRefBase + dstRefOffset;
                                     mStack[dstIdx] = boxed;
@@ -2327,22 +2322,22 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        // CLR struct OR enum local destination is a boxed
-                                        // object reference (a CLR value type with !IsPrimitive
-                                        // -- which includes enums -- is allocated as a 4-byte
-                                        // mStack index slot via the CLR-VT branch; see
-                                        // JITCompiler.AllocateLocalStackSpaces). Copy the boxed
-                                        // struct/enum into an independent boxed instance (value
-                                        // semantics: mutating the unboxed local must not affect
-                                        // the source box). PerformMemberwiseClone works on a
-                                        // boxed enum the same as a boxed struct. The binder is
-                                        // optional for this local path (mandatory only for the
-                                        // flat-bytes array/param representation deferred to
-                                        // Step 13b).
-                                        object unboxed = clrUnboxType.PerformMemberwiseClone(obj);
-                                        dstIdx = frameRefBase + dstRefOffset;
-                                        mStack[dstIdx] = unboxed;
-                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                        // F-MAJ-1 review-fix: a Neo CLR value-type (struct OR
+                                        // enum) LOCAL destination is FLAT MANAGED BYTES (Size =
+                                        // GetNeoValueTypeManagedSize, RefCount = 0; see
+                                        // JITCompiler.AllocateLocalStackSpaces CLR-VT branch
+                                        // under ENABLE_NEO_MODE). Unbox writes the boxed
+                                        // struct's flat bytes into the dest via WriteNeoValueType
+                                        // (an independent value copy -- value semantics
+                                        // preserved). (Pre-F-MAJ-1 this arm installed a boxed
+                                        // clone into mStack[frameRefBase+dstRefOffset] and
+                                        // wrote the index into the flat bytes; with RefCount=0
+                                        // dstRefOffset is STALE -> corruption.) This is the
+                                        // inverse of the M2 Box fix. The dest of unbox.any is
+                                        // always a value-typed local, so the flat-bytes write is
+                                        // correct here unconditionally.
+                                        int unbxSz = Optimizer.GetNeoValueTypeManagedSize(clrUnboxType.TypeForCLR);
+                                        WriteNeoValueType(obj, frameBase + ip->DstOffset, unbxSz);
                                     }
                                 }
                                 break;

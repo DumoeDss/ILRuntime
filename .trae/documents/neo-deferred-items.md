@@ -74,6 +74,7 @@ Insert these into the roadmap ordering:
 | Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **RESOLVED (Step 18, non-reproducible)** | — | not reproducible on HEAD (JIT dump: distinct frame regions + ref slots per register); same outcome as Q-STRUCT/Q-LONG |
 | Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **RESOLVED in [VT-THIS-ADDR]** | RESOLVED 2026-07-05: inline-stfld owner-type clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back runtime branch | fixed; full NeoStep smoke 99/99 |
 | F-2 / INLINER-REFONLY-VT | ref-only VT (prim-size 0) local `new S(refArgs)` mis-compiles: inlined `stfld.ref.inline` writes don't survive to the following in-frame `ldfld.ref` read | neo-vt-this-addr re-review (F-1 probe) | **future** (fold into K2-FAM bridge or [OPT-HARDEN-3]) | JITCompiler inliner ref-fold over a 0-prim-size VT local | pre-existing (latent) |
+| F-3 / NEO-BYREF-THIS | `new ClrStruct(args)` (CLR struct ctor via byref-`this`) hits a pre-existing reflection gap at `CLRMethod.Invoke:353` (ctor `this` read as a 4-byte mStack index, but the byref `this` is an 8-byte Ref Slot from `ldloca`) | neo-opt-harden-2 re-review | **future** (Step 17 byref-completeness / `[NEO-BYREF-THIS]` follow-up) | `CLRMethod.Invoke` byref-this-to-CLR-struct-ctor | pre-existing (NOT a regression; fails identically on `f673b9c9`) |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **partial ([CATCH-COMPLETE])** | CheckExceptionType IL branch done; end-to-end needs adaptor + Throw | shared-engine gap (CheckExceptionType piece closed) |
@@ -262,6 +263,40 @@ Ret-arm ref-copy shape) passes. The reviewer did NOT ship a failing test
 fold into the K2-FAM bridge child (ref-field handling on VTs) or a small
 [OPT-HARDEN-3] inliner-hardening. Suspect: the JIT inliner's ref-fold over a
 0-prim-size VT local in `JITCompiler.cs`.
+
+### F-3 / NEO-BYREF-THIS — `new ClrStruct(args)` byref-`this` ctor reflection gap (-> future)
+Surfaced by the neo-opt-harden-2 round-1 re-review (the "is there a 4th broken
+arm?" completeness sweep). A DIRECT `new ClrStruct(args)` in interpreted IL
+(e.g. `new TestVector3NoBinding(100f,200f,300f)`) fails with
+`ArgumentOutOfRangeException` at `CLRMethod.Invoke:353`. INVESTIGATION SHOWS THIS
+IS A PRE-EXISTING GAP, NOT a regression from F-MAJ-1 or the round-1 consumer-arm
+fix:
+
+- The C# compiler does NOT emit `newobj` for `new ClrStruct(...)` assigned to a
+  local. It lowers to `initobj r1; ldloca.s r8, r1; push r8; call
+  ClrStruct::.ctor(...)` -- the struct is constructed IN-PLACE via a byref
+  `this`, NOT via `InvokeNeoClrMethod(isNewobj:true)`. So the
+  `InvokeNeoClrMethod(isNewobj:true)` boxed-ref-write path (which IS
+  representation-inconsistent post-F-MAJ-1) is GENUINELY UNREACHABLE for a C#
+  `new ClrStruct(...)` local init.
+- The actual failure is at `CLRMethod.Invoke:353` reading the ctor `this`
+  argument as a 4-byte mStack index. The `this` is a byref (8-byte Ref Slot from
+  `ldloca`). This is a byref-`this`-to-CLR-struct-ctor reflection gap that has
+  NEVER worked in Neo mode -- confirmed it fails IDENTICALLY on `f673b9c9`
+  (pre-F-MAJ-1, pre-round-1).
+- Same defect class as the byref-`this`-via-callvirt-on-a-CLR-struct gap (row 19
+  of the round-1 sweep) and the broader "CLRMethod.Invoke reflection fallback
+  only handles a 4-byte mStack-index `this`, not a frame-native byref"
+  pre-existing limitation.
+- It is NOT the F-MAJ-1 boxed-ref-vs-flat-bytes defect class. The reviewer did
+  NOT ship a failing test (would regress the smoke for an out-of-scope bug);
+  the probe was reverted.
+
+**Resolution:** future -- route to Step 17 byref-completeness work or a
+dedicated `[NEO-BYREF-THIS]` follow-up. The fix would teach
+`CLRMethod.Invoke` to recognise a frame-native byref `this` (8-byte Ref Slot,
+`objIdx == -1`) and read the struct bytes directly, instead of the 4-byte
+mStack-index read.
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was

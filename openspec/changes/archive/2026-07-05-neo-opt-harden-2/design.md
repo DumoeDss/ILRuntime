@@ -381,3 +381,111 @@ propose-time finding holds).
   declared `RefCount=0` here (the reflection-fallback D6 return path NIEs
   ref-field structs upstream). The binder path is owned by autogen redirects.
 
+## Review-loop round 1 fixes (2026-07-05) -- the 3 broken consumer arms
+
+The adversarial non-author review (CHANGES-REQUESTED) found that the F-MAJ-1
+declare-side re-typing (a CLR-VT LOCAL is now flat bytes: `Size=clrVtSize,
+RefCount=0, isRef=false`) left THREE runtime consumer arms still assuming the
+OLD boxed-ref representation (`RefCount=1, isRef=true`, 4-byte mStack index in
+the flat-bytes region). The fixer dump-gated each, fixed the reachable ones,
+and added regression probes. The dump-gate (OPT-HARDEN K1 discipline) also
+surfaced a FOURTH arm of the same defect class that the reviewer's sweep table
+had missed (Unbox_Any) -- see below.
+
+### Discriminator chosen (per-finding)
+
+Each arm's discriminator was locked from a focused JIT/runtime dump, not
+guessed:
+
+- **M1 Initobj (CLR-struct/enum local):** dump showed `DstOffset=<flat bytes
+  base>, RefOffset(Operand3)=<STALE -- belongs to a neighbour>, RefCount=0,
+  clrVtSize=12`. The arm wrote `mStack[frameRefBase+RefOffset] = boxedDefault`
+  into the NEIGHBOUR's ref slot. The type token (`clrInitType`) is a non-
+  primitive CLR value type. Fix branches on the type token: for a flat-bytes
+  CLR-VT local, `Unsafe.InitBlock(frameBase+DstOffset, 0, clrVtSize)` (zero-
+  init the flat bytes); do NOT touch mStack/RefOffset. The `Operand3` stamp
+  becomes dead for this sub-branch (harmless).
+- **M2 Box (CLR-struct/enum local):** dump showed `SrcOffset=0, read-srcIdx=
+  1120403456` (0x42C80000 = 100.0f -- the FIRST FLOAT FIELD read as an int!),
+  `clrVtSize=12`. The arm read the first 4 flat bytes as an mStack index ->
+  massively OOB. The Box opcode's source is ALWAYS a value-typed operand
+  (re-boxing an `object`-typed value is a compiler no-op), so the source is
+  unconditionally flat bytes; no discriminator is needed. Fix: box via
+  `ReadNeoValueType(clrBoxType.TypeForCLR, frameBase, ref boxOff=SrcOffset,
+  clrVtSize)` (the cached typed reader -> independent boxed copy). The boxed-
+  REF source shape belongs to Isinst/Castclass, not Box.
+- **M3 Isinst/Castclass (CLR-struct type token):** the reviewer INFERRED this
+  was broken (not probed). The dump showed the C# `(T)obj` cast on a struct
+  compiles to `unbox.any`, NOT `castclass`/`isinst`; `is`/`as`/cast on a CLR
+  struct ALWAYS goes through a prior Box (the source of isinst/castclass is
+  therefore always a boxed-ref `object`-typed local, never flat bytes). So the
+  isinst/castclass boxed-ref path is CORRECT and UNREACHABLE for a flat-bytes
+  source -- no fix needed there. (The probe's actual failure was the Box
+  preceding the cast, which M2 fixed.)
+- **Unbox_Any (CLR-struct local DEST) -- the 4th arm, found via the M3 dump:**
+  `unbox.any r3, r1` writes the unboxed struct into dest local `r3`, which is a
+  flat-bytes CLR-VT local (RefCount=0). The arm installed a boxed clone into
+  `mStack[frameRefBase+dstRefOffset]` (STALE) and wrote a 4-byte index into the
+  flat bytes -- the SAME defect class as M2 on the write side. The dest of
+  unbox.any is ALWAYS a value-typed local, so the flat-bytes write is
+  unconditional. Fix: `WriteNeoValueType(obj, frameBase+DstOffset, unbxSz)`
+  (inverse of M2). This arm was NOT in the reviewer's sweep table; the M3
+  reproduction surfaced it.
+
+### Edit sites (all in `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs`, Neo-only)
+
+- **M1 -- `Initobj` CLR-struct/enum else-branch (~1964-1982):** replaced the
+  boxed-default install + 4-byte index write with
+  `Unsafe.InitBlock(frameBase+DstOffset, 0, clrVtSize)`. Updated the stale
+  "boxed-ref" comment to describe the flat-bytes representation.
+- **M2 -- `Box` CLR-VT non-primitive else-branch (~2050-2064):** replaced the
+  mStack-index read + MemberwiseClone with `ReadNeoValueType(clrBoxType,
+  frameBase, ref boxOff, bsz)`. Updated the comment.
+- **Unbox_Any -- `Unbox`/`Unbox_Any` CLR-VT non-primitive else-branch
+  (~2323-2340):** replaced the boxed-clone install + index write with
+  `WriteNeoValueType(obj, frameBase+DstOffset, unbxSz)`. Updated the comment.
+- **M3 (Isinst/Castclass):** NO code change -- confirmed correct for the
+  reachable boxed-ref-source case; the flat-bytes-source case is unreachable
+  (the C# compiler always boxes first).
+
+### New regression probes (TestCases/NeoOptHardeningTest.cs, host helpers in
+ILRuntimeTestBase/TestFramework/TestClass3.cs)
+
+- `NeoOptHardTest_Fmaj1_InitobjClrStruct` (M1) -- struct local re-init via
+  `default(T)` AFTER a canary string neighbour is established; the stale-
+  RefOffset write used to clobber the canary. PASS after the fix.
+- `NeoOptHardTest_Fmaj1_BoxClrStructLocal` (M2) -- `object o = clrStructLocal;`
+  + unbox-and-sum read-back. PASS after the fix.
+- `NeoOptHardTest_Fmaj1_IsinstClrStructLocal` (M3 + Unbox_Any) -- `object boxed
+  = (object)v;` then `(TestVector3NoBinding)boxed` (unbox.any) + an `is` check
+  via a host helper. PASS after the M2 + Unbox_Any fixes.
+- `NeoOptHardTest_Fmaj1_MixedFrameNoCrossCorruption` (M-extra) -- a CLR struct
+  local + int local + string local in the same frame; guards against cross-
+  corruption among neighbouring flat-bytes/primitive/ref slots. PASS throughout
+  (regression guard).
+
+New host helpers in `TestClass3.cs`: `MakeCanary`/`StringLength` (M1 canary),
+`UnboxAndSumVector3NoBinding` (M2 read-back), `IsVector3NoBinding` (M3 host
+`is` check), `MixedFrameSum` (M-extra).
+
+### Verification (re-run after the fixes)
+
+- M1/M2/M3/M-extra individually: 4/4 PASS.
+- `NeoOptHard` full smoke: **16/16 PASS** (12 prior F-MAJ-1 + K1 + 4 new).
+- `NeoStep` full smoke: **100/100 PASS** (no regression).
+- Box-related NeoStep subset: 10/10 PASS. Enum subset: **26/35 FAIL PRE-fix ==
+  26/35 FAIL POST-fix** (byte-identical; the 26 are pre-existing Step 19+ NIEs,
+  NOT caused by these fixes -- confirmed by stash-toggle of the runtime edit).
+- Legacy neutrality: plain `Debug` CLI builds clean (0 errors); all edits are
+  in `ILIntepreter.Neo.cs` (Neo-only file).
+
+### Key lesson (re-affirms the dump-gate discipline)
+
+The reviewer's sweep table missed Unbox_Any (it listed M2 Box but not its
+inverse). The M3 probe -- designed to exercise isinst/castclass -- actually
+failed at the `unbox.any` the C# compiler emitted for `(T)obj`. Only the dump
+(`box` DBG fired, `isinst`/`castclass` DBG did NOT) revealed that the real
+defect was in Unbox_Any, not Isinst/Castclass. A green smoke would have hidden
+all three reachable arms (M1/M2/Unbox_Any): `default(ClrStruct)` / `object o =
+clrStruct` / `(ClrStruct)obj` were uncovered until these probes landed.
+

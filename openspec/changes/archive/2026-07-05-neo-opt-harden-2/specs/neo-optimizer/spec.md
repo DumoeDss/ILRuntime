@@ -57,6 +57,29 @@ plain-`Debug` + `useRegister=true` NeoStep-filter run: the SAME 7 pre-existing
 Legacy failures appear with and without the fix (byte-identical failure set).
 Legacy `ExecuteR` is the REFERENCE, not a target.
 
+Because the declare-side change re-declares EVERY Neo CLR value-type local as
+flat bytes, EVERY runtime consumer arm that reads or writes a CLR-VT local's
+slot MUST also operate on the flat-bytes representation (`Size = clrVtSize`,
+`RefCount = 0`, `isRef = false`). The D6 return-write (`InvokeNeoClrMethod`,
+`WriteNeoValueType` of `retSz` bytes into the dest `Offset`) and the D2
+by-value-param read (`CLRMethod.Invoke` via `ReadNeoValueType`, byte-copied by
+the optimizer's `CopyNeoCallArguments`) are flat-bytes by construction. The
+adversarial review-loop confirmed three additional consumer arms that MUST be
+flat-bytes-consistent: (1) the `Initobj` CLR-struct arm MUST zero the flat-bytes
+region via `Unsafe.InitBlock(frameBase+DstOffset, 0, clrVtSize)` (NOT install a
+boxed default at a stale `RefOffset`); (2) the `Box` CLR-struct arm MUST read
+the flat managed bytes via `ReadNeoValueType` (NOT read a 4-byte mStack index);
+(3) the `Unbox_Any` CLR-struct dest MUST write the flat managed bytes via
+`WriteNeoValueType` (NOT install a boxed clone + index write). The
+`Isinst`/`Castclass` arms are UNREACHABLE for a flat-bytes CLR-VT local (C#
+always emits a prior `box`, so their operand is always a Box-result `object`
+local holding an mStack index) -- the genuine boxed-ref path for Isinst,
+Castclass, and the Unbox source read (a CLR struct sourced from Box/heap, NOT a
+local) is UNAFFECTED and remains correct. A future change that touches any
+runtime consumer of a CLR-VT local's slot metadata MUST verify it does not
+re-introduce a boxed-ref assumption; the completeness sweep (19 arms: 3 fixed,
+2 correct-no-fix, 14 correct-by-construction) is the precedent.
+
 #### Scenario: Two simultaneously-live CLR struct locals compute correct values
 - **WHEN** a method holds two CLR value-type locals `v`, `w` (each from a CLR
   method return) and computes `r1 = Sum(v); r2 = Sum(w)` followed by a combined
@@ -112,6 +135,25 @@ Legacy `ExecuteR` is the REFERENCE, not a target.
 - **THEN** the existing Step-13b tests (`NeoStep13bClrStructByValueParamNoBinding`,
   `NeoStep13bClrStructReturnValueRoundTrip`, `NeoStep13bClrStructParamDistinctValue`)
   MUST still pass (the fix MUST NOT break the working single-local path)
+
+#### Scenario: All consumer arms of a Neo CLR-struct local use the flat-bytes representation
+- **WHEN** a Neo CLR value-type local (declared flat bytes: `Size = clrVtSize`,
+  `RefCount = 0`, `isRef = false`) is consumed by a runtime arm that reads or
+  writes its slot metadata
+- **THEN** every such arm MUST operate on the flat-bytes representation: the
+  `Initobj` arm zeroes `clrVtSize` flat bytes (`Unsafe.InitBlock`, no mStack /
+  `RefOffset` touch); the `Box` arm reads flat managed bytes
+  (`ReadNeoValueType`, no 4-byte mStack-index read); the `Unbox_Any` dest write
+  writes flat managed bytes (`WriteNeoValueType`, no boxed-clone install)
+- **AND** the `Isinst` / `Castclass` arms MUST be unreachable for a flat-bytes
+  CLR-VT local (C# always emits a prior `box`; their operand is a Box-result
+  `object` local) -- the genuine boxed-ref path for Isinst / Castclass / the
+  Unbox source read (a CLR struct sourced from Box/heap, NOT a local) MUST
+  remain unaffected and correct
+- **AND** the regression probes (`NeoOptHardTest_Fmaj1_InitobjClrStruct`,
+  `NeoOptHardTest_Fmaj1_BoxClrStructLocal`,
+  `NeoOptHardTest_Fmaj1_IsinstClrStructLocal` which exercises `(T)obj` ->
+  `unbox.any`, `NeoOptHardTest_Fmaj1_MixedFrameNoCrossCorruption`) MUST pass
 
 #### Scenario: Legacy ExecuteR is unaffected
 - **WHEN** the runtime is built WITHOUT `ENABLE_NEO_MODE` and runs the Legacy

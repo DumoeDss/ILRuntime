@@ -33,7 +33,8 @@
     },
     "neo-opt-harden-2": {
       "pipeline": "small-feature", "wave": 1, "scope": "[F-MAJ-1] AllocateLocalStackSpaces slot-reuse/liveness with 2+ CLR struct locals",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-optimizer"
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-05", "smoke": "NeoStep 100/100 + NeoOptHard 16/16", "review": "APPROVE round 1 (M1/M2/Unbox_Any fixed; M3 unreachable; completeness sweep clean); F-3/NEO-BYREF-THIS recorded deferred"
     },
     "neo-il-exception-throw": {
       "pipeline": "small-feature", "wave": 1, "scope": "[D-IL-EXCEPTION-THROW] System.Exception CrossBindingAdaptor + Throw handling for IL instances",
@@ -92,8 +93,8 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-opt-harden-2"],
-  "completedChildren": ["neo-vt-this-addr"],
+  "runnableFrontier": ["neo-il-exception-throw"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

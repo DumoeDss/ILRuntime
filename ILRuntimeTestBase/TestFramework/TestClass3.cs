@@ -173,6 +173,50 @@ namespace ILRuntimeTest.TestFramework
             return x + 1;
         }
 
+        // ---- Review-loop M1/M2/M3 host helpers (neo-opt-harden-2 review fix).
+        //      These exist to give the IL-side probes a way to (a) build a runtime
+        //      string that occupies an mStack ref slot (a "canary" neighbour for
+        //      the Initobj-zero-init probe), (b) read its length back, and (c)
+        //      unbox a boxed CLR struct and report a field-derived sum so Box/
+        //      Isinst/Castclass on a CLR struct local can be observed. ----
+
+        // M1 canary: a 7-char string built at runtime (forces an mStack ref slot).
+        public static string MakeCanary()
+        {
+            return "CANARY!";
+        }
+
+        // M1 canary read-back: returns the string length (expect 7).
+        public static int StringLength(string s)
+        {
+            return s != null ? s.Length : -1;
+        }
+
+        // M2/M3 read-back: unbox a boxed TestVector3NoBinding and report the int
+        // sum of its three float fields (expect 600 for (100,200,300)).
+        public static int UnboxAndSumVector3NoBinding(object o)
+        {
+            if (o is TestVector3NoBinding v)
+                return (int)(v.x + v.y + v.z);
+            return -1;
+        }
+
+        // M3: report whether `o is TestVector3NoBinding` on the host side (a
+        // second opinion independent of the IL-side isinst). Returns 1 / 0.
+        public static int IsVector3NoBinding(object o)
+        {
+            return o is TestVector3NoBinding ? 1 : 0;
+        }
+
+        // Mixed-frame helper (M-extra): consume a CLR struct, an int, and a
+        // string in one frame to confirm no cross-corruption among neighbouring
+        // flat-bytes / primitive / ref slots.
+        public static int MixedFrameSum(TestVector3NoBinding v, int n, string s)
+        {
+            int sum = (int)(v.x + v.y + v.z) + n;
+            return sum + (s != null ? s.Length : 0);
+        }
+
 #if TEST_MISSING_METHOD
         public int missingField;
         public void MissingMethodGeneric<T>(T obj)

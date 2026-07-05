@@ -251,5 +251,98 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // ====================================================================
+        // Review-loop round-1 fixes (neo-opt-harden-2). The F-MAJ-1 declare-side
+        // fix (Option B) re-typed a CLR-VT LOCAL as flat bytes (RefCount=0,
+        // isRef=false). Three runtime arms -- Initobj / Box / Isinst+Castclass --
+        // still assumed the OLD boxed-ref representation and read/wrote a stale
+        // mStack index. These probes reproduce each broken arm BEFORE the
+        // review-fix and pass AFTER. See review-report.md M1/M2/M3.
+        // ====================================================================
+
+        // M1 -- Initobj (default(ClrStruct)) on a CLR struct local. The arm used
+        // to write a boxed default into mStack[frameRefBase+RefOffset]; with
+        // RefCount=0 the stamped RefOffset is STALE (belongs to a neighbour).
+        // To make the corruption OBSERVABLE (not masked by ordering), the probe
+        // establishes the canary ref slot FIRST, then re-initializes the struct
+        // local via `default(T)` (emits ldloca;initobj AFTER the canary is set),
+        // then reads the canary back. Before the fix: initobj's stale-RefOffset
+        // write clobbers the canary -> wrong length. After: zero-init of the
+        // flat bytes; the canary is untouched.
+        public static void NeoOptHardTest_Fmaj1_InitobjClrStruct()
+        {
+            // Establish the canary neighbour FIRST (mStack ref slot).
+            string canary = ILRuntimeTest.TestFramework.TestCLRBinding.MakeCanary();
+            // CLR struct local, then RE-init via default(T) -> ldloca;initobj
+            // runs AFTER the canary exists, so a stale-RefOffset write would
+            // clobber it.
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 2f, 3f);
+            v = default(ILRuntimeTest.TestFramework.TestVector3NoBinding);
+            int len = ILRuntimeTest.TestFramework.TestCLRBinding.StringLength(canary); // expect 7
+            int sum = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v); // expect 0
+            if (len != 7 || sum != 0)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // M2 -- Box of a CLR struct local (`object o = clrStruct;`). The arm
+        // used to read a 4-byte mStack index from the flat bytes (garbage) and
+        // index mStack with it -> wrong object / OOB. After the fix: box by
+        // reading the flat managed bytes.
+        public static void NeoOptHardTest_Fmaj1_BoxClrStructLocal()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f); // 600
+            object o = v; // Box of a CLR struct local (flat bytes source).
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.UnboxAndSumVector3NoBinding(o); // expect 600
+            if (r != 600)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // M3 -- Isinst / Castclass with a CLR-struct type token. Two source
+        // representations must both work: (a) a boxed-ref source (`object` local
+        // holding a boxed struct) -- the existing path; (b) a flat-bytes source
+        // (a CLR struct local re-typed as object via Box then immediately
+        // isinst/cast). Before the fix the flat-bytes source was read as an
+        // mStack index -> wrong/OOB. After: the boxed-ref path is preserved and
+        // a flat-bytes-clr-vt source is read+boxed for the check.
+        public static void NeoOptHardTest_Fmaj1_IsinstClrStructLocal()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(10f, 20f, 30f); // 60
+            // Box the struct local into an object-typed local (boxed ref).
+            object boxed = (object)v;
+            // isinst + castclass on the boxed-ref source.
+            int isIt = ILRuntimeTest.TestFramework.TestCLRBinding.IsVector3NoBinding(boxed); // 1
+            ILRuntimeTest.TestFramework.TestVector3NoBinding back =
+                (ILRuntimeTest.TestFramework.TestVector3NoBinding)boxed; // castclass
+            int sum = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(back); // 60
+            if (isIt != 1 || sum != 60)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // M-extra -- mixed frame: a CLR struct local + an int local + a string
+        // local in the SAME frame. Guards that the Initobj/Box fixes do not
+        // cross-corrupt neighbouring flat-bytes / primitive / ref slots.
+        public static void NeoOptHardTest_Fmaj1_MixedFrameNoCrossCorruption()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f); // 600
+            int n = 7;
+            string s = ILRuntimeTest.TestFramework.TestCLRBinding.MakeCanary(); // len 7
+            // 600 + 7 + 7 = 614
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.MixedFrameSum(v, n, s);
+            if (r != 614)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
     }
 }
