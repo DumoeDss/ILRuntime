@@ -1,5 +1,7 @@
 # Neo 模式实现步骤拆解
 
+> **新 session 接手工作前，先读交接文档 [`neo-handoff.md`](neo-handoff.md)**（环境/构建测试命令、当前进度、工作流、代码坑、待办）。配套的推迟项映射见 [`neo-deferred-items.md`](neo-deferred-items.md)。
+
 > 基于 `object-model-neo-design.md` 设计方案  
 > 分支: `features/object-model-overhaul`  
 > 当前已完成: Steps 1-10、11(接口分派)、12(帧内值类型)、12b(Move_Vt)、13(Box/Unbox areas 1-2)、14(异常处理)、15(isinst/castclass)、16(数组 rank-1)、17(ref/out + Ref Slot + ldelema)、18(CLR newobj; IL-VT newobj 推迟)、13b(CLRMethod 统一参数布局)、+ [OPT-HARDEN](K1 FCP 修复)、[CATCH-COMPLETE](CheckExceptionType IL 分支)。各步推迟项及"落到哪个后续步骤"的映射见配套文档 [`neo-deferred-items.md`](neo-deferred-items.md)
