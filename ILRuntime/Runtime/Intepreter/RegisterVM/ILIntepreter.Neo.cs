@@ -1027,9 +1027,14 @@ namespace ILRuntime.Runtime.Intepreter
                                     // Cgt_Un): when the src slot is null (-1) the result
                                     // is false; otherwise the unsigned compare holds, OR
                                     // the operand is itself null (-1). (Diverges from raw
-                                    // unsigned semantics only for the pathological
-                                    // `cgt.un x, (uint)0xFFFFFFFF` integer case, which
-                                    // the validated tests do not exercise.)
+                                    // unsigned semantics for TWO symmetric sentinel
+                                    // collisions, both because -1 == 0xFFFFFFFF: (a) the
+                                    // operand case `cgt.un x, (uint)0xFFFFFFFF`, where the
+                                    // `cguB == -1` clause short-circuits the compare to
+                                    // `true`; and (b) the source case
+                                    // `cgt.un (uint)0xFFFFFFFF, x`, where the leading
+                                    // `cguA != -1` clause forces the result to `false`.
+                                    // Neither is exercised by the validated tests.)
                                     int cguA = *(int*)(frameBase + ip->SrcOffset);
                                     int cguB = *(int*)(frameBase + ip->OperandOffset);
                                     bool cguRes = cguA != -1 && ((uint)cguA > (uint)cguB || cguB == -1);

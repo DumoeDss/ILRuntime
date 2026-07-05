@@ -84,9 +84,9 @@ Insert these into the roadmap ordering:
 | D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **RESOLVED (neo-il-exception-throw)** | System.Exception CrossBindingAdaptor (built-in) + Throw `as Exception` IL-instance unwrap on BOTH engines | shared-engine gap (closed 2026-07-05; F-4 / NEO-IL-EX-FIELDACCESS follow-up surfaced) |
 | D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **opportunistic** | patch-infra step | optimization (non-functional) |
 | D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **opportunistic** | triggered by a test/feature | roadmap gap (rare) |
-| N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **opportunistic** | — | cosmetic nit |
+| N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** | — | cosmetic nit (comment-only; runtime expression byte-identical) |
 | N-CATCHWRAP | catch slot stores ILRuntimeException wrapper | Step 14 | **accept** (matches Legacy) | — | not-a-bug |
-| N-TC2 | Step 14 TC2 asserts `e != null` | Step 14 | **resolved by Step 15** (isinst landed) | — | cleanup |
+| N-TC2 | Step 14 TC2 asserts `e != null` | Step 14 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** (was resolved by Step 15; the test-tighten follow-up is now done) | — | cleanup |
 | F-7 / NEO-DELEGATE-REFOUT | byref-aware arg marshaling in `DelegateAdapter.NeoInvokeSub` (delegate ref/out params) | Step 19 | **future** (route to a byref follow-up child — same family as D-13B area 4c / neo-step17-stobj-refloop) | byref-typed Ref Slot in the delegate Invoke param region | pre-existing (latent; the only reachable shape today is plain primitives via `WriteNeoCallSlot`) |
 
 ---
@@ -698,6 +698,14 @@ optimizer-features step). Low priority.
 **Resolution:** implement the specific variant when a test or feature needs it.
 
 ### N-CGTUN — Cgt_Un divergence comment (Step 15 -> opportunistic)
+**RESOLVED 2026-07-06 (neo-opportunistic-cleanup).** The `Cgt_Un` arm's
+divergence comment in `ILIntepreter.Neo.cs` now names BOTH symmetric sentinel
+collisions: (a) the operand case `cgt.un x, (uint)0xFFFFFFFF` (`cguB == -1` →
+true) AND (b) the source case `cgt.un (uint)0xFFFFFFFF, x` (`cguA != -1`
+clause → false). Comment-only — the runtime comparison expression
+(`cguA != -1 && ((uint)cguA > (uint)cguB || cguB == -1)`) is byte-identical.
+See `openspec/changes/archive/2026-07-06-neo-opportunistic-cleanup/ship-log.md`.
+
 The `Cgt_Un` arm's divergence comment names only the operand=sentinel case; the
 symmetric source=sentinel case also diverges (same sentinel-collision class,
 unexercised by the whole TestCases suite). Cosmetic. **Resolution:** one-line
@@ -709,7 +717,14 @@ inner), which MATCHES Legacy exactly (`ILIntepreter.Register.cs:5327`). The
 spec's "unwrapped" wording is loose. Not a bug. **Resolution:** accept; revisit
 only if a real symptom appears (e.g. when isinst-on-caught-exception is exercised).
 
-### N-TC2 — Step 14 TC2 asserts `e != null` (Step 14 -> resolved by Step 15)
+### N-TC2 — Step 14 TC2 asserts `e != null` (Step 14 -> resolved by Step 15 -> test-tighten done)
+**RESOLVED 2026-07-06 (neo-opportunistic-cleanup).** The follow-up test-tighten
+is now done: `NeoStep14_TC2_CatchObjectAccess` asserts
+`e is DivideByZeroException && e.Message != null` (was `e != null`). The `is`
+lowers to `isinst`, exercising the type-check-in-catch shape now that Step 15
+`isinst` has landed. TC2 asserts strictly more; NeoStep 154/154. See
+`openspec/changes/archive/2026-07-06-neo-opportunistic-cleanup/ship-log.md`.
+
 Step 14 TC2 asserted `e != null` because the type-check-in-catch (`isinst`) was
 Step 15. Step 15 has now landed isinst. **Resolution:** TC2 can be tightened to
 assert the exception type/identity; opportunistic cleanup.
@@ -717,6 +732,18 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
+- **N-CGTUN** — `Cgt_Un` divergence comment. RESOLVED 2026-07-06
+  (neo-opportunistic-cleanup, comment-only): the `ILIntepreter.Neo.cs` comment
+  now names BOTH symmetric sentinel collisions — (a) operand
+  `cgt.un x, (uint)0xFFFFFFFF` (`cguB == -1` → true) AND (b) source
+  `cgt.un (uint)0xFFFFFFFF, x` (`cguA != -1` clause → false). The runtime
+  expression is byte-identical (comment-only edit). NeoStep 154/154. See
+  §3 N-CGTUN.
+- **N-TC2** — Step 14 TC2 `e != null` assertion. RESOLVED 2026-07-06
+  (neo-opportunistic-cleanup, test tighten): TC2 now asserts
+  `e is DivideByZeroException && e.Message != null`, exercising `isinst` on a
+  caught exception (the type-check-in-catch shape). Asserts strictly more.
+  NeoStep 154/154. See §3 N-TC2.
 - **F-6 / NEO-VT-FLDADDR** — `ldflda`-on-in-frame-VT (the Ldflda arm read the
   operand slot as an mStack objIdx; an in-frame VT slot holds flat bytes ->
   garbage). RESOLVED 2026-07-06 (neo-vt-ldflda-inline, Neo-only): marker stamp

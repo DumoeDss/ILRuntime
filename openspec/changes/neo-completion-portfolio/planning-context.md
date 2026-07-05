@@ -2195,3 +2195,115 @@ register-reuse/escape probe, the Step-17-B1 silent-corruption class) is GREEN
 -- the F-6 marker does not perturb the addrAlias COEXIST gate.
 
 **Did NOT git commit/push** (per process discipline; LEAD commits after review).
+
+## Findings -- neo-opportunistic-cleanup (2026-07-06, propose)
+
+**TRIVIAL comment + test-only change; both items confirmed against current HEAD.**
+
+- **N-CGTUN confirmed.** The `Cgt_Un` arm in `ILIntepreter.Neo.cs` (~1018-1038)
+  computes `cguRes = cguA != -1 && ((uint)cguA > (uint)cguB || cguB == -1)`. The
+  divergence comment (~1029-1032) names ONLY the operand case
+  (`cgt.un x, (uint)0xFFFFFFFF` -> the `cguB == -1` clause). It OMITS the
+  symmetric SOURCE case: the leading `cguA != -1` clause forces the result to
+  `false` when the source is the null sentinel `-1`, which is ALSO a divergence
+  from raw `(uint)cguA > (uint)cguB` semantics. Both are the same sentinel-
+  collision class (`-1 == 0xFFFFFFFF`); neither is exercised by the validated
+  TestCases suite. Fix = comment-only tighten naming both; runtime expression
+  byte-identical.
+- **N-TC2 confirmed.** `NeoStep14_TC2_CatchObjectAccess` in
+  `TestCases/NeoStep14Test.cs` (~40-52) catches `DivideByZeroException e` and
+  asserts only `if (e != null) return 7;`. The file header (~line 18) states the
+  reason: "isinst/castclass land in Step 15". Step 15 has shipped `isinst`
+  (`neo-type-checks`), and the IL-exception follow-ups confirmed `e is T` works
+  on a caught exception (`NeoStep14_ILEx_*` probes use `e is MyEx`). Fix =
+  tighten TC2 to `if (e is DivideByZeroException && e.Message != null) return 7;`
+  -- the `is` lowers to `isinst`, exercising the type-check-in-catch shape.
+
+**Spec delta decision (earned).** The prompt left the spec delta optional
+(comment+test-only). The honest call is "no requirement changes," but the
+openspec toolchain blocks `tasks` on a non-empty `specs/**/*.md`. Resolution: a
+narrow MODIFIED delta on the existing `isinst` requirement (`neo-type-checks`)
+that ADDS ONE scenario -- "An `is` check on a caught exception resolves its
+type" -- covering the type-check-in-catch shape TC2 now guards. This IS a real
+behavior the spec had no explicit scenario for (Step 15 implemented it; the IL-
+exception probes verified it; TC2's tighten is what regression-guards it), so
+the scenario is defensible, not fabricated. `openspec validate` passes. Note for
+future trivial changes: if there is genuinely nothing to add to a requirement,
+the alternative is to leave `specs/` empty and accept that `tasks` stays
+"blocked" in the toolchain (author the tasks file manually).
+
+**Regression risk: NONE.** Both edits are non-functional (comment + test
+tighten). Gate: full `NeoStep` smoke stays 154/154 at HEAD; TC2 itself stays
+green (tightened, not loosened). No shared-engine edit, no JIT/optimizer change.
+
+**Files to touch (apply phase):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- `Cgt_Un`
+  divergence comment (~1029-1032). Comment-only.
+- `TestCases/NeoStep14Test.cs` -- `NeoStep14_TC2_CatchObjectAccess` body (~47-50).
+  Test-only.
+- `.trae/documents/neo-deferred-items.md` -- move N-CGTUN + N-TC2 to §4 Resolved.
+- The four openspec artifacts (this proposal/design/specs/tasks).
+
+## Findings -- neo-opportunistic-cleanup (apply, 2026-07-06)
+
+**RESOLVED.** Both micro-fixes applied; full NeoStep smoke **154/154 green**
+(TC2 stays green, now asserting strictly more). Comment-only + test-only;
+zero behavior change.
+
+**N-CGTUN (comment tighten).** The `Cgt_Un` arm divergence comment in
+`ILIntepreter.Neo.cs` (~1029-1032) named ONLY the operand-sentinel case
+(`cgt.un x, (uint)0xFFFFFFFF`). Tightened to name BOTH symmetric sentinel
+collisions (both because `-1 == 0xFFFFFFFF`): (a) the operand case
+(`cguB == -1` short-circuits the compare to `true`) AND (b) the source case
+`cgt.un (uint)0xFFFFFFFF, x` (the leading `cguA != -1` clause forces `false`).
+`git diff` confirms the runtime expression
+`bool cguRes = cguA != -1 && ((uint)cguA > (uint)cguB || cguB == -1);`
+is byte-identical -- only the comment block changed.
+
+**N-TC2 (test tighten).** `NeoStep14_TC2_CatchObjectAccess` was asserting only
+`if (e != null) return 7;` (isinst was Step-15-blocked when TC2 was authored).
+Tightened to `if (e is DivideByZeroException && e.Message != null) return 7;`
+-- the `is` lowers to `isinst` on the caught exception (the type-check-in-catch
+shape that is now supported). The `is DivideByZeroException` is tautological at
+the C# type level (the catch already binds `DivideByZeroException e`) but
+load-bearing at the IL level -- it forces the compiler to emit `isinst` against
+the caught object. Catch clause type kept as `DivideByZeroException` (NOT
+broadened to `Exception`); `return -1;` fallback retained.
+
+**Verification.** CLI build (`Debug_Neo`) 0 errors; TestCases build (`Debug`,
+`--no-incremental`) 0 errors. Full `NeoStep` smoke: `Ran 154 tests, 0 failed`
+(TC2 itself in the green set). Did NOT run the optional Legacy-neutral confirm
+(task 3.4) -- the change is Neo-comment + a test-source tighten that compiles
+identically on both engines; the `isinst` arm is shared-engine and already
+exercised by the broader Step 15 suite.
+
+**Files edited (working tree UNCOMMITTED):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- `Cgt_Un`
+  divergence comment only (runtime expression byte-identical).
+- `TestCases/NeoStep14Test.cs` -- TC2 catch-body assertion tightened.
+
+**Did NOT touch** `.trae/documents/neo-deferred-items.md` (the shipper moves
+N-CGTUN / N-TC2 to the Resolved section at archive time, per the apply
+instructions). **Did NOT git commit/push** (LEAD commits after review).
+
+### Resolved -- `[N-CGTUN]` + `[N-TC2]` (neo-opportunistic-cleanup ship, 2026-07-06)
+
+Both follow-ups closed by this trivial change (TRIVIAL: comment-only + test
+tighten, no behavior change):
+
+- **N-CGTUN** -- `Cgt_Un` divergence comment now names BOTH symmetric sentinel
+  collisions (operand `cgt.un x, (uint)0xFFFFFFFF` -> `cguB == -1` -> true;
+  source `cgt.un (uint)0xFFFFFFFF, x` -> `cguA != -1` clause -> false). Runtime
+  expression byte-identical (comment-only).
+- **N-TC2** -- Step 14 TC2 catch-body assertion tightened from `e != null` to
+  `e is DivideByZeroException && e.Message != null`; the `is` lowers to
+  `isinst`, exercising the type-check-in-catch shape (was Step-15-blocked when
+  TC2 was authored; Step 15 `isinst` has since landed). TC2 asserts strictly
+  more.
+
+**Verification:** NeoStep smoke 154/154 green (TC2 stays green, now asserting
+more). LEAD non-author diff-read APPROVED. Recorded RESOLVED 2026-07-06
+(neo-opportunistic-cleanup) in `.trae/documents/neo-deferred-items.md` §2 rows
++ §3 entries (N-CGTUN also gets a §4 Resolved bullet). See
+`openspec/changes/archive/2026-07-06-neo-opportunistic-cleanup/ship-log.md`.
+

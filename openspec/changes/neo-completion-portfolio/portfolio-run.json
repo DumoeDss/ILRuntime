@@ -88,7 +88,8 @@
     },
     "neo-opportunistic-cleanup": {
       "pipeline": "small-feature", "wave": 4, "scope": "[N-CGTUN + N-TC2] cgt-un comment nit + Step14 TC2 tighten",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-type-checks"
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-type-checks",
+      "completedDate": "2026-07-06", "smoke": "Neo 154/154", "review": "APPROVED (LEAD diff-read; trivial comment+test-only; Cgt_Un expression byte-identical)"
     },
     "neo-step22-generic-template": {
       "pipeline": "small-feature", "wave": 5, "scope": "[Step 22] PatchEntry + templateBody+patches + CloneAndPatch runtime instantiation",
@@ -112,7 +113,7 @@
     }
   },
   "runnableFrontier": ["neo-step13-area4", "neo-step19-delegate", "neo-array-completion", "neo-peephole-isinst", "neo-opportunistic-cleanup", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

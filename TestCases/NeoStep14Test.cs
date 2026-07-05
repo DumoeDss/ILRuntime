@@ -45,7 +45,7 @@ namespace TestCases
             }
             catch (DivideByZeroException e)
             {
-                if (e != null)
+                if (e is DivideByZeroException && e.Message != null)
                     return 7;
             }
             return -1; // reachable only if catch was skipped or object was null
