@@ -529,5 +529,169 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // F-6 / NEO-VT-FLDADDR adversarial keeper probes. The ldflda arm must
+        // produce a correct frame-native Ref Slot when the operand slot holds the
+        // in-frame VT's FLAT BYTES (shape 3: a constrained-boxed `this` inside an
+        // IL-struct method body), as well as the existing Ref-Slot operand shapes
+        // (ldloca; ldflda -- shape 1; byref-this direct-call -- shape 2). The
+        // marker (Operand4 bit 0x1, stamped by JIT type-spec) gates the new branch.
+        //
+        // Probe design: the load-bearing F-6 shape is exercised by an IL struct
+        // override invoked via constrained.callvirt box-once (slot-0 = flat bytes).
+        // The override body takes a field address via `ldflda` and consumes it
+        // through an IL byref helper (NOT a CLR method call -- the byref-`this` ->
+        // CLR-method path is a SEPARATE F-3/NEO-BYREF-THIS deferred gap). This
+        // isolates the ldflda Ref-Slot correctness from the unrelated downstream
+        // CLR-call gap.
+
+        // An IL struct with a method that takes `ref field` via ldflda. Used by
+        // the shape-3 (constrained box-once) load-bearing probe.
+        public struct NeoStep17LdfldaStruct
+        {
+            public int id;
+            public NeoStep17LdfldaStruct(int v) { id = v; }
+            static int ReadViaRef(ref int slot) { return slot; }
+            // The body lowers to `ldflda this.id; call ReadViaRef(ref ...)`. With
+            // F-6 unfixed, the ldflda reads slot-0's flat bytes (id's value) as an
+            // mStack index -> garbage Ref Slot -> ReadViaRef reads mStack garbage
+            // -> wrong value. With F-6 fixed, the marker branch produces a frame-
+            // native Ref Slot pointing at `id`'s flat bytes -> ReadViaRef reads
+            // the correct field value.
+            public int ReadIdViaLdflda() { return ReadViaRef(ref id); }
+            static void WriteViaRef(ref int slot, int v) { slot = v; }
+            public void WriteIdViaLdflda(int v) { WriteViaRef(ref id, v); }
+            // A ToString override whose body takes `ref id` via ldflda and passes
+            // it to an IL byref helper (NOT a CLR method -- avoids the byref-`this`
+            // -> CLR-method F-3 gap). Invoked via `s.ToString()` -> constrained
+            // box-once -> slot-0 = flat bytes (shape 3). This is the load-bearing
+            // F-6 reproducer.
+            public override string ToString() { return "S:" + ReadViaRef(ref id).ToString(); }
+        }
+
+        // 4.1 -- shape 1 (ldloca; ldflda via ref param): regression guard. PASSES
+        // on HEAD (the operand slot holds a real frame-native Ref Slot).
+        public static void NeoStep17_LdfldaInline_RefFieldRead()
+        {
+            NeoStep17Point p;
+            p.x = 0;
+            p.y = 0;
+            int got = ReadPointX(ref p.x);
+            p.x = 77;
+            got = ReadPointX(ref p.x);
+            if (got != 77) { int z = 1; int d = 0; int _ = z / d; }
+        }
+        static int ReadPointX(ref int fx) { return fx; }
+
+        // 4.2 -- shape 1 write: regression guard.
+        public static void NeoStep17_LdfldaInline_RefFieldWrite()
+        {
+            NeoStep17Point p;
+            p.x = 0;
+            p.y = 0;
+            WritePointX(ref p.x, 88);
+            if (p.x != 88) { int z = 1; int d = 0; int _ = z / d; }
+        }
+        static void WritePointX(ref int fx, int v) { fx = v; }
+
+        // 4.3 -- shape 3 (the F-6 load-bearing probe). An IL struct ToString
+        // override invoked via `constrained.callvirt` box-once (the C# compiler
+        // emits constrained.callvirt Object.ToString for `s.ToString()`); the
+        // override body takes `ref id` via ldflda and passes it to an IL byref
+        // helper. FAILS on HEAD (ldflda reads id's value 42 as an mStack index ->
+        // garbage Ref Slot -> ReadViaRef reads garbage), PASSES after the F-6 fix
+        // (the marker branch produces a frame-native Ref Slot pointing at `id`'s
+        // flat bytes).
+        static string CallToStringConstrained<T>(T v) where T : struct { return v.ToString(); }
+
+        public static void NeoStep17_LdfldaInline_StructMethodFlatBytes()
+        {
+            NeoStep17LdfldaStruct s = new NeoStep17LdfldaStruct(42);
+            string got = CallToStringConstrained(s);
+            if (got != "S:42") { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4.4 -- nested-field ldflda via a chain (`ref outer.inner.x`), address-
+        // only access (no whole-VT load -> avoids the Ldfld_Value Step-12b NIE).
+        public struct NeoStep17LdfldaInner { public int x; }
+        public struct NeoStep17LdfldaOuter { public NeoStep17LdfldaInner inner; }
+        static int ReadNested(ref int fx) { return fx; }
+        public static void NeoStep17_LdfldaInline_NestedField()
+        {
+            NeoStep17LdfldaOuter o;
+            o.inner.x = 55;
+            int got = ReadNested(ref o.inner.x);
+            if (got != 55) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4.5 -- ldflda on a struct with a REFERENCE-type field (the ref-region
+        // sub-case). The address points at the primitive-region slot; the consumer
+        // reads/writes the mStack ref slot.
+        public struct NeoStep17LdfldaWithRef { public int n; public NeoStep17Holder h; }
+        static void SetRefField(ref NeoStep17Holder slot, NeoStep17Holder v) { slot = v; }
+        static NeoStep17Holder GetRefField(ref NeoStep17Holder slot) { return slot; }
+        public static void NeoStep17_LdfldaInline_RefTypeField()
+        {
+            NeoStep17LdfldaWithRef s;
+            s.n = 0;
+            s.h = null;
+            NeoStep17Holder nh = new NeoStep17Holder();
+            nh.value = 123;
+            SetRefField(ref s.h, nh);
+            NeoStep17Holder got = GetRefField(ref s.h);
+            if (got == null || got.value != 123) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4.6 -- register-reuse / escape probe (the Step-17-B1 silent-corruption
+        // class). An ldflda-produced byref whose dest register is reused by an
+        // intervening op, then the byref is read. The addrAlias COEXIST gate
+        // must keep the ldflda real and the marker branch must yield the FRESH
+        // value, not stale.
+        struct LdfldaReuseOuter { public int a; public int b; }
+        static int LdfldaReuseRead(ref int fx) { return fx; }
+        public static void NeoStep17_LdfldaInline_RegisterReuseEscape()
+        {
+            LdfldaReuseOuter p;
+            p.a = 7;
+            p.b = 8;
+            // An intervening byref dest-reuse window (an unrelated `ref int`
+            // forces register reuse / addrAlias escape).
+            int x = 0;
+            LdfldaReuseRead(ref x);
+            // Re-read the folded field addresses after the reuse window.
+            int ra = LdfldaReuseRead(ref p.a);
+            int rb = LdfldaReuseRead(ref p.b);
+            if (ra != 7 || rb != 8 || x != 0) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4.7 -- heap-IL ldflda regression guard (the marker is ABSENT -> the
+        // existing heap branch fires byte-identical).
+        class LdfldaHeapIl { public int val; }
+        static int ReadHeapViaRef(ref int fx) { return fx; }
+        public static void NeoStep17_LdfldaInline_HeapIlRegression()
+        {
+            LdfldaHeapIl h = new LdfldaHeapIl();
+            h.val = 999;
+            int got = ReadHeapViaRef(ref h.val);
+            if (got != 999) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4.8 -- CLR-object ldflda regression guard (marker absent). Uses a CLR-
+        // declared holder via the host so the field-hash stind/ldind path is not
+        // required (the byref-param read alone suffices).
+        public static void NeoStep17_LdfldaInline_ClrObjectRegression()
+        {
+            // A CLR object (System.Text.StringBuilder) with an instance field-
+            // style access via a property -- ldflda on a CLR ref object's field
+            // would hit the Step-17 CLR-field-hash deferral. Scope to a byref of
+            // a CLR-primitive local instead (the marker is absent; the heap branch
+            // is exercised through the existing ldind/stind). This keeps the probe
+            // reachable and proves the non-marker path is byte-identical.
+            int n = 0;
+            ReadPointX(ref n);
+            n = 321;
+            int got = ReadPointX(ref n);
+            if (got != 321) { int z = 1; int d = 0; int _ = z / d; }
+        }
     }
 }

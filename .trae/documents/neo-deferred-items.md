@@ -78,7 +78,7 @@ Insert these into the roadmap ordering:
 | F-4 / NEO-IL-EX-FIELDACCESS | Reading IL-declared fields/methods off a CAUGHT IL exception via the adaptor bridge is broken on Neo (4 broken read paths: `((CrossBindingAdaptorType)e).ILInstance` callvirt-on-CLR-interface -> InvalidCastException; `e.GetType()` callvirt.clr -> NIE; `appdomain.Invoke` instance-method -> NRE under ENABLE_NEO_MODE; `ILTypeInstance.this[index]` indexer -> null under ENABLE_NEO_MODE) | neo-il-exception-throw apply (OQ1/OQ2) | **future** (Step 13 Area 4 / cross-binding-adaptor follow-up) | Neo callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry + `ILTypeInstance` Neo indexer | pre-existing (NOT introduced; surfaces only because IL exceptions can now be thrown + caught); workaround `e is MyEx` (isinst) |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | F-5 / NEO-CALLARG-BOXED-SRC | boxed-source branch of `CopyNeoCallArguments` (`ILIntepreter.Neo.cs:295-300`) mis-copies a boxed `this` (would read an mStack field offset as a struct address); UNREACHABLE today (boxed `this` only via `constrained.callvirt` = Step 17 NIE); also `CopyNeoCallThisBack` comment claims ctor coverage but the newobj path does not invoke it | neo-step13-area4 review (Finding M2) | **RESOLVED (neo-step17-completion)** | the box-once BYPASSES CopyNeoCallArguments; the wrong defensive CopyBlock replaced with a tagged NIE-guard + CopyNeoCallThisBack comment tightened | latent dead-branch (closed 2026-07-05) |
-| F-6 / NEO-VT-FLDADDR | `ldflda`-on-in-frame-VT mis-reads: the Ldflda arm reads the operand slot as an mStack objIdx; an in-frame VT slot holds flat bytes -> garbage. There is NO `Ldflda_Inline`. Any IL-struct method taking a field address (`field.ToString()`, `ref field`, `fixed`) is broken on Neo REGARDLESS of constrained | neo-step17-completion apply (the IL-struct ToString probe) | **future** (`neo-vt-ldflda-inline`, task #19) | add `Ldflda_Inline` / extend the Ldflda arm to recognise an in-frame-VT operand via the type-spec seed | pre-existing (NOT introduced; surfaced when the IL-struct ToString probe hit it) |
+| F-6 / NEO-VT-FLDADDR | `ldflda`-on-in-frame-VT mis-reads: the Ldflda arm reads the operand slot as an mStack objIdx; an in-frame VT slot holds flat bytes -> garbage. There is NO `Ldflda_Inline`. Any IL-struct method taking a field address (`field.ToString()`, `ref field`, `fixed`) is broken on Neo REGARDLESS of constrained | neo-step17-completion apply (the IL-struct ToString probe) | **RESOLVED 2026-07-06 (neo-vt-ldflda-inline)** | marker stamp (`Operand4` bit 0x1 in `TypeSpecializeNeoOpcodes case Ldflda:`) + 3-way runtime dispatch (marker + leading-int: `-1` -> frame-native; else marker -> flat-bytes shape 3; else -> heap/CLR). Neo-only, Legacy-neutral. NeoStep 154/154. CLR-object-field `ldflda` coverage gap deferred to `neo-step17-stobj-refloop` (F-R2) | pre-existing (NOT introduced; surfaced when the IL-struct ToString probe hit it) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **RESOLVED ([CATCH-COMPLETE] + neo-il-exception-throw)** | CheckExceptionType IL branch + Exception-adaptor + Throw-for-IL all landed | shared-engine gap (fully closed; IL branch now reachable end-to-end) |
 | D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **RESOLVED (neo-il-exception-throw)** | System.Exception CrossBindingAdaptor (built-in) + Throw `as Exception` IL-instance unwrap on BOTH engines | shared-engine gap (closed 2026-07-05; F-4 / NEO-IL-EX-FIELDACCESS follow-up surfaced) |
@@ -509,7 +509,48 @@ Constrained path, AND tighten the `CopyNeoCallThisBack` comment to cover mutatin
 INSTANCE METHODS (not ctors). Not a regression (latent dead code); recorded so
 the Step 17 planner finds it.
 
-### F-6 / NEO-VT-FLDADDR — `ldflda`-on-in-frame-VT (-> future `neo-vt-ldflda-inline`)
+### F-6 / NEO-VT-FLDADDR — `ldflda`-on-in-frame-VT (-> RESOLVED `neo-vt-ldflda-inline`)
+**RESOLVED 2026-07-06 (neo-vt-ldflda-inline).** Fixed via a marker-stamp + a
+3-way runtime dispatch (all Neo-only; Legacy untouched). The JIT
+`TypeSpecializeNeoOpcodes` `case OpCodeREnum.Ldflda:` stamps
+`op.Operand4 |= NeoLdfldaInlineMarker (0x1)` when the source `Register2` is an
+in-frame IL value type (the SAME condition that seeds the dest type; pre-
+lowering so `Register2` is still a register index). `Operand4` (standalone
+field, offset 20) was confirmed UNUSED for `Ldflda` at HEAD (no collision).
+The runtime `case OpCodeREnum.Ldflda:` arm now does a 3-way dispatch keyed on
+the marker + the operand slot's leading int: marker + leading-int `== -1` ->
+shape 1/2 frame-native Ref Slot (byte-identical to the existing frame-native
+branch); marker + leading-int `!= -1` -> **shape 3 flat-bytes (the F-6 fix)**
+— the operand slot holds the struct's flat primitive bytes, so the slot's own
+frame byte offset IS the struct base; produce `(-1, operandSlotOff +
+fieldPrimOff)`; marker absent -> the existing heap-IL / CLR-object dispatch
+byte-identical. The `addrAlias` folding is unchanged (the marker is on
+`Operand4`, which the COEXIST gate never reads for `Ldflda`). Load-bearing
+stash-toggle: probe `NeoStep17_LdfldaInline_StructMethodFlatBytes` FAILS on HEAD
+with `Index was out of range` (ldflda reads id=42 as an mStack index ->
+`mStack[42]` OOB); PASSES with the fix (marker branch -> `(-1, 0)` -> reads 42).
+NeoStep smoke 154/154 (146 baseline + 8 new probes); Legacy-neutral. Blast-
+radius sweep confirmed all 4 Ldflda operand kinds safe. Review APPROVED (0
+Blocker/Major; 2 Minor/Trivial findings accepted-known):
+
+- **F-R1 (Minor, accepted-known):** the implementer's "key deviation" rationale
+  (the literal `id.ToString()` body was claimed blocked by a separate F-3 gap)
+  DOES NOT REPRODUCE in independent reconstruction — the literal body PASSES in
+  BOTH configurations (with the fix AND with it stashed); for an `int` field the
+  C# compiler emits a by-value `ldfld` + a value-`this` `call`, never a byref
+  to a CLR method. F-6 correctness is unaffected; the deviation note is
+  softened to "the literal body was avoided out of caution / probe-isolation
+  preference; the F-3 interaction is not reproducible."
+- **F-R2 (Trivial, accepted-known):** probe 4.8 is a byref-of-primitive local,
+  not a CLR-object-field `ldflda`. The genuine CLR-object-field `ldflda`
+  operand kind remains UNCOVERED (a real CLR-object `ldflda` carries no marker
+  and hits the existing `else` branch, so F-6 correctness is unaffected, but
+  the probe set does not independently cover it). Deferred to the Step-17
+  stind/ldind follow-up `neo-step17-stobj-refloop` (task #18) — same family as
+  the D-CONSTRAINED stobj-refloop / CLR-object-field-hash deferral.
+
+See `openspec/changes/archive/2026-07-06-neo-vt-ldflda-inline/ship-log.md`.
+
 Surfaced by the neo-step17-completion apply phase (the IL-struct `ToString`
 override probe). The `Ldflda` arm reads `*(frameBase + operandSlotOff)` as an
 mStack objIdx; an in-frame VT operand slot holds flat bytes -> the first
@@ -676,6 +717,19 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
+- **F-6 / NEO-VT-FLDADDR** — `ldflda`-on-in-frame-VT (the Ldflda arm read the
+  operand slot as an mStack objIdx; an in-frame VT slot holds flat bytes ->
+  garbage). RESOLVED 2026-07-06 (neo-vt-ldflda-inline, Neo-only): marker stamp
+  (`NeoLdfldaInlineMarker = 0x1` in standalone `Operand4`, stamped in
+  `TypeSpecializeNeoOpcodes case Ldflda:` when the source is an in-frame IL VT
+  — the dest-type-seed condition, pre-lowering) + a 3-way runtime dispatch
+  (marker + leading-int: `-1` -> frame-native; else marker -> flat-bytes shape
+  3; else -> heap/CLR). addrAlias folding unchanged (the marker is invisible to
+  the COEXIST gate). Load-bearing stash-toggle (shape-3 probe: FAIL-on-HEAD ->
+  PASS-after-fix). NeoStep 154/154; Legacy-neutral. Review APPROVED (0
+  Blocker/Major; F-R1 + F-R2 accepted-known). F-R2 follow-up: the CLR-object-
+  field `ldflda` operand kind remains uncovered -> `neo-step17-stobj-refloop`.
+  See §3 F-6 / NEO-VT-FLDADDR.
 - **K2-FAM** — Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack
   index). RESOLVED 2026-07-06 (neo-k2fam-bridge, TEST-ONLY — subsumed): the
   closure was a side effect of `neo-opt-harden-2` (F-MAJ-1: declared a CLR-VT

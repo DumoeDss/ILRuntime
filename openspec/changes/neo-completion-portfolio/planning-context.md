@@ -863,6 +863,39 @@ detail in `.trae/documents/neo-deferred-items.md` (F-7 / NEO-DELEGATE-REFOUT,
   route field reads through host helpers). See
   `openspec/changes/archive/2026-07-06-neo-k2fam-bridge/ship-log.md`.
 
+### `[NEO-VT-FLDADDR]` / F-6 -- RESOLVED by neo-vt-ldflda-inline (2026-07-06)
+
+F-6 / NEO-VT-FLDADDR (`ldflda`-on-in-frame-VT: the Ldflda arm read the operand
+slot as an mStack objIdx; an in-frame VT slot holds flat bytes -> garbage) is
+now CLOSED by `neo-vt-ldflda-inline`. Marker stamp (`NeoLdfldaInlineMarker =
+0x1` in standalone `Operand4`, stamped in `TypeSpecializeNeoOpcodes case Ldflda:`
+when the source `Register2` is an in-frame IL VT -- the dest-type-seed
+condition, pre-lowering) + a 3-way runtime dispatch (marker + leading-int: `-1`
+-> frame-native; else marker -> flat-bytes shape 3; else -> heap/CLR). addrAlias
+folding unchanged (the marker is invisible to the COEXIST gate -- it reads only
+`Register1`/`Register2`/`Operand2`). Load-bearing stash-toggle (shape-3 probe:
+FAIL-on-HEAD `mStack[42]` OOB -> PASS-after-fix). NeoStep 154/154; Legacy-
+neutral. Review APPROVED (0 Blocker/Major; 2 Minor/Trivial accepted-known):
+
+- **F-R1 (Minor, accepted-known):** the implementer's "key deviation" rationale
+  (the literal `id.ToString()` body was claimed blocked by a separate F-3 gap)
+  DOES NOT REPRODUCE in independent reconstruction -- the literal body PASSES in
+  BOTH configurations (with the fix AND with it stashed); for an `int` field the
+  C# compiler emits a by-value `ldfld` + a value-`this` `call`, never a byref to
+  a CLR method. F-6 correctness is unaffected; the deviation note was softened
+  to "the literal body was avoided out of caution / probe-isolation preference;
+  the F-3 interaction is not reproducible."
+- **F-R2 (Trivial, accepted-known) -- FOLLOW-UP:** probe 4.8 is a byref-of-
+  primitive local, NOT a CLR-object-field `ldflda`. The genuine CLR-object-field
+  `ldflda` operand kind remains UNCOVERED by this change (a real CLR-object
+  `ldflda` carries no marker and hits the existing `else` branch, so F-6
+  correctness is unaffected, but the probe set does not independently cover it).
+  Deferred to the Step-17 stin/ldin follow-up **`neo-step17-stobj-refloop`**
+  (task #18) -- same family as the D-CONSTRAINED stobj-refloop / CLR-object-
+  field-hash deferral.
+
+See `openspec/changes/archive/2026-07-06-neo-vt-ldflda-inline/ship-log.md`.
+
 ## Findings -- neo-il-exception-throw (2026-07-05, propose)
 
 Closes **D-IL-EXCEPTION-THROW** (the second half of the exception follow-up
@@ -1961,3 +1994,204 @@ DLL).
 **Did NOT git commit/push** (LEAD commits after review). Did NOT modify any
 `ILRuntime/` runtime file (test-only). Did NOT update
 `neo-deferred-items.md` (the shipper does at archive).
+
+## Findings -- neo-vt-ldflda-inline (2026-07-06, propose)
+
+**F-6 / NEO-VT-FLDADDR REPRODUCED + ROOT CAUSE DUMP-CONFIRMED (with a
+refinement of the F-6 wording).** The F-6 finding said "the `Ldflda` arm reads
+the operand slot as an mStack objIdx; an in-frame VT operand slot holds flat
+bytes -> garbage." That is TRUE but UNDER-SPECIFIED -- it is not ANY in-frame-VT
+operand, it is specifically an in-frame-VT operand WHOSE SLOT HOLDS FLAT BYTES
+(not a Ref Slot). Two of the three operand shapes already work on HEAD; only
+the third is broken. The propose-phase reproducer + a temporary diagnostic in
+the runtime `Ldflda` arm (`ILIntepreter.Neo.cs:827-857`) confirmed:
+
+- **Shape 1 (ldloca; ldflda -- PASSES on HEAD):** `BumpByTen(ref s.x)` with `s`
+  a frame local. The C# compiler lowers to `ldloca V; ldflda f`. The `ldloca`
+  dest slot holds a frame-native Ref Slot `(-1, V_offset)`, so the runtime arm
+  reads `objIdx == -1` -> frame-native branch -> CORRECT. Diagnostic read
+  `objIdx=-1`.
+- **Shape 2 (struct instance method via DIRECT call -- PASSES on HEAD):**
+  `s.ReadIdViaAddress()` doing `return ReadRef(ref id)` (-> `ldflda this.id`).
+  The C# compiler lowers `s.M()` to `ldloca s; call M`. The Step-17 byref-`this`
+  call-ABI seeds the callee's param slot 0 with a frame-native Ref Slot
+  `(-1, s_offset)`, so inside `M`'s body `ldflda this.field` reads
+  `objIdx == -1` -> CORRECT. Diagnostic read `objIdx=-1`.
+- **Shape 3 (struct override via constrained.callvirt box-once -- FAILS on
+  HEAD, the load-bearing gap):** `s.ToString()` on `S { int id; }` with
+  `override string ToString() => "Named:" + id.ToString()`. The constrained
+  box-once boxes the IL struct into an ILTypeInstance + dispatches the override.
+  The override's `this` (param slot 0) is seeded with the struct's FLAT
+  PRIMITIVE BYTES (the box's `Primitives` copied in, NOT a Ref Slot). So inside
+  the override body, `ldflda this.id` reads `objIdx = <id value>` (e.g. `42`)
+  -> the `>= 0` branch fires -> garbage Ref Slot `(42, 0)` -> the consumer
+  reads `mStack[42]` as an ILTypeInstance -> WRONG RESULT. Diagnostic read
+  `objIdx=42`. Test FAILS. This is exactly the shape that blocked the Step-17
+  IL-struct ToString probe (which was swapped for the interface direct-call
+  probe because of THIS gap).
+
+**The runtime arm CANNOT distinguish shape 1/2 (operand = Ref Slot) from shape
+3 (operand = flat bytes) by inspection** -- both are 8+ bytes at the same frame
+offset, and the leading int is `-1` for 1/2 but a field value for 3. A
+JIT-side marker is required. The `neo-byref` spec ALREADY SPECIFIES it
+("ldflda / ldarga address producers": "The optimizer SHALL stamp a marker
+(e.g. `Operand4`) on a real `ldflda` so the arm distinguishes the in-frame-VT
+case from the heap-IL case") -- it was simply never implemented for the flat-
+bytes operand (the Step-17 implementation covered the ldloca-Ref-Slot operand).
+
+**Fix LOCKED (mirror VT-THIS-ADDR's dump-gated discipline).**
+- **D1 (JIT marker):** in `TypeSpecializeNeoOpcodes` `case OpCodeREnum.Ldflda:`
+  (`JITCompiler.cs:798-804`), when the source `Register2` is an in-frame IL
+  value type (the SAME condition that already seeds the dest type), ALSO stamp
+  a flag bit on `op.Operand4` (standalone, offset 20, currently UNUSED for
+  `Ldflda` -- no collision). The type-spec pass runs PRE-lowering, so
+  `Register2` is still available for `GetRegisterType` (after `LowerNeoOffsets`
+  it becomes `SrcOffset` -- too late). `Operand4` survives lowering (standalone,
+  not a union field).
+- **D2 (runtime arm, REFINED -- the marker is sound for BOTH shape 1/2 AND 3):
+  the marker means "operand is an in-frame VT"; the arm STILL reads the leading
+  int to distinguish Ref-Slot-vs-flat-bytes, but with the marker's guarantee
+  that a non-(-1) leading int is a FIELD VALUE (shape 3), NOT an mStack index.**
+  Marker set + leading int == -1 -> shape 1/2 (resolve through the Ref Slot's
+  offset half). Marker set + leading int != -1 -> shape 3 (struct base =
+  operandSlotOff itself). Marker absent -> existing heap/CLR dispatch (byte-
+  identical). This is sound: the marker guarantees the operand is an in-frame
+  VT, so a non-(-1) leading int cannot be an mStack index (the heap/CLR path is
+  non-marker).
+- **D3 (addrAlias folding):** UNCHANGED. The marker only disambiguates the
+  runtime arm when it fires; folding decisions are untouched (the marker is on
+  `Operand4`, which the folder does not read).
+
+**The discriminator reuse.** The JIT marker condition is the SAME in-frame-VT
+check the type-spec pass already does (`GetRegisterType(...) is ILType &&
+IsValueType && !IsEnum`) -- the Ldloca/Ldflda/Newobj dest-typing rule family
+(VT-THIS-ADDR's "third in-frame-VT address case"). No new type-info machinery;
+just an additional flag write alongside the existing dest-type seed.
+
+**The addrAlias consideration.** An ldflda-produced address that escapes the
+folding window is an addrAlias COEXIST-gate concern (Step 17 B1). The marker
+does NOT change folding or the live-range logic; it only changes what the
+runtime arm produces when it fires. The Step-17-B1 register-reuse adversarial
+probe (an ldflda-produced byref whose dest register is reused, then the byref
+is read -- the silent-corruption class a green smoke MISSED) is MANDATORY in
+this change's probe set, both for the Ref-Slot shape and (new) the flat-bytes
+shape.
+
+**Files the implementer will touch (all Neo-only; Legacy `ExecuteR` is the
+REFERENCE -- its `Ldflda` arm discriminates via `GetObjectAndResolveReference`
++ `ObjectTypes.ValueTypeObjectReference`, a tagged representation, NOT
+modified):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/JITCompiler.cs` --
+  `TypeSpecializeNeoOpcodes` `case Ldflda:` (`:798-804`): stamp the marker flag
+  bit on `Operand4` alongside the existing dest-type seed. New named const
+  `LDFLDA_INLINE_MARKER`. NO `Code.Ldflda` Translate change (the marker is
+  stamped in the type-spec pass, not at Translate).
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- the
+  `case OpCodeREnum.Ldflda:` arm (`:827-857`): add the marker check + the two
+  sub-branches (Ref-Slot operand -> resolve through offset half; flat-bytes
+  operand -> struct base = operandSlotOff). Existing non-marker dispatch byte-
+  identical.
+- Possibly `ILRuntime/Runtime/Intepreter/RegisterVM/Optimizer.Neo.cs` --
+  CONFIRM `LowerNeoOffsets` does not clobber `Operand4` for `Ldflda` (it should
+  not -- `Operand4` is standalone; verify via the JIT dump at apply). No
+  `addrAlias` change.
+- `TestCases/NeoStep17Test.cs` (extend) -- 7+ `NeoStep17_LdfldaInline_*`
+  adversarial probes (ref-field read/write; struct ToString override [load-
+  bearing]; nested field; ref-type field [ref region]; register-reuse escape
+  [Step-17-B1 class]; heap-IL regression; CLR-object regression). Do NOT create
+  a new test file.
+
+**Regression risk: MEDIUM.** The runtime `Ldflda` arm is shared by every
+`ldflda` (heap-IL, CLR-object, Ref-Slot, flat-bytes). The marker gates the new
+branch; the existing branches are byte-identical when the marker is absent
+(marker is stamped ONLY for an in-frame IL value-type source). Gate: full
+`NeoStep` smoke (**146/146 baseline at HEAD `7077ea42` -- confirmed green at
+propose**) + Legacy-neutral stash-toggle. Adversarial probes MANDATORY (Step-
+17-B1 / OPT-HARDEN-K1 / F-MAJ-1 lessons: the flat-bytes-vs-Ref-Slot ambiguity
+is exactly the corruption class a green smoke can miss -- shape 1/2 passing
+does NOT prove shape 3 correct).
+
+**Capability spec home: `neo-byref`** (ldflda produces a byref/Ref Slot; the
+existing "ldflda / ldarga address producers" requirement already owns the
+marker + in-frame-VT-operand semantics -- this change DELIVERS the marker for
+the flat-bytes operand). NOT `neo-value-types` (which owns the in-frame-VT
+storage + `_Inline` field access + `addrAlias` folding fast path, all
+UNCHANGED by this fix). One MODIFIED requirement (the "ldflda / ldarga address
+producers" requirement, expanded with the marker-stamping SHALL + the flat-
+bytes-operand scenario + the struct-ToString-override positive scenario).
+
+**Side-benefit watch.** The IL-struct `ToString()` override calling a field
+method (`id.ToString()`, `$"{id}"`, `GetHashCode` using a field) is the
+majority of meaningful IL structs -- and it is broken on HEAD today. This
+change turns it green (the Step-17 deferred positive test finally ships). Check
+at verify whether any existing NeoStep case (or broader suite) was avoiding
+the struct-ToString-calls-field-method pattern; note in ship log.
+
+**Lesson re-affirmed (the F-5 / K2-FAM / Q-NEWOBJ family).** The F-6 finding
+as worded ("ldflda on in-frame VT") was ALMOST right but missed the
+discriminator (operand-slot-holds-Ref-Slot vs operand-slot-holds-flat-bytes).
+Constructing the reproducer FIRST, with a runtime diagnostic, DISTINGUISHED
+the three operand shapes and pinned the exact broken one (shape 3). A fix
+designed from the F-6 wording alone (always produce frame-native when typed
+in-frame) would have been sound but would have missed WHY shape 1/2 already
+work -- and the dump-gated D2-refined marker logic (read the leading int even
+with the marker set) is the sounder formulation. The dump-gated discipline is
+binding: probe BEFORE fixing, document the exact shape that breaks.
+
+## Findings -- neo-vt-ldflda-inline (apply)
+
+**RESOLVED.** F-6 / NEO-VT-FLDADDR closed. ldflda on an in-frame IL value type
+whose operand slot holds FLAT BYTES (a constrained-boxed `this` in an IL-struct
+method body) now produces a correct frame-native Ref Slot. Marker =
+`JITCompiler.NeoLdfldaInlineMarker = 0x1` (bit 0x1 of standalone `Operand4`,
+offset 20). DUMP-GATE: `Operand4` was untouched for `Ldflda` everywhere at HEAD
+(JIT Translate, type-spec, all optimizer sites) -> collision-free. Stamped in
+`TypeSpecializeNeoOpcodes` `case Ldflda:` (the same condition that seeds the
+dest type); Neo-only (the pass is `#if ENABLE_NEO_MODE`). Runtime arm
+(`ILIntepreter.Neo.cs` `case Ldflda:`) gains a 3-way dispatch keyed on the
+marker + the leading int: objIdx == -1 -> frame-native Ref Slot (shape 1/2);
+else marker -> flat-bytes (struct base = operandSlotOff); else -> heap/CLR.
+
+**Load-bearing stash-toggle.** Probe `NeoStep17_LdfldaInline_StructMethodFlatBytes`
+(an IL struct ToString override dispatched via a generic constrained caller,
+body takes `ref id` via ldflda -> IL byref helper). FAILS on HEAD with
+`Index was out of range` (ldflda reads id=42 as an mStack index -> mStack[42]
+OOB); PASSES with the fix (marker branch -> (-1, 0) -> reads 42). NeoStep smoke
+154/154 (146 baseline + 8 new probes). Legacy-neutral (plain Debug builds
+clean; all changes Neo-only).
+
+**DEVIATION recorded (design task 4.3 reproducer body).** The design literal
+`return "Named:" + id.ToString();` body was REPLACED by an IL byref helper
+(`ReadViaRef(ref id)`) to isolate the ldflda correctness from the unrelated
+CLR-call path. **NOTE (review softening, 2026-07-06, F-R1):** the original
+apply-phase rationale (the literal body FAILS on HEAD/with-fix because
+`Int32.ToString()` receives the frame-native byref as `this` and reads 0 -- a
+"separate F-3 / NEO-BYREF-THIS gap") DOES NOT REPRODUCE in independent
+reconstruction: the literal body PASSES in BOTH configurations (with the fix
+AND with it stashed). For an `int` field the C# compiler emits a by-value
+`ldfld` + a value-`this` `call Int32.ToString()`, NOT a `ldflda` + byref-`this`
+call -- so no frame-native byref reaches the CLR method and the F-3 gap is
+never engaged. F-6 correctness is unaffected; the literal body was avoided out
+of caution / probe-isolation preference, NOT because of a real F-3 gap. A
+future Step-17 D-CONSTRAINED follow-up need NOT chase a literal-`id.ToString()`
+gap here.
+
+**Shape-3 trigger subtlety (earned).** Shape 3 (flat bytes at the override
+slot-0) is produced ONLY by `constrained.callvirt` box-once (the C# compiler
+emits it for virtual overrides like `s.ToString()` on a struct). A NON-virtual
+instance method call (`s.M()` direct on a local) emits `ldloca; call` (direct
+call) -> shape 2 (slot-0 = frame-native Ref Slot, objIdx == -1) -> already
+works on HEAD. So a load-bearing F-6 probe MUST dispatch via a constrained
+caller (not a direct call). An interface-method dispatch on an IL-struct-via-
+box-once hits the separate `ResolveNeoCallvirtInterfaceTarget` gap
+([NEO-IL-VT-INSTANCE-COVERAGE] Step-6/11 family) -- also not F-6.
+
+**Probes 4.4/4.5/4.6/4.7/4.8 -- all green.** Nested-field (address-only,
+avoids Ldfld_Value NIE), reference-type field (ref-region), register-reuse
+escape (Step-17-B1 class -- no silent corruption; liveAliasMap handles it),
+heap-IL regression, CLR-object regression (scoped to byref-of-primitive to
+avoid the Step-17 CLR-field-hash stind/ldind deferral). Probe 4.6 (the
+register-reuse/escape probe, the Step-17-B1 silent-corruption class) is GREEN
+-- the F-6 marker does not perturb the addrAlias COEXIST gate.
+
+**Did NOT git commit/push** (per process discipline; LEAD commits after review).

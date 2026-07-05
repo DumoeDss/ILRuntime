@@ -838,18 +838,46 @@ namespace ILRuntime.Runtime.Intepreter
                                     // object, its slot holds an mStack index
                                     // (objectIndex >= 0) -> produce
                                     // (mStackIdx, fieldPrimOff).
+                                    //
+                                    // F-6 / NEO-VT-FLDADDR: the JIT stamps
+                                    // NeoLdfldaInlineMarker (Operand4 bit 0x1) when
+                                    // the source is an in-frame IL value type. With
+                                    // the marker set, the operand slot may hold
+                                    // FLAT BYTES (a constrained-boxed `this` in an
+                                    // IL-struct method body) instead of a Ref Slot.
+                                    // The leading int still distinguishes the two
+                                    // shapes soundly: with the marker, a non-(-1)
+                                    // leading int is a FIELD VALUE (flat bytes),
+                                    // NOT an mStack index (the heap/CLR path is non-
+                                    // marker), so it cannot mis-fire the heap branch.
                                     int dst = ip->DstOffset;
                                     int operandSlotOff = ip->SrcOffset;
                                     int fieldPrimOff = ip->Operand2;
+                                    bool inlineMarker = (ip->Operand4 & JITCompiler.NeoLdfldaInlineMarker) != 0;
                                     int objIdx = *(int*)(frameBase + operandSlotOff + 0);
                                     if (objIdx == -1)
                                     {
+                                        // Shape 1/2 (marker or not): operand slot
+                                        // holds a frame-native Ref Slot produced by
+                                        // a real ldloca/ldarga or a byref-`this` --
+                                        // resolve through its offset half.
                                         int vtBase = *(int*)(frameBase + operandSlotOff + 4);
                                         *(int*)(frameBase + dst + 0) = -1;
                                         *(int*)(frameBase + dst + 4) = vtBase + fieldPrimOff;
                                     }
+                                    else if (inlineMarker)
+                                    {
+                                        // Shape 3 (F-6): operand slot holds the in-
+                                        // frame VT's flat bytes (e.g. a constrained-
+                                        // boxed `this`). The slot's own frame byte
+                                        // offset IS the struct base.
+                                        *(int*)(frameBase + dst + 0) = -1;
+                                        *(int*)(frameBase + dst + 4) = operandSlotOff + fieldPrimOff;
+                                    }
                                     else
                                     {
+                                        // Heap IL / CLR-object operand: its slot
+                                        // holds an mStack index (objectIndex >= 0).
                                         *(int*)(frameBase + dst + 0) = objIdx;
                                         *(int*)(frameBase + dst + 4) = fieldPrimOff;
                                     }

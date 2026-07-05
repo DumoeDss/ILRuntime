@@ -87,6 +87,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
     struct JITCompiler
     {
         public const int CallRegisterParamCount = 3;
+        // F-6 / NEO-VT-FLDADDR: Operand4 flag bit stamped on a real `Ldflda`
+        // whose source register is an in-frame IL value type (the same condition
+        // that seeds the dest type in TypeSpecializeNeoOpcodes). Tells the runtime
+        // Ldflda arm the operand slot may hold the struct's FLAT BYTES (e.g. a
+        // constrained-boxed `this`), not a Ref Slot. See ILIntepreter.Neo.cs
+        // `case Ldflda`. Standalone Operand4 (offset 20); collision-free (no other
+        // Ldflda path writes Operand4).
+        public const int NeoLdfldaInlineMarker = 0x1;
         Enviorment.AppDomain appdomain;
         ILType declaringType;
         ILMethod method;
@@ -799,7 +807,19 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         {
                             IType srcType = GetRegisterType(registerTypes, op.Register2);
                             if (srcType is ILType srcIl && srcIl.IsValueType && !srcIl.IsEnum)
+                            {
                                 SetRegisterType(registerTypes, op.Register1, srcType);
+                                // F-6 / NEO-VT-FLDADDR: stamp a marker so the
+                                // runtime Ldflda arm can distinguish an in-frame-VT
+                                // operand (its slot may hold FLAT BYTES from a
+                                // constrained-boxed `this`, NOT a Ref Slot) from a
+                                // heap-IL / CLR-object operand. Stamped pre-lowering
+                                // (Register2 still a register index); Operand4 is
+                                // standalone (offset 20) and otherwise unused for
+                                // Ldflda, so bit 0x1 is collision-free (mirrors the
+                                // Constrained-callvirt 0x1 flag convention).
+                                op.Operand4 |= NeoLdfldaInlineMarker;
+                            }
                         }
                         break;
                     // VT-THIS-ADDR (D1): type the dest of a Newobj of an IL value
