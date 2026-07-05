@@ -503,6 +503,113 @@ namespace ILRuntime.Runtime.Enviorment
             return null;
         }*/
 
+#if ENABLE_NEO_MODE
+        // Step 19: Neo redirect for System.Delegate.Combine (the C# `+=`
+        // multicast lowering). Reads two Delegate params from the Neo param
+        // region (each a 4-byte mStack index -- the object is an IDelegateAdapter
+        // or a real Delegate), applies the multicast (adapter-next-chain OR the
+        // native Delegate.Combine), and writes the result into the caller's dest
+        // ref slot. Mirrors the Legacy StackObject DelegateCombine semantics.
+        public unsafe static void DelegateCombineNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            // Neo param region is laid out in source (declaration) order: param 0
+            // = Delegate.Combine's first arg (dele1/source), param 1 = dele2/value.
+            object dele1 = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object dele2 = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result;
+            if (dele1 != null)
+            {
+                if (dele2 != null)
+                {
+                    if (dele1 is IDelegateAdapter d1)
+                    {
+                        if (dele2 is IDelegateAdapter d2)
+                        {
+                            if (!d1.IsClone) d1 = d1.Clone();
+                            if (!d2.IsClone) dele2 = d2.Clone();
+                            d1.Combine((IDelegateAdapter)dele2);
+                            result = d1;
+                        }
+                        else
+                        {
+                            if (!d1.IsClone) dele1 = d1.Clone();
+                            ((IDelegateAdapter)dele1).Combine((Delegate)dele2);
+                            result = dele1;
+                        }
+                    }
+                    else
+                    {
+                        if (dele2 is IDelegateAdapter d2b)
+                            result = Delegate.Combine((Delegate)dele1, d2b.GetConvertor(dele1.GetType()));
+                        else
+                            result = Delegate.Combine((Delegate)dele1, (Delegate)dele2);
+                    }
+                }
+                else
+                    result = dele1;
+            }
+            else
+                result = dele2;
+            WriteNeoDelegateResult(mStack, retDst, retRefBase, result);
+        }
+
+        // Step 19: Neo redirect for System.Delegate.Remove (the C# `-=` lowering).
+        public unsafe static void DelegateRemoveNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            object dele1 = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object dele2 = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result;
+            if (dele1 != null)
+            {
+                if (dele2 != null)
+                {
+                    if (dele1 is IDelegateAdapter d1)
+                    {
+                        if (dele2 is IDelegateAdapter d2)
+                        {
+                            if (d1.Equals(d2))
+                                result = d1.Next;
+                            else
+                            {
+                                d1.Remove(d2);
+                                result = dele1;
+                            }
+                        }
+                        else
+                        {
+                            d1.Remove((Delegate)dele2);
+                            result = dele1;
+                        }
+                    }
+                    else
+                    {
+                        if (dele2 is IDelegateAdapter d2b)
+                            result = Delegate.Remove((Delegate)dele1, d2b.GetConvertor(dele1.GetType()));
+                        else
+                            result = Delegate.Remove((Delegate)dele1, (Delegate)dele2);
+                    }
+                }
+                else
+                    result = dele1;
+            }
+            else
+                result = null;
+            WriteNeoDelegateResult(mStack, retDst, retRefBase, result);
+        }
+
+        // Store a delegate-typed Combine/Remove result (an IDelegateAdapter or a
+        // real Delegate) into the caller's dest ref slot + write the index.
+        static unsafe void WriteNeoDelegateResult(AutoList mStack, byte* retDst, int retRefBase, object result)
+        {
+            if (retDst == null) return;
+            if (retRefBase >= mStack.Count) mStack.Add(result);
+            else mStack[retRefBase] = result;
+            *(int*)retDst = retRefBase;
+        }
+#endif
+
         public unsafe static StackObject* DelegateCombine(ILIntepreter intp, StackObject* esp, AutoList mStack, CLRMethod method, bool isNewObj)
         {
             //Don't ask me why not esp -2, unity won't return the right result

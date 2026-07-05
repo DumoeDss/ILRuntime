@@ -154,10 +154,16 @@ namespace ILRuntime.Runtime.Enviorment
                 if (i.Name == "Combine" && i.GetParameters().Length == 2)
                 {
                     RegisterCLRMethodRedirection(i, CLRRedirections.DelegateCombine);
+#if ENABLE_NEO_MODE
+                    RegisterCLRMethodRedirectionNeo(i, CLRRedirections.DelegateCombineNeo);
+#endif
                 }
                 if (i.Name == "Remove")
                 {
                     RegisterCLRMethodRedirection(i, CLRRedirections.DelegateRemove);
+#if ENABLE_NEO_MODE
+                    RegisterCLRMethodRedirectionNeo(i, CLRRedirections.DelegateRemoveNeo);
+#endif
                 }
                 if (i.Name == "op_Equality")
                 {

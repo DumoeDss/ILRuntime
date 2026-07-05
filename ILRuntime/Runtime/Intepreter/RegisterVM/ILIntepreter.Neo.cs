@@ -231,6 +231,85 @@ namespace ILRuntime.Runtime.Intepreter
             writer(dst, value);
         }
 
+        // Step 19: read the explicit args of an IL-delegate Invoke callvirt from
+        // the callee param region (slot 0 = the adapter `this`, slots [1..] = the
+        // Invoke params). Used by the Callvirt_IL delegate-invoke branch to feed
+        // adapter.NeoInvokePublic. Reads each param by its declared CLR type.
+        static unsafe object[] ReadNeoDelegateInvokeArgs(IMethod invokeMethod, byte* targetBase, AutoList mStack)
+        {
+            int pCnt = invokeMethod.ParameterCount;
+            object[] args = new object[pCnt];
+            // Slot 0 is the `this` (the adapter); the explicit params start after
+            // it. The Invoke method's parameters are laid out contiguously. Use
+            // the Invoke method's own frame ParamInfos if available (an ILMethod);
+            // otherwise fall back to a 4-byte-mStack-index read per param (the
+            // common by-ref/object + primitive-int mix). For correctness across
+            // primitive widths, walk the parameter types.
+            int cur = 4; // skip the `this` slot (4-byte mStack index)
+            for (int i = 0; i < pCnt; i++)
+            {
+                var pt = invokeMethod.Parameters[i];
+                Type clrT = pt.TypeForCLR;
+                if (clrT == typeof(int)) { args[i] = *(int*)(targetBase + cur); cur += 4; }
+                else if (clrT == typeof(long)) { args[i] = *(long*)(targetBase + cur); cur += 8; }
+                else if (clrT == typeof(float)) { args[i] = *(float*)(targetBase + cur); cur += 4; }
+                else if (clrT == typeof(double)) { args[i] = *(double*)(targetBase + cur); cur += 8; }
+                else if (clrT == typeof(bool)) { args[i] = *(byte*)(targetBase + cur) != 0; cur += 1; }
+                else if (clrT == typeof(byte)) { args[i] = *(byte*)(targetBase + cur); cur += 1; }
+                else if (clrT == typeof(sbyte)) { args[i] = *(sbyte*)(targetBase + cur); cur += 1; }
+                else if (clrT == typeof(short)) { args[i] = *(short*)(targetBase + cur); cur += 2; }
+                else if (clrT == typeof(ushort)) { args[i] = *(ushort*)(targetBase + cur); cur += 2; }
+                else if (clrT == typeof(uint)) { args[i] = *(uint*)(targetBase + cur); cur += 4; }
+                else if (clrT == typeof(ulong)) { args[i] = *(ulong*)(targetBase + cur); cur += 8; }
+                else if (clrT == typeof(char)) { args[i] = *(char*)(targetBase + cur); cur += 2; }
+                else if (clrT.IsValueType && !clrT.IsPrimitive && !clrT.IsEnum)
+                {
+                    int sz = Optimizer.GetNeoValueTypeManagedSize(clrT);
+                    args[i] = ReadNeoValueType(clrT, targetBase, ref cur, sz);
+                }
+                else
+                {
+                    // reference / enum (read as int) / byref-as-int: 4-byte mStack index.
+                    int idx = *(int*)(targetBase + cur);
+                    args[i] = (idx >= 0) ? mStack[idx] : null;
+                    cur += 4;
+                }
+            }
+            return args;
+        }
+
+        // Step 19: write the IL-delegate Invoke return into the caller's dest.
+        unsafe void WriteNeoDelegateInvokeReturn(IMethod invokeMethod, object result, byte* retDstPtr, AutoList mStack, int retRefBase)
+        {
+            if (retDstPtr == null) return;
+            var retType = invokeMethod.ReturnType;
+            if (retType == null || retType == AppDomain.VoidType) return;
+            Type clrT = retType.TypeForCLR;
+            if (clrT == typeof(int)) *(int*)retDstPtr = (int)result;
+            else if (clrT == typeof(long)) *(long*)retDstPtr = (long)result;
+            else if (clrT == typeof(float)) *(float*)retDstPtr = (float)result;
+            else if (clrT == typeof(double)) *(double*)retDstPtr = (double)result;
+            else if (clrT == typeof(bool)) *(int*)retDstPtr = (bool)result ? 1 : 0;
+            else if (clrT == typeof(byte)) *(int*)retDstPtr = (byte)result;
+            else if (clrT == typeof(sbyte)) *(int*)retDstPtr = (sbyte)result;
+            else if (clrT == typeof(short)) *(int*)retDstPtr = (short)result;
+            else if (clrT == typeof(ushort)) *(int*)retDstPtr = (ushort)result;
+            else if (clrT == typeof(uint)) *(int*)retDstPtr = (int)(uint)result;
+            else if (clrT == typeof(ulong)) *(long*)retDstPtr = (long)(ulong)result;
+            else if (clrT == typeof(char)) *(int*)retDstPtr = (int)(char)result;
+            else if (clrT.IsValueType && !clrT.IsPrimitive && !clrT.IsEnum)
+            {
+                int sz = Optimizer.GetNeoValueTypeManagedSize(clrT);
+                WriteNeoValueType(result, retDstPtr, sz);
+            }
+            else
+            {
+                if (retRefBase >= mStack.Count) mStack.Add(result);
+                else mStack[retRefBase] = result;
+                *(int*)retDstPtr = retRefBase;
+            }
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static void CopyNeoCallArguments(ref NeoCallParamMap map, byte* frameBase, byte* targetBase)
         {
@@ -1646,6 +1725,86 @@ namespace ILRuntime.Runtime.Intepreter
                             case OpCodeREnum.Conv_R8:
                                 *(double*)(frameBase + ip->DstOffset) = ReadConvR8(frameBase, ip->SrcOffset, (NeoPrimitiveTypeTag)ip->Operand2);
                                 break;
+                            case OpCodeREnum.Ldftn:
+                                {
+                                    // Step 19: load an IMethod (a managed CLR object)
+                                    // into the dest ref slot. An IMethod is a reference
+                                    // under the Neo object model, so it lives in mStack
+                                    // with a 4-byte index in the frame byte region --
+                                    // exactly like Ldstr / a reference-type local (D1).
+                                    IMethod m = AppDomain.GetMethod(ip->Operand2);
+                                    int ldftnDstRef = frameRefBase + ip->Operand;
+                                    mStack[ldftnDstRef] = m;
+                                    *(int*)(frameBase + ip->DstOffset) = ldftnDstRef;
+                                    ip++;
+                                    continue;
+                                }
+                            case OpCodeREnum.Ldvirtftn:
+                                {
+                                    // Step 19: resolve the virtual-method override via
+                                    // the VTable slot (reusing Step 10's GetVirtualMethod),
+                                    // then store the resolved IMethod into the dest ref
+                                    // slot (same shape as Ldftn). The `this` source is a
+                                    // Neo ref slot (object reference) for Step 19 scope
+                                    // (delegate over an IL ref-type instance method or a
+                                    // static method); a CLR-struct-instance-method delegate
+                                    // is the area4 byref-`this` shape and is out of scope.
+                                    IMethod target = AppDomain.GetMethod(ip->Operand2);
+                                    int thisIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    object thisObj = (thisIdx >= 0) ? mStack[thisIdx] : null;
+                                    if (thisObj == null)
+                                        throw new NullReferenceException("Neo ldvirtftn: null this");
+                                    IMethod resolved;
+                                    if (target is ILMethod ilm)
+                                    {
+                                        resolved = ((ILTypeInstance)thisObj).Type.GetVirtualMethod(ilm);
+                                    }
+                                    else
+                                    {
+                                        if (thisObj is ILTypeInstance ilInst)
+                                            resolved = ilInst.Type.GetVirtualMethod(target);
+                                        else if (thisObj is CrossBindingAdaptorType adaptor)
+                                            resolved = adaptor.ILInstance.Type.BaseType.GetVirtualMethod(target);
+                                        else
+                                            throw new InvalidOperationException("Neo ldvirtftn: unsupported this type " + thisObj.GetType().FullName);
+                                    }
+                                    int ldvDstRef = frameRefBase + ip->Operand;
+                                    mStack[ldvDstRef] = resolved;
+                                    *(int*)(frameBase + ip->DstOffset) = ldvDstRef;
+                                    ip++;
+                                    continue;
+                                }
+                            case OpCodeREnum.Call_Redirect:
+                                {
+                                    // Step 19: a CLR static redirect call (e.g.
+                                    // System.Delegate.Combine / Remove -- the C#
+                                    // `+=` / `-=` multicast lowering). The JIT
+                                    // lowers it like a Call with the CLRMethod's
+                                    // RedirectionNeo; the optimizer builds the same
+                                    // NeoCallParamMap as for Call. Route through
+                                    // InvokeNeoClrMethod (the redirect owns its dest
+                                    // write). The isNewobj/needPop flags are in
+                                    // Operand4 (mirrors Legacy :2807-2846).
+                                    var targetMethod = AppDomain.GetMethod(ip->Operand2) as CLRMethod;
+                                    if (targetMethod == null)
+                                    {
+                                        ip++;
+                                        continue;
+                                    }
+                                    int crParamIdx = ip->Operand;
+                                    ref var crMap = ref nf.NeoCallParams[crParamIdx];
+                                    byte* crTargetBase = newEsp;
+                                    CopyNeoCallArguments(ref crMap, frameBase, crTargetBase);
+
+                                    bool crIsNewObj = (ip->Operand4 & 0x2) == 0x2;
+                                    byte* crRetDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
+                                    int crRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
+
+                                    InvokeNeoClrMethod(targetMethod, crIsNewObj, crTargetBase, mStack, crRetDstPtr, crRetRefBase);
+
+                                    ip++;
+                                    continue;
+                                }
                             case OpCodeREnum.Call:
                                 {
                                     var targetMethod = AppDomain.GetMethod(ip->Operand2);
@@ -1714,8 +1873,48 @@ namespace ILRuntime.Runtime.Intepreter
                                         // object into the dest mStack ref slot + writes the
                                         // index to the dest byte offset (the redirect path
                                         // owns its own dest write).
-                                        if (targetMethod.DeclearingType is CLRType)
+                                        if (targetMethod.DeclearingType is CLRType clrDeclType)
                                         {
+                                            // Step 19: CLR delegate newobj (the common
+                                            // Action<>/Func<> case -- these are CLR types).
+                                            // Read `this`(target) + the IMethod(fnptr) and build
+                                            // the DelegateAdapter via DelegateManager, mirroring
+                                            // Legacy `ILIntepreter.Register.cs:3539-3561`.
+                                            if (clrDeclType.IsDelegate)
+                                            {
+                                                CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                                // DUMP-confirmed (NeoStep19_StaticAction): the CLR
+                                                // delegate ctor's NeoCallParamMap has 2 entries --
+                                                // [0] = target (object, 4-byte mStack index),
+                                                // [1] = fnptr (IntPtr, 8-byte slot whose first 4
+                                                // bytes hold the IMethod's mStack index). The map
+                                                // does NOT include the `this` slot (the Newobj
+                                                // lowering reserves it in paramInfos but the map
+                                                // only carries the actual args).
+                                                int dtargetOff = map.PrimitiveDst[0];
+                                                int dmethodOff = map.PrimitiveDst[1];
+                                                int dTargetIdx = *(int*)(targetBase + dtargetOff);
+                                                int dMethodIdx = *(int*)(targetBase + dmethodOff);
+                                                object dIns = (dTargetIdx >= 0) ? mStack[dTargetIdx] : null;
+                                                IMethod dMi = (IMethod)mStack[dMethodIdx];
+                                                object dele;
+                                                var dIlMethod = dMi as ILMethod;
+                                                if (dIlMethod != null)
+                                                {
+                                                    dele = AppDomain.DelegateManager.FindDelegateAdapter(clrDeclType, dIns as ILTypeInstance, dIlMethod);
+                                                }
+                                                else
+                                                {
+                                                    object clrTarget = dIns;
+                                                    if (clrTarget is ILTypeInstance ilti)
+                                                        clrTarget = ilti.CLRInstance;
+                                                    dele = Delegate.CreateDelegate(clrDeclType.TypeForCLR, clrTarget, ((CLRMethod)dMi).MethodInfo);
+                                                }
+                                                mStack[newobjDstIdx] = dele;
+                                                *(int*)retDstPtr = newobjDstIdx;
+                                                ip++;
+                                                continue;
+                                            }
                                             CopyNeoCallArguments(ref map, frameBase, targetBase);
                                             var clrCtor = targetMethod as CLRMethod;
                                             InvokeNeoClrMethod(clrCtor, true, targetBase, mStack, retDstPtr, newobjDstIdx);
@@ -1728,7 +1927,50 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
 
                                     if (ilNewobjType.IsDelegate)
-                                        throw new NotImplementedException("Neo Newobj delegate is not implemented");
+                                    {
+                                        // Step 19: IL-defined delegate newobj. Same shape
+                                        // as the CLR delegate newobj above -- read target +
+                                        // IMethod from the param-region copy (the optimizer
+                                        // built a NeoCallParamMap: map[0]=target, map[1]=
+                                        // fnptr), build the adapter via DelegateManager (the
+                                        // IL-overload FindDelegateAdapter), store it.
+                                        CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                        int ildTargetOff = map.PrimitiveDst[0];
+                                        int ildMethodOff = map.PrimitiveDst[1];
+                                        int ildTargetIdx = *(int*)(targetBase + ildTargetOff);
+                                        int ildMethodIdx = *(int*)(targetBase + ildMethodOff);
+                                        object ildIns = (ildTargetIdx >= 0) ? mStack[ildTargetIdx] : null;
+                                        IMethod ildMi = (IMethod)mStack[ildMethodIdx];
+                                        var ildIlMethod = ildMi as ILMethod;
+                                        if (ildIlMethod == null)
+                                            throw new NotImplementedException("Neo IL-delegate Newobj: non-ILMethod target is not supported (Step 19)");
+                                        object dele;
+                                        if (ildIns != null)
+                                        {
+                                            var ilIns = (ILTypeInstance)ildIns;
+                                            dele = ilIns.GetDelegateAdapter(ildIlMethod);
+                                            if (dele == null)
+                                            {
+                                                var invokeMethod = ilNewobjType.GetMethod("Invoke", ildMi.ParameterCount);
+                                                if (invokeMethod == null && ildIlMethod.IsExtend)
+                                                    invokeMethod = ilNewobjType.GetMethod("Invoke", ildMi.ParameterCount - 1);
+                                                dele = AppDomain.DelegateManager.FindDelegateAdapter(ilIns, ildIlMethod, invokeMethod);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            if (ildIlMethod.DelegateAdapter == null)
+                                            {
+                                                var invokeMethod = ilNewobjType.GetMethod("Invoke", ildMi.ParameterCount);
+                                                ildIlMethod.DelegateAdapter = AppDomain.DelegateManager.FindDelegateAdapter(null, ildIlMethod, invokeMethod);
+                                            }
+                                            dele = ildIlMethod.DelegateAdapter;
+                                        }
+                                        mStack[newobjDstIdx] = dele;
+                                        *(int*)retDstPtr = newobjDstIdx;
+                                        ip++;
+                                        continue;
+                                    }
 
                                     if (ilNewobjType.IsValueType && !ilNewobjType.IsPrimitive && !ilNewobjType.IsEnum)
                                     {
@@ -1842,6 +2084,27 @@ namespace ILRuntime.Runtime.Intepreter
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
+
+                                    // Step 19: an IL-defined delegate's Invoke callvirt
+                                    // (`del(args)`) -- the `this` is the IDelegateAdapter
+                                    // built at the delegate newobj. Route to the adapter's
+                                    // NeoInvoke (mirrors Legacy's IsDelegateInvoke ->
+                                    // IDelegateAdapter.ILInvoke). The adapter's own method
+                                    // + instance carry the target; the call args are the
+                                    // delegate Invoke's explicit params.
+                                    if (targetMethod.IsDelegateInvoke)
+                                    {
+                                        object delThis = mStack[*(int*)targetBase];
+                                        if (delThis is DelegateAdapter dAdapter)
+                                        {
+                                            object[] delArgs = ReadNeoDelegateInvokeArgs(targetMethod, targetBase, mStack);
+                                            object delRes = dAdapter.NeoInvokePublic(delArgs);
+                                            WriteNeoDelegateInvokeReturn(targetMethod, delRes, retDstPtr, mStack, targetRetRefBase);
+                                            ip++;
+                                            continue;
+                                        }
+                                    }
+
                                     IMethod actualMethod = ResolveNeoCallvirtILTarget(ip, targetMethod, targetBase, mStack);
 
                                     if (!InvokeNeoCallTarget(actualMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
@@ -3745,7 +4008,7 @@ namespace ILRuntime.Runtime.Intepreter
         // Step 8 will replace this whole code path with the proper Neo call
         // convention; for now it's only invoked from the top-level Invoke entry
         // for primitive return types.
-        static unsafe object NeoBoxReturnValue(IType returnType, byte* retDst, int retSize)
+        public static unsafe object NeoBoxReturnValue(IType returnType, byte* retDst, int retSize)
         {
             var clr = returnType.TypeForCLR;
             if (clr == typeof(int))

@@ -444,7 +444,16 @@ namespace ILRuntime.CLR.Method
                 if (pt is ILType || !t.IsPrimitive && !t.IsEnum)
                 {
                     int idx = *(int*)(targetBase + curPrim);
-                    param[i] = mStack[idx];
+                    object pval = mStack[idx];
+                    // Step 19: a delegate-typed param arrives as an IDelegateAdapter
+                    // (the bridge), not a real CLR delegate. Unwrap it so a CLR
+                    // method receiving a delegate (e.g. List.ForEach(action))
+                    // gets the real Delegate (mirrors the autogen CheckCLRTypes
+                    // unwrap + the Legacy path).
+                    if (typeof(Delegate).IsAssignableFrom(t))
+                        param[i] = t.CheckCLRTypes(pval, Extensions.TypeFlags.IsDelegate);
+                    else
+                        param[i] = pval;
                     curPrim += 4;
                 }
                 else

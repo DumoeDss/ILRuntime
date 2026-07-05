@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -45,7 +45,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Action<System.Int32, System.String, System.String> instance_of_this_method = (System.Action<System.Int32, System.String, System.String>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<System.Int32, System.String, System.String> instance_of_this_method = (System.Action<System.Int32, System.String, System.String>)typeof(System.Action<System.Int32, System.String, System.String>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             System.Int32 @arg1 = (System.Int32)ILIntepreter.ReadNeoInt32(__frameBase, ref __curPrim);
             System.String @arg2 = (System.String)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
             System.String @arg3 = (System.String)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);

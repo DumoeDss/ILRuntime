@@ -4,7 +4,7 @@
 
 > 基于 `object-model-neo-design.md` 设计方案  
 > 分支: `features/object-model-overhaul`  
-> 当前已完成: Steps 1-10、11(接口分派)、12(帧内值类型)、12b(Move_Vt)、13(Box/Unbox areas 1-2)、14(异常处理)、15(isinst/castclass)、16(数组 rank-1)、17(ref/out + Ref Slot + ldelema)、18(CLR newobj; IL-VT newobj 推迟)、13b(CLRMethod 统一参数布局)、+ [OPT-HARDEN](K1 FCP 修复)、[CATCH-COMPLETE](CheckExceptionType IL 分支)。各步推迟项及"落到哪个后续步骤"的映射见配套文档 [`neo-deferred-items.md`](neo-deferred-items.md)
+> 当前已完成: Steps 1-10、11(接口分派)、12(帧内值类型)、12b(Move_Vt)、13(Box/Unbox areas 1-2)、14(异常处理)、15(isinst/castclass)、16(数组 rank-1)、17(ref/out + Ref Slot + ldelema)、18(CLR newobj; IL-VT newobj 推迟)、13b(CLRMethod 统一参数布局)、19(委托 ldftn/ldvirtftn/delegate newobj/NeoInvokeSub/多播)、+ [OPT-HARDEN](K1 FCP 修复)、[OPT-HARDEN-2](CLR-VT local 平铺字节声明)、[CATCH-COMPLETE](CheckExceptionType IL 分支)、[VT-THIS-ADDR](IL 值类型 newobj)、neo-il-exception-throw(端到端 IL 异常抛出/捕获)、neo-step13-area4(CLR 绑定直调 + 值类型 this)、neo-step17-completion(constrained.-on-VT 全分派 + CLR 基元数组 ldelema)。各步推迟项及"落到哪个后续步骤"的映射见配套文档 [`neo-deferred-items.md`](neo-deferred-items.md)
 
 ---
 

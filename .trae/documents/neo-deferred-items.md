@@ -87,6 +87,7 @@ Insert these into the roadmap ordering:
 | N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **opportunistic** | — | cosmetic nit |
 | N-CATCHWRAP | catch slot stores ILRuntimeException wrapper | Step 14 | **accept** (matches Legacy) | — | not-a-bug |
 | N-TC2 | Step 14 TC2 asserts `e != null` | Step 14 | **resolved by Step 15** (isinst landed) | — | cleanup |
+| F-7 / NEO-DELEGATE-REFOUT | byref-aware arg marshaling in `DelegateAdapter.NeoInvokeSub` (delegate ref/out params) | Step 19 | **future** (route to a byref follow-up child — same family as D-13B area 4c / neo-step17-stobj-refloop) | byref-typed Ref Slot in the delegate Invoke param region | pre-existing (latent; the only reachable shape today is plain primitives via `WriteNeoCallSlot`) |
 
 ---
 
@@ -507,6 +508,37 @@ task #19): add a `Ldflda_Inline` / extend the Ldflda arm to recognise an
 in-frame-VT operand via the type-spec seed (mirror the `Ldloca` / `Ldflda`
 dest-typing rules from `neo-vt-this-addr`). Recorded so the Step 17 follow-up
 planner finds it.
+
+### F-7 / NEO-DELEGATE-REFOUT — delegate ref/out param marshaling in NeoInvoke (-> future byref follow-up)
+Surfaced by Step 19 (neo-step19-delegate). `DelegateAdapter.NeoInvokeSub`
+(the CLR -> IL callback path, e.g. `List.ForEach(ilAction)`) writes the CLR
+args into the callee param region via `WriteNeoCallSlot`, which handles
+primitives / reference args / CLR value types but NOT a **byref-typed delegate
+param** (a `ref T` / `out T` parameter on an `Action<>`/`Func<>` Invoke).
+A byref arg is an 8-byte Ref Slot `(objectIndex, offset)`; `WriteNeoCallSlot`
+has no byref-aware arm for the delegate-callback direction (the byref Ref Slot
+model lives in Step 17's `ldelema`/`stind`/`ldind` consumers and the
+`CopyNeoCallArguments` byref-deref flag from neo-step13-area4, neither of
+which `NeoInvokeSub` consults). The return-side `WriteNeoDelegateInvokeReturn`
+has the symmetric gap for a `ref`/`out` return.
+
+**Pre-existing / latent, NOT a Step 19 regression.** The byref-on-delegate
+shape has never worked on Neo (delegates did not exist on Neo before Step 19).
+Step 19 probe 8 (`NeoStep19_*`) deliberately uses a **plain `int`** param to
+exercise the IL-delegate construct + Invoke routing — the load-bearing
+assertion for the `NeoInvokeSub` path — and is green on both engines. The
+byref variant was scoped OUT and recorded, not silently dropped
+(`design.md` + `tasks.md`).
+
+**Resolution:** future -- route to a byref follow-up child (same family as
+D-13B area 4c CLR-method `ref`/`out` typed-ref bridge and the
+`neo-step17-stobj-refloop` byref work). The fix makes `NeoInvokeSub`'s
+arg-write / return-read byref-aware (read the `(objectIndex, offset)` Ref Slot,
+deref to the underlying frame/mStack slot, write the address into the callee
+param region — mirroring how `CopyNeoCallArguments`'s `PrimitiveByRefSrc` flag
+handles a byref `this` for a direct `call`). Recorded so the byref-follow-up
+planner finds it. See
+`openspec/changes/archive/2026-07-06-neo-step19-delegate/ship-log.md`.
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was

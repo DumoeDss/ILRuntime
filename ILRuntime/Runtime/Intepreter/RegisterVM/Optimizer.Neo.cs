@@ -801,6 +801,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.Operand = localInfos[op.Register1].RefOffset;
                         LowerR1(ref op, localInfos);
                         break;
+                    // Step 19: ldftn / ldvirtftn produce an IMethod (a managed CLR
+                    // heap object) -> the dest is a Neo ref slot (mStack index in
+                    // the byte region, like Ldstr). Stamp the dest ref offset into
+                    // Operand and lower R1 (DstOffset for the index write). For
+                    // ldvirtftn also lower R2 (SrcOffset for the `this` source).
+                    case OpCodeREnum.Ldftn:
+                    case OpCodeREnum.Ldvirtftn:
+                        op.Operand = localInfos[op.Register1].RefOffset;
+                        LowerR1(ref op, localInfos);
+                        if (op.Code == OpCodeREnum.Ldvirtftn)
+                            op.SrcOffset = (ushort)localInfos[op.Register2].Offset;
+                        break;
                     case OpCodeREnum.Ret:
                         if (op.Register1 >= 0)
                             LowerR1(ref op, localInfos);
@@ -1091,6 +1103,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Callvirt_IL:
                     case OpCodeREnum.Callvirt_CLR:
                     case OpCodeREnum.Callvirt_Interface:
+                    case OpCodeREnum.Call_Redirect:
                     case OpCodeREnum.Newobj:
                         {
                             var targetMethod = domain.GetMethod(op.Operand2);

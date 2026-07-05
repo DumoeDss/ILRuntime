@@ -56,12 +56,16 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe TResult InvokeILMethod()
         {
+#if ENABLE_NEO_MODE
+            return (TResult)NeoInvoke(null);
+#else
             using (var ctx = BeginInvoke())
             {
                 var esp = ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack);
                 ctx.SetInvoked(esp); 
                 return ctx.ReadResult<TResult>(pTypes[0]);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -127,6 +131,9 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe TResult InvokeILMethod(T1 p1)
         {
+#if ENABLE_NEO_MODE
+            return (TResult)NeoInvoke(new object[] { p1 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
@@ -135,6 +142,7 @@ namespace ILRuntime.Runtime.Intepreter
                 ctx.SetInvoked(esp);
                 return ctx.ReadResult<TResult>(pTypes[1]);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -201,6 +209,9 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe TResult InvokeILMethod(T1 p1, T2 p2)
         {
+#if ENABLE_NEO_MODE
+            return (TResult)NeoInvoke(new object[] { p1, p2 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
@@ -210,6 +221,7 @@ namespace ILRuntime.Runtime.Intepreter
                 ctx.SetInvoked(esp);
                 return ctx.ReadResult<TResult>(pTypes[2]);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -278,6 +290,9 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe TResult InvokeILMethod(T1 p1, T2 p2, T3 p3)
         {
+#if ENABLE_NEO_MODE
+            return (TResult)NeoInvoke(new object[] { p1, p2, p3 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
@@ -288,6 +303,7 @@ namespace ILRuntime.Runtime.Intepreter
                 ctx.SetInvoked(esp);
                 return ctx.ReadResult<TResult>(pTypes[3]);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -356,6 +372,9 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe TResult InvokeILMethod(T1 p1, T2 p2, T3 p3, T4 p4)
         {
+#if ENABLE_NEO_MODE
+            return (TResult)NeoInvoke(new object[] { p1, p2, p3, p4 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
@@ -367,6 +386,7 @@ namespace ILRuntime.Runtime.Intepreter
                 ctx.SetInvoked(esp);
                 return ctx.ReadResult<TResult>(pTypes[4]);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -432,11 +452,15 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe void InvokeILMethod(T1 p1)
         {
+#if ENABLE_NEO_MODE
+            NeoInvoke(new object[] { p1 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pType, p1);
                 ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -503,12 +527,16 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe void InvokeILMethod(T1 p1, T2 p2)
         {
+#if ENABLE_NEO_MODE
+            NeoInvoke(new object[] { p1, p2 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
                 ctx.PushParameter(pTypes[1], p2);
                 ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -576,6 +604,9 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe void InvokeILMethod(T1 p1, T2 p2, T3 p3)
         {
+#if ENABLE_NEO_MODE
+            NeoInvoke(new object[] { p1, p2, p3 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
@@ -583,6 +614,7 @@ namespace ILRuntime.Runtime.Intepreter
                 ctx.PushParameter(pTypes[2], p3);
                 ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -651,6 +683,9 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe void InvokeILMethod(T1 p1, T2 p2, T3 p3, T4 p4)
         {
+#if ENABLE_NEO_MODE
+            NeoInvoke(new object[] { p1, p2, p3, p4 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
@@ -659,6 +694,7 @@ namespace ILRuntime.Runtime.Intepreter
                 ctx.PushParameter(pTypes[3], p4);
                 ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -729,6 +765,9 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe void InvokeILMethod(T1 p1, T2 p2, T3 p3, T4 p4, T5 p5)
         {
+#if ENABLE_NEO_MODE
+            NeoInvoke(new object[] { p1, p2, p3, p4, p5 });
+#else
             using (var ctx = BeginInvoke())
             {
                 ctx.PushParameter(pTypes[0], p1);
@@ -738,6 +777,7 @@ namespace ILRuntime.Runtime.Intepreter
                 ctx.PushParameter(pTypes[4], p5);
                 ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -795,10 +835,14 @@ namespace ILRuntime.Runtime.Intepreter
 
         unsafe void InvokeILMethod()
         {
+#if ENABLE_NEO_MODE
+            NeoInvoke(null);
+#else
             using(var ctx = BeginInvoke())
             {
                 ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack);
             }
+#endif
         }
 
         public override IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method)
@@ -929,6 +973,197 @@ namespace ILRuntime.Runtime.Intepreter
             ctx.ESP++;//required to simulate delegate invocation
             return ctx;
         }
+
+#if ENABLE_NEO_MODE
+        // Step 19: the CLR -> IL callback under the Neo calling convention.
+        // Legacy uses BeginInvoke (a fresh interpreter from the pool) + a
+        // StackObject push + ExecuteR. Under Neo the StackObject path is the
+        // wrong calling convention, so this helper replaces it for the single-
+        // invoke path: request a FRESH interpreter (Legacy semantics -- each
+        // delegate invocation runs on its own engine stack, so a callback from
+        // inside ExecuteNeo does NOT clobber the in-flight frame; Risk 3 as
+        // originally framed does not apply), build a Neo `byte*` frame at that
+        // interpreter's StackBase, write `this`(slot 0) + each CLR param into
+        // the callee param region (the INVERSE of CopyNeoCallArguments), call
+        // ExecuteNeo, read the return. The multicast `next`-chain reuses
+        // unchanged (D4) -- walk it discarding intermediate returns.
+        //
+        // `args` are the CLR-side arguments (already converted by the per-arity
+        // adapter to their CLR types). Returns null for a void method.
+        protected unsafe object NeoInvoke(object[] args)
+        {
+            return NeoInvokeSub(args);
+        }
+
+        // Step 19: public entry for the IL-delegate-Invoke callvirt arm (the
+        // Callvirt_IL delegate-invoke branch in ExecuteNeo routes `del(args)`
+        // through here). Equivalent to the per-arity InvokeILMethod bodies.
+        public unsafe object NeoInvokePublic(object[] args)
+        {
+            return NeoInvokeSub(args);
+        }
+
+        internal unsafe object NeoInvokeSub(object[] args)
+        {
+            // Request a fresh interpreter (Legacy BeginInvoke semantics).
+            // Wrapped in try/finally so the interpreter is returned to the pool
+            // on EVERY exit path (mirrors Legacy
+            // `using (var ctx = BeginInvoke())` -> InvocationContext.Dispose
+            // -> domain.FreeILIntepreter). Without the free, each delegate
+            // callback would allocate a NEW ILIntepreter and the pool would
+            // starve (unbounded growth on delegate-heavy IL code -- the Step 19
+            // hot path). The free runs AFTER ExecuteNeo returns and the result
+            // is read; the next-chain recursion does its own balanced
+            // request/free pair, so nesting is safe.
+            ILIntepreter intp = appdomain.RequestILIntepreter();
+            try
+            {
+            var stack = intp.Stack;
+            AutoList mStack = stack.ManagedStack;
+            int mStackBase = mStack.Count;
+            stack.ResetValueTypePointer();
+
+            ref readonly var nf = ref method.CompiledFrame;
+            var paramInfos = nf.ParamInfos;
+            int paramCnt = method.ParameterCount;
+            bool hasThis = method.HasThis;
+
+            // Build the Neo frame at StackBase (the fresh interpreter has no
+            // in-flight frame).
+            byte* frameBase = (byte*)stack.StackBase;
+            byte* esp = frameBase;
+            int frameSize = nf.TotalStructSize;
+            byte* newEsp = esp + frameSize;
+
+            // Zero the locals primitive region (mirrors ExecuteNeo's own zeroing).
+            if (nf.LocalsPrimitiveSize > 0)
+                System.Runtime.CompilerServices.Unsafe.InitBlock(frameBase + nf.ParamPrimitiveSize, 0, (uint)nf.LocalsPrimitiveSize);
+            // Zero-init the ref-typed param/local slots that the optimizer marks
+            // as ref (so an unassigned ref slot reads as -1 / null).
+            var localInfos = nf.LocalInfos;
+            var localIsRef = nf.LocalIsReference;
+            if (localInfos != null && localIsRef != null)
+            {
+                for (int i = 0; i < localInfos.Length; i++)
+                {
+                    if (localIsRef[i])
+                        *(int*)(frameBase + localInfos[i].Offset) = -1;
+                }
+            }
+
+            // Managed-stack reservation for this frame's reference slots.
+            int frameRefBase = mStack.Count;
+            for (int i = 0; i < nf.TotalRefSize; i++)
+                mStack.Add(null);
+
+            // Write `this` (slot 0) for an instance method.
+            int argIdx = 0;
+            if (hasThis)
+            {
+                WriteNeoCallSlot(paramInfos[0], frameBase, mStack, frameRefBase, instance);
+                argIdx = 1; // slot 0 consumed
+            }
+            // Write each CLR param into its param-region slot. `args` carries
+            // only the explicit params (not `this`).
+            for (int i = 0; i < paramCnt; i++)
+            {
+                object arg = (args != null && i < args.Length) ? args[i] : null;
+                WriteNeoCallSlot(paramInfos[argIdx], frameBase, mStack, frameRefBase, arg);
+                argIdx++;
+            }
+
+            // Return slot.
+            int retSize = nf.ReturnPrimitiveSize;
+            int retRefCount = nf.ReturnRefCount;
+            byte* retDst = newEsp;
+            int retRefBase = mStack.Count;
+            for (int i = 0; i < retRefCount; i++)
+                mStack.Add(null);
+
+            bool unhandled;
+            intp.ExecuteNeo(method, frameBase, retDst, retRefBase, out unhandled);
+
+            object result = null;
+            if (!method.ReturnType.IsValueType && method.ReturnType != appdomain.VoidType
+                && retSize > 0)
+            {
+                // Reference return: the mStack index is at retDst.
+                int retIdx = *(int*)retDst;
+                result = (retIdx >= 0) ? mStack[retIdx] : null;
+            }
+            else if (method.ReturnType != appdomain.VoidType && retSize > 0)
+            {
+                result = ILIntepreter.NeoBoxReturnValue(method.ReturnType, retDst, retSize);
+            }
+
+            // Tear down this invoke's mStack reservation (the frame ref region +
+            // the return ref slots). Restore to the base recorded on entry.
+            mStack.RemoveRange(mStackBase, mStack.Count - mStackBase);
+
+            if (unhandled)
+                throw new Exception("NeoInvoke: unhandled exception in delegate target " + method);
+
+            // Multicast: walk the next-chain, discarding intermediate returns
+            // (Legacy ILInvokeSub:965-974 returns the LAST delegate's result).
+            if (next != null)
+            {
+                DelegateAdapter n = (DelegateAdapter)next;
+                result = n.NeoInvokeSub(args);
+            }
+            return result;
+            }
+            finally
+            {
+                appdomain.FreeILIntepreter(intp);
+            }
+        }
+
+        // Write a CLR value into a callee param-region slot per its StackSlotInfo
+        // (the inverse of CopyNeoCallArguments). Reference -> mStack index;
+        // primitive -> direct typed write; CLR value type -> WriteNeoValueType.
+        internal static unsafe void WriteNeoCallSlot(ILRuntime.Runtime.Intepreter.RegisterVM.StackSlotInfo info, byte* frameBase, AutoList mStack, int frameRefBase, object value)
+        {
+            int off = info.Offset;
+            if (info.RefCount > 0 && info.Size == 4)
+            {
+                // Reference slot (object / string / ILTypeInstance / IMethod):
+                // store the object on mStack, write the index.
+                int idx = frameRefBase + info.RefOffset;
+                mStack[idx] = value;
+                *(int*)(frameBase + off) = idx;
+                return;
+            }
+            if (value == null)
+                return;
+            // Primitive or CLR value type.
+            switch (info.Size)
+            {
+                case 1: *(byte*)(frameBase + off) = (byte)value; break;
+                case 2: *(short*)(frameBase + off) = (short)value; break;
+                case 4:
+                    if (value.GetType().IsEnum)
+                        *(int*)(frameBase + off) = Convert.ToInt32(value);
+                    else if (value is float f)
+                        *(float*)(frameBase + off) = f;
+                    else
+                        *(int*)(frameBase + off) = Convert.ToInt32(value);
+                    break;
+                case 8:
+                    if (value is double d)
+                        *(double*)(frameBase + off) = d;
+                    else if (value is long l)
+                        *(long*)(frameBase + off) = l;
+                    else
+                        *(long*)(frameBase + off) = Convert.ToInt64(value);
+                    break;
+                default:
+                    // CLR value type (struct) with managed size > 8: write its
+                    // flat managed bytes via the area4 helper.
+                    ILIntepreter.WriteNeoValueType(value, frameBase + off, info.Size);
+                    break;
+            }
+        }
+#endif
 
         public unsafe StackObject* ILInvoke(ILIntepreter intp, StackObject* esp, AutoList mStack)
         {

@@ -780,6 +780,43 @@ rules from `neo-vt-this-addr`). Full detail recorded in
 `.trae/documents/neo-deferred-items.md` (F-6 / NEO-VT-FLDADDR, §2 master table +
 §3 detail).
 
+### `[NEO-DELEGATE-REFOUT]` / F-7 -- delegate ref/out param marshaling in NeoInvoke (from neo-step19-delegate)
+
+Surfaced by Step 19 (neo-step19-delegate). `DelegateAdapter.NeoInvokeSub`
+(the CLR -> IL callback path, e.g. `List.ForEach(ilAction)`) writes the CLR
+args into the callee param region via `WriteNeoCallSlot`, which handles
+primitives / reference args / CLR value types but NOT a **byref-typed delegate
+param** (a `ref T` / `out T` parameter on an `Action<>`/`Func<>` Invoke). The
+return-side `WriteNeoDelegateInvokeReturn` has the symmetric gap for a
+`ref`/`out` return. A byref arg is an 8-byte Ref Slot `(objectIndex, offset)`;
+`NeoInvokeSub` does not consult the byref-deref machinery that handles a
+byref `this` for a direct `call` (`CopyNeoCallArguments`'s
+`PrimitiveByRefSrc` flag, neo-step13-area4).
+
+**Pre-existing / latent, NOT a Step 19 regression** -- the byref-on-delegate
+shape has never worked on Neo (delegates did not exist on Neo before Step 19).
+Step 19 probe 8 deliberately uses a plain `int` param to exercise the
+IL-delegate construct + Invoke routing (the load-bearing assertion for the
+`NeoInvokeSub` path) and is green on both engines; the byref variant was
+scoped OUT and recorded, not silently dropped.
+
+**Route:** a byref follow-up child (same family as D-13B area 4c CLR-method
+`ref`/`out` typed-ref bridge and the `neo-step17-stobj-refloop` byref work).
+The fix makes `NeoInvokeSub`'s arg-write / return-read byref-aware. Full
+detail in `.trae/documents/neo-deferred-items.md` (F-7 / NEO-DELEGATE-REFOUT,
+§2 master table + §3 detail).
+
+### Accepted-known / pre-existing edges (from neo-step19-delegate, NOT new follow-ups)
+
+- **F2 / WriteNeoCallSlot struct-with-ref-fields** -- `WriteNeoCallSlot`'s
+  CLR-struct-with-ref-field discriminator (`RefCount > 0 && Size == 4`) is a
+  pre-existing edge (same class as opt-harden-2 / area4 deferrals); no Step 19
+  probe exercises it. Accepted-known.
+- **NEO-IL-VT-INSTANCE-COVERAGE reuse** -- Step 19 probe 10's
+  `Ldfld`-on-CLR-struct-param is the pre-existing Step 6 gap already tracked
+  under `[NEO-IL-VT-INSTANCE-COVERAGE]` (line ~737). No new follow-up; the
+  existing one covers it.
+
 ### Resolved follow-ups (from neo-step17-completion, 2026-07-05)
 
 - **D-CONSTRAINED ({a,d,M2} scope)** -- RESOLVED. `constrained.callvirt T.M` on
@@ -1489,4 +1526,256 @@ the persistent planner:
 
 **Did NOT git commit/push** (per process discipline; LEAD commits after
 re-review).
+
+
+## Findings -- neo-step19-delegate (2026-07-05, propose)
+
+**Scope.** Step 19 = full Neo delegate support. Three engine gaps, all verified
+against HEAD code:
+
+- `ldftn` / `ldvirtftn` are ABSENT from `ExecuteNeo` (hit the catch-all NIE).
+  Legacy arms: `ILIntepreter.Register.cs:4524-4553` (`domain.GetMethod` +
+  `AssignToRegister`; ldvirtftn reads `this` + `Type.GetVirtualMethod`).
+- The `Newobj` arm throws `NotImplementedException("Neo Newobj delegate is not
+  implemented")` for `IsDelegate` (`ILIntepreter.Neo.cs:1730`). Legacy arm:
+  `ILIntepreter.Register.cs:3359-3408` (reads `this`=Register2 + IMethod=
+  Register3, builds adapter via DelegateManager).
+- `DelegateAdapter.InvokeILMethod` / `ILInvokeSub` / `ClearStack`
+  (`DelegateAdapter.cs:925-1022`) is `StackObject`-wired (Legacy). A Neo
+  calling-convention path is needed for the CLR -> IL callback (e.g.
+  `List.ForEach(ilAction)`).
+
+**The Legacy delegate flow (the reference, code-grounded).**
+- `ldftn` JIT lowering (`JITCompiler.cs:2377-2385`): `InitializeFunctionParam`
+  resolves the token into `Operand2`; `Register1` = dest. ldvirtftn lowering
+  (`:2387-2396`): `Register1` = dest, `Register2` = `this` source. NO JIT
+  CHANGE for Step 19 (the runtime arms are the only gap).
+- The `Newobj` JIT lowering (`:1845-1878`) stamps the ctor args into
+  `Register2`/`Register3`/`Register4` (NOT the param region) for up to 3 args;
+  `delegate.ctor(object target, IntPtr fnptr)` is 2 args -> `Register2`=target,
+  `Register3`=fnptr. **OQ1: confirm at apply via JIT dump whether Neo routes
+  these through `CopyNeoCallArguments` -> `targetBase` OR leaves them in
+  registers.** Legacy reads registers directly.
+- DelegateAdapter (`DelegateAdapter.cs:888+`): `method`, `instance`, `next`
+  fields; `CLRInstance = this` (so the adapter IS the CLR-visible delegate);
+  multicast via `next`-chain (engine-agnostic). The per-arity
+  `FunctionDelegateAdapter<...>`/`MethodDelegateAdapter<...>` assign
+  `action = InvokeILMethod`; their `InvokeILMethod` bodies use
+  `BeginInvoke()` -> `ILInvoke(ctx.Intepreter, ctx.ESP, ctx.ManagedStack)`
+  (StackObject path).
+- DelegateManager.FindDelegateAdapter (`DelegateManager.cs:232/273`):
+  engine-agnostic; caches instance-method adapters on the ILTypeInstance,
+  static-method adapters on `ilMethod.DelegateAdapter`.
+
+**Key decisions LOCKED at propose.**
+- **D1: IMethod representation in the Neo frame = a ref slot (CLR object).**
+  An IMethod (ILMethod/CLRMethod) is a managed heap object -> Neo ref slot
+  (mStack index in the byte region), exactly like a reference-type local
+  (Step 7). Both ldftn + ldvirtftn write an IMethod into a ref slot. REJECTED
+  alternative: raw pointer / token in the byte region (inconsistent with the
+  adapter ctor reading it back as a managed object + the multicast/
+  GetConvertor path).
+- **D2: Delegate Newobj reads `this`(Register2) + IMethod(Register3) from ref
+  slots, builds the adapter via DelegateManager.** Mirror Legacy
+  `:3359-3408`. Instance -> cache on ILTypeInstance; static -> cache on
+  `ilMethod.DelegateAdapter`. Store the adapter into the dest ref slot
+  (`newobjDstIdx`) + index write (same shape as the IL ref-type newobj
+  `:1813-1823`). The arg-routing (registers vs param region) is OQ1
+  dump-gated.
+- **D3: InvokeILMethod Neo convention = build a Neo frame, write CLR args into
+  the param region, ExecuteNeo, read return.** The inverse of Step 8/9 IL->CLR.
+  Reuse the `Run` Neo entry shim shape (`ILIntepreter.cs:97-111`) BUT push onto
+  `esp` past the in-flight frame (a delegate callback from INSIDE ExecuteNeo
+  has an in-flight frame; `Run` resets to StackBase because it is the outermost
+  entry). Reuse area4 `ReadNeoValueType`/`WriteNeoValueType` for VT params/
+  returns. The multicast `next`-chain works unchanged once the single-invoke
+  path is correct (D4). REJECTED alternative: route through the existing `Run`
+  / `appdomain.Invoke` re-entry -- `Run`'s Neo shim handles ONLY no-arg static
+  methods (`:94-120`, Step 6 limitation) and cannot carry the bound instance.
+- **D4: Reuse DelegateManager / next-chain / caching verbatim.**
+  Engine-agnostic; NOT modified. Only the single-invoke path gains a Neo branch.
+- **D5: CLRRedirectionDelegateNeo (Step 9) is the IL->CLR direction; Step 19
+  is the INVERSE (CLR->IL) and lives in DelegateAdapter, not in the autogen
+  codegen.** No Step 9 codegen change.
+
+**Files the implementer will touch (all Neo-only / `#if ENABLE_NEO_MODE`-gated;
+Legacy `ExecuteR`/`ILInvokeSub` byte-identical):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- new
+  `case Ldftn` + `case Ldvirtftn` arms; the delegate branch in `case Newobj`
+  (replace the Step 19 NIE at `:1730`).
+- `ILRuntime/Runtime/Intepreter/DelegateAdapter.cs` -- add a Neo
+  `NeoInvokeILMethod` path under `#if ENABLE_NEO_MODE` (frame build + param
+  write + ExecuteNeo + return read + next-chain walk); wire the per-arity
+  `InvokeILMethod` bodies to it. Legacy `StackObject` path under `#else`.
+- `TestCases/NeoStep19Test.cs` (NEW) -- 9+ adversarial probes (TC1-TC9 per the
+  task list + a VT-param/return probe).
+- Possibly `ILRuntime/Runtime/Intepreter/ILIntepreter.cs` -- if the public
+  `Run` re-entry needs a richer Neo instance-method path (OQ3), it lands here
+  `#if ENABLE_NEO_MODE`. The `Run` Step-6 shim is NOT modified for Legacy.
+- NO JIT change (ldftn/ldvirtftn/Newobj lowering already correct).
+
+**Regression risk: MEDIUM.** The new opcodes are additive (currently NIE); the
+Newobj delegate branch is gated by `IsDelegate` (does not touch shipped IL-VT /
+IL-ref / CLR newobj). The DelegateAdapter change is `#if ENABLE_NEO_MODE`-gated
+(Legacy byte-identical). Gate: full `NeoStep` smoke (130/130 baseline) +
+Legacy 518/519 for any shared-engine edit. The biggest design risk is the
+`InvokeILMethod` Neo frame build (the one untested corner) + the delegate-ctor
+arg routing (OQ1) -- both probe BEFORE finalizing (the area4 / opt-harden-2
+dump-gated discipline).
+
+**Open questions for apply (dump-gated).**
+- OQ1: does the JIT route the delegate `.ctor` `(target, fnptr)` args through
+  `CopyNeoCallArguments` -> `targetBase`, OR leave them in `Register2`/
+  `Register3`? Determines Newobj-arm read source. (Legacy reads registers.)
+- OQ2: is the ldvirtftn `this` source (`Register2`) ALWAYS a ref slot for
+  Step 19 scope (delegate over IL ref-type instance method or static method)?
+  Yes for scope; a CLR-struct-instance-method delegate is the area4 byref-`this`
+  shape (defer / probe if added).
+- OQ3: can `NeoInvokeILMethod` reuse the engine's `stack.StackBase` + `esp`
+  directly? NO -- a callback from inside `ExecuteNeo` has an in-flight frame;
+  it MUST push onto `esp` (advance past current frame), not reset to
+  StackBase. Confirm stack headroom under deep nesting (TC7 nested).
+
+**Baseline note.** NeoStep smoke is 130/130 at HEAD. TC1-TC9 FAIL on HEAD (NIE
+on ldftn / newobj) and turn green after the fix -- proves load-bearing
+(mirrors the F-MAJ-1 / VT-THIS-ADDR stash-toggle proof).
+
+**Portfolio sequencing note.** Step 19 unblocks Step 20 (async/await
+continuations use delegates). The `[NEO-IL-EX-FIELDACCESS]` follow-up is
+independent (callvirt-on-CLR-interface + appdomain.Invoke instance-method re-
+entry) -- Step 19 does NOT depend on it, but OQ3's instance-method re-entry
+shim MAY overlap with the follow-up's `appdomain.Invoke` re-entry path; flag
+for the implementer to avoid duplicating that machinery.
+
+## Findings -- neo-step19-delegate (apply, 2026-07-05)
+
+**RESOLVED.** Step 19 delegate support shipped. Neo smoke **140/140** (130
+baseline + 10 new `NeoStep19_*`); Legacy-neutral (plain Debug builds clean; the
+7 pre-existing Legacy NeoStep failures unchanged; ALL 10 `NeoStep19_*` pass on
+Legacy too). Working tree UNCOMMITTED.
+
+**Biggest design correction (D2): the common `Action<>`/`Func<>` delegate is a
+CLRType, NOT an ILType.** The propose-time design assumed the delegate newobj
+landed in the `ilNewobjType.IsDelegate` branch. DUMP-DISPROVEN: `Func<int,int>`
+resolves to a CLRType, so the common case routes through the CLR newobj branch
+(`if (targetMethod.DeclearingType is CLRType)`). The DelegateAdapter is built
+in a `clrDeclType.IsDelegate` sub-branch there via
+`DelegateManager.FindDelegateAdapter(CLRType, ...)`. The IL-delegate branch is
+ALSO implemented (rare IL-defined delegate types). Mirrors Legacy
+`ILIntepreter.Register.cs:3539-3561` (CLR), NOT `:3359-3408` (IL).
+
+**OQ1 dump-confirmed: ctor args route through CopyNeoCallArguments -> targetBase.**
+The delegate ctor's NeoCallParamMap has 2 entries: map[0]=target (size 4, mStack
+index), map[1]=fnptr (size 8; first 4 bytes = IMethod mStack index). The map
+does NOT include a `this` slot. Runtime reads `*(int*)(targetBase + dst)` for
+each. (Legacy reads registers; Neo reads targetBase because the optimizer
+builds the map for the CLR delegate ctor too.)
+
+**Risk 3 DISSOLVED: each delegate invoke runs on a FRESH interpreter.** The
+design's OQ3 premise (re-enter the SAME interpreter, push past the in-flight
+frame) is WRONG. Legacy `BeginInvoke` -> `RequestILIntepreter()` returns a
+fresh/pooled interpreter per invoke. So a `List.ForEach(action)` callback from
+inside an IL method runs on its OWN engine stack -- no in-flight frame to
+clobber. `NeoInvokeSub` mirrors this (request fresh interpreter, build frame at
+its StackBase, restore mStack on teardown). NO esp-past-frame logic needed.
+
+**The design's 3 changes were insufficient -- 4 MORE Neo arms/redirects were
+required for real C# delegate idioms:**
+1. `Call_Redirect` Neo arm + optimizer case: C# `a += b`/`a -= b` -> `Delegate.Combine`/`Remove` (a Call_Redirect). Was a Step 6 NIE.
+2. Neo `DelegateCombineNeo`/`DelegateRemoveNeo` redirects (the Legacy StackObject redirects are not Neo-aware). PARAM READ ORDER = source/declaration order (param 0 = dele1/source), NOT stack order (earned -- initial stack-order read broke `-=`).
+3. IL-delegate-Invoke callvirt routing (`Callvirt_IL` arm): `del(args)` -> `adapter.NeoInvokePublic(args)` (Legacy `IsDelegateInvoke -> ILInvoke`).
+4. **Delegate-typed `this`/param unwrap**: the autogen Neo binding for `Func.Invoke` cast the `this` directly to `Func<...>` -- but the object is an `IDelegateAdapter`. Added `CheckCLRTypes(TypeFlags.IsDelegate)` unwrap in `MethodBindingGenerator.cs` (delegate `this`-read) + `BindingGeneratorExtensions.cs` (delegate param-read) + `CLRMethod.Invoke` (reflection fallback). **Patched the 15 checked-in delegate binding files** (`System_Action_*`, `System_Func_*`) `Invoke_*_Neo` this-reads to match (the codegen fix only takes effect on regeneration -- the checked-in files needed manual patching via a PowerShell regex).
+
+**Two pre-existing Step 6 gaps surfaced, scoped OUT of Step 19 (follow-ups):**
+- Ref/out params through an IL-delegate-Invoke: `NeoInvokeSub`'s `object[]` arg model loses byref semantics. TC8 scoped to a plain-param IL-delegate Invoke. Ref/out-through-delegate needs byref-aware arg marshaling (a follow-up).
+- Generic `Ldfld` on a CLR struct param (TC10): struct field access via non-inline `Ldfld` is `[NEO-IL-VT-INSTANCE-COVERAGE]`. TC10 returns a constant to isolate the struct-param marshaling round-trip (the R4 risk).
+
+**Stale-DLL + filter gotchas re-affirmed.** Rebuild TestCases `--no-incremental`
+after every test-source edit. The CLI filter is a single `Contains` substring
+(run probes individually, not `A|B|C`).
+
+**Files touched (all Neo-only / `#if ENABLE_NEO_MODE`-gated files; Legacy
+byte-identical; the DelegateAdapter/CLRRedirections/AppDomain/MethodBindingGenerator/
+BindingGeneratorExtensions/CLRMethod edits are `#if ENABLE_NEO_MODE`-gated or
+delegate-type-gated; the optimizer `LowerNeoOffsets` ldftn/ldvirtftn +
+Call-case entries are Neo-only):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- Ldftn +
+  Ldvirtftn arms; CLR + IL delegate Newobj branches; Call_Redirect arm;
+  Callvirt_IL IsDelegateInvoke branch; ReadNeoDelegateInvokeArgs /
+  WriteNeoDelegateInvokeReturn helpers; NeoBoxReturnValue made public.
+- `ILRuntime/Runtime/Intepreter/RegisterVM/Optimizer.Neo.cs` -- ldftn/
+  ldvirtftn lowering (dest ref slot + DstOffset/SrcOffset); Call_Redirect in
+  the Call-case map-building.
+- `ILRuntime/Runtime/Intepreter/DelegateAdapter.cs` -- `NeoInvokeSub` +
+  `WriteNeoCallSlot` + `NeoInvokePublic`; per-arity `InvokeILMethod` bodies
+  wired to NeoInvoke under `#if ENABLE_NEO_MODE`.
+- `ILRuntime/Runtime/Enviorment/CLRRedirections.cs` -- `DelegateCombineNeo` /
+  `DelegateRemoveNeo` + `WriteNeoDelegateResult`.
+- `ILRuntime/Runtime/Enviorment/AppDomain.cs` -- register the Neo Combine/Remove
+  redirects.
+- `ILRuntime/Runtime/CLRBinding/MethodBindingGenerator.cs` -- delegate `this`
+  CheckCLRTypes unwrap.
+- `ILRuntime/Runtime/CLRBinding/BindingGeneratorExtensions.cs` -- delegate
+  param CheckCLRTypes unwrap.
+- `ILRuntime/CLR/Method/CLRMethod.cs` -- reflection-fallback delegate param
+  unwrap.
+- `ILRuntimeTestBase/AutoGenerate/System_Action_*` / `System_Func_*` (15 files)
+  -- `Invoke_*_Neo` this-read patched to `CheckCLRTypes(...,IsDelegate)`.
+- `TestCases/NeoStep19Test.cs` (NEW) -- 10 adversarial probes.
+
+**Did NOT git commit/push** (per process discipline; LEAD commits after review).
+**Did NOT update neo-deferred-items.md / neo-handoff.md** (the shipper does at
+archive).
+
+## Findings -- neo-step19-delegate (review-fix)
+
+**Reviewer verdict:** CHANGES-REQUESTED -- one Major (F1, resource leak), one
+Minor (F2, pre-existing edge), one Trivial (F3, whitespace churn). Smoke
+independently reproduced: Neo 140/140 + Legacy NeoStep19 10/10; adversarial
+probes (3-deep multicast, Func last-wins, nested-nested ForEach) all PASS.
+
+**F1 (Major) -- FIXED.** `DelegateAdapter.NeoInvokeSub` called
+`appdomain.RequestILIntepreter()` per delegate callback but never
+`FreeILIntepreter` -- pool starvation + unbounded `ILIntepreter` allocation on
+every delegate callback (the Step 19 hot path). Wrapped the body in
+`try { ... } finally { appdomain.FreeILIntepreter(intp); }`, mirroring Legacy
+`using (BeginInvoke())` -> `InvocationContext.Dispose` ->
+`domain.FreeILIntepreter`. The free runs after `ExecuteNeo` returns and the
+result is read; the `next`-chain recursion does its own balanced request/free;
+the `if (unhandled) throw` path throws out of the `try` so `finally` fires on
+the exception-escape path too.
+
+**Pool-reclaim verified (instrumented probe, since removed).** Added temp
+counters to `RequestILIntepreter` (pool-dequeue hits vs new-alloc) + 3 temp
+probes:
+- **F1-Loop** (1000 `list.ForEach(action)` callbacks): **2 allocs, 999 hits**
+  (pre-fix would be ~1000 allocs / 0 hits). Definitive.
+- **F1-Nested2** (delegate whose body drives `List.ForEach` on another
+  delegate): 1 alloc, 12 hits, pool bounded -- interpreter freed at each
+  nesting level.
+- **F1-Exception** (IL target throws, caught by caller): 0 allocs, 2 hits,
+  Pass -- `finally` fires, exception propagates.
+All instrumentation removed before completion; only the `try`/`finally` +
+`FreeILIntepreter` ships.
+
+**F2 (Minor) -- accepted-known.** `WriteNeoCallSlot` CLR-struct-with-ref-field
+param discriminator (`RefCount > 0 && Size == 4`) is a pre-existing gap (same
+class as opt-harden-2 / area4 deferrals); no Step 19 probe exercises it. Left
+as-is.
+
+**F3 (Trivial) -- reverted.** Restored the trailing space on the Legacy line
+`ctx.SetInvoked(esp); ` to eliminate cosmetic whitespace churn in the
+byte-identical Legacy region.
+
+**Smoke after fix:** NeoStep19 10/10, full NeoStep 140/140, Legacy (plain
+`Debug`) builds clean + NeoStep19 13/13 (with probes live). Happy-path results
+byte-identical (only lifecycle changed).
+
+**Files edited (review-fix):**
+- `ILRuntime/Runtime/Intepreter/DelegateAdapter.cs` -- F1 `try`/`finally` +
+  `FreeILIntepreter` in `NeoInvokeSub`; F3 trailing-space revert on Legacy line.
+- `openspec/changes/neo-step19-delegate/design.md` -- "Review-loop round 1
+  (F1 fix)" section appended.
+
+**Did NOT git commit/push** (LEAD commits after re-review).
 

@@ -68,8 +68,9 @@
       "prerequisites": ["neo-vt-this-addr", "neo-step13-area4"], "dependsOn": ["neo-vt-this-addr", "neo-step13-area4"], "status": "pending", "capability": "neo-boxing"
     },
     "neo-step19-delegate": {
-      "pipeline": "small-feature", "wave": 3, "scope": "[Step 19] ldftn/ldvirtftn + DelegateAdapter.InvokeILMethod Neo calling convention + multicast",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-dispatch"
+      "pipeline": "small-feature", "wave": 3, "scope": "[Step 19] ldftn/ldvirtftn + delegate newobj + InvokeILMethod Neo path (fresh pooled interpreter) + multicast + Combine/Remove Neo redirects",
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-dispatch",
+      "completedDate": "2026-07-06", "smoke": "Neo 140/140 + Legacy NeoStep19 10/10", "review": "APPROVE round 1 (F1 pool-leak Major fixed: try/finally + FreeILIntepreter; 1000cb→2alloc/999hit); F2 accepted-known; F-7 delegate-ref/out deferred"
     },
     "neo-step20-async": {
       "pipeline": "small-feature", "wave": 3, "scope": "[Step 20] Builder redirect + frame-to-heap copy + ILAsyncContext; sync+async paths",
@@ -109,7 +110,7 @@
     }
   },
   "runnableFrontier": ["neo-step13-area4", "neo-step19-delegate", "neo-array-completion", "neo-peephole-isinst", "neo-opportunistic-cleanup", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

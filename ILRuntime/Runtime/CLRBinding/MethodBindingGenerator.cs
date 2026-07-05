@@ -286,7 +286,21 @@ namespace ILRuntime.Runtime.CLRBinding
                 }
                 else
                 {
-                    sb.AppendLine(string.Format("            {0} instance_of_this_method = ({0})ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);", typeClsName));
+                    // Step 19: a delegate-typed `this` arrives as an
+                    // IDelegateAdapter (the DelegateManager-built bridge), NOT a
+                    // real CLR delegate. Unwrap it via CheckCLRTypes(TypeFlags.
+                    // IsDelegate) -- mirrors the Legacy wrapper which calls
+                    // CheckCLRTypes(..., TypeFlags.IsDelegate) on the delegate
+                    // instance (returns adapter.Delegate / a convertor). Without
+                    // this the cast below throws InvalidCastException.
+                    if (typeof(Delegate).IsAssignableFrom(type))
+                    {
+                        sb.AppendLine(string.Format("            {0} instance_of_this_method = ({0})typeof({0}).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);", typeClsName));
+                    }
+                    else
+                    {
+                        sb.AppendLine(string.Format("            {0} instance_of_this_method = ({0})ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);", typeClsName));
+                    }
                 }
             }
 

@@ -217,7 +217,20 @@ namespace ILRuntime.Runtime.CLRBinding
                     }
                     else
                     {
-                        sb.AppendLine($"            {realClsName} {varName} = ({realClsName})ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);");
+                        // Step 19: a delegate-typed param arrives as an
+                        // IDelegateAdapter (the bridge), not a real CLR delegate.
+                        // Unwrap via CheckCLRTypes(TypeFlags.IsDelegate) -- mirrors
+                        // the Legacy AppendArgumentCode which emits CheckCLRTypes
+                        // for delegate params. Without this, passing an IL delegate
+                        // to a CLR method (e.g. List.ForEach(action)) throws.
+                        if (typeof(Delegate).IsAssignableFrom(pt))
+                        {
+                            sb.AppendLine($"            {realClsName} {varName} = ({realClsName})typeof({realClsName}).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);");
+                        }
+                        else
+                        {
+                            sb.AppendLine($"            {realClsName} {varName} = ({realClsName})ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);");
+                        }
                     }
                 }
             }
