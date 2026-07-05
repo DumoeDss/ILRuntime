@@ -2112,6 +2112,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     op.Register3 = (short)(baseRegIdx - 1);
                     baseRegIdx--;
                     break;
+                // ---- D-ARR (rank-1 completion): native-int element load.
+                // Code.Ldelem_I casts directly to OpCodeREnum.Ldelem_I (same enum
+                // ordering); the runtime has a dedicated Ldelem_I arm (native-int
+                // array kinds IntPtr[]/UIntPtr[] plus int[]/uint[]). Additive:
+                // previously hit the JIT `default` NIE.
+                //
+                // NOTE on the proposal's other 3 codes: this Mono.Cecil fork's
+                // `Code` enum has NO `Code.Ldelem`, `Code.Stelem`, or
+                // `Code.Ldelem_U8` -- the generic-with-token form is
+                // `Code.Ldelem_Any`/`Code.Stelem_Any` (0xa3/0xa4), already
+                // enumerated above; `Ldelem_U8` is not a real ECMA opcode (an
+                // 8-byte unsigned load is just Ldelem_I8). So those 3 cases do
+                // not exist to add. Only Ldelem_I is real.
+                case Code.Ldelem_I:
+                    op.Register1 = (short)(baseRegIdx - 2);
+                    op.Register2 = (short)(baseRegIdx - 2);
+                    op.Register3 = (short)(baseRegIdx - 1);
+                    baseRegIdx--;
+                    break;
                 case Code.Nop:
                 case Code.Readonly:
                 case Code.Volatile:

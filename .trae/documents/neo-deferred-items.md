@@ -83,11 +83,12 @@ Insert these into the roadmap ordering:
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **RESOLVED ([CATCH-COMPLETE] + neo-il-exception-throw)** | CheckExceptionType IL branch + Exception-adaptor + Throw-for-IL all landed | shared-engine gap (fully closed; IL branch now reachable end-to-end) |
 | D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **RESOLVED (neo-il-exception-throw)** | System.Exception CrossBindingAdaptor (built-in) + Throw `as Exception` IL-instance unwrap on BOTH engines | shared-engine gap (closed 2026-07-05; F-4 / NEO-IL-EX-FIELDACCESS follow-up surfaced) |
 | D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **opportunistic** | patch-infra step | optimization (non-functional) |
-| D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **opportunistic** | triggered by a test/feature | roadmap gap (rare) |
+| D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **PARTIAL RESOLVED 2026-07-06 (neo-array-completion, rank-1); multi-dim -> `neo-array-multidim`** | rank-1 closed; multi-dim deferred | rank-1 closed; multi-dim deferred (rare) |
 | N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** | — | cosmetic nit (comment-only; runtime expression byte-identical) |
 | N-CATCHWRAP | catch slot stores ILRuntimeException wrapper | Step 14 | **accept** (matches Legacy) | — | not-a-bug |
 | N-TC2 | Step 14 TC2 asserts `e != null` | Step 14 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** (was resolved by Step 15; the test-tighten follow-up is now done) | — | cleanup |
 | F-7 / NEO-DELEGATE-REFOUT | byref-aware arg marshaling in `DelegateAdapter.NeoInvokeSub` (delegate ref/out params) | Step 19 | **future** (route to a byref follow-up child — same family as D-13B area 4c / neo-step17-stobj-refloop) | byref-typed Ref Slot in the delegate Invoke param region | pre-existing (latent; the only reachable shape today is plain primitives via `WriteNeoCallSlot`) |
+| F-8 / NEO-DOUBLE-COMBINE | 2+ `double` locals combined in one boolean expression silently misfire (F-MAJ-1 class; `double`-specific, not all 8-byte primitives) | neo-array-completion review (F-1) | **future** (new follow-up child `neo-double-combine-quirk` / [OPT-HARDEN-3]) | optimizer/runtime handling of 2+ simultaneous `double` locals in a combined expression (suspect: `AllocateLocalStackSpaces` 8-byte-primitive slot handling or copy-prop `double`-local combine — same family as F-MAJ-1) | pre-existing (NOT introduced by D-ARR; upstream of the array work; surfaced when the array probes needed combined `double` assertions) |
 
 ---
 
@@ -103,11 +104,16 @@ element array (validates `elemClrType.IsValueType`). The consumer side gained a
 `mStack[objIdx] is Array` branch in `Stind_I4` (`cArr.SetValue(v, off)`) and
 `Ldind_I4` (`(int)cArr.GetValue(off)`) -- the existing `objectIndex >= 0` arm
 calls `GetNeoILInstance`, which a CLR `Array` is not. Scoped to the green
-target (Stind_I4 / Ldind_I4 on a CLR primitive array); other stind/ldind
-variants remain NIE-tagged in their existing arms. D-LDELEMA is now FULLY
-resolved (both the Step-17 IL-VT-array path and this CLR-primitive-array
-remainder). See
-`openspec/changes/archive/2026-07-05-neo-step17-completion/ship-log.md`.
+target (Stind_I4 / Ldind_I4 on a CLR primitive array); the OTHER stind/ldind
+widths (the F-4 accepted-known from step17-completion) were RESOLVED
+2026-07-06 by `neo-array-completion` — the `is Array` branch is now extended
+to `Stind_I1/I2/I8/R4/R8` + `Ldind_I1/U1/I2/U2/U4/I8/R4/R8` +
+`Stind_Ref`/`Ldind_Ref` (the width matrix is complete except the UIntPtr-
+primitive and ref-array upstream gaps, which remain unreachable). D-LDELEMA is
+now FULLY resolved (both the Step-17 IL-VT-array path and this CLR-primitive-
+array remainder). See
+`openspec/changes/archive/2026-07-05-neo-step17-completion/ship-log.md` +
+`openspec/changes/archive/2026-07-06-neo-array-completion/ship-log.md` (F-4).
 
 Step 16 implemented Newarr/Ldelem/Stelem/Ldlen but deferred `ldelema`. Its only
 consumers are `stind_*`/`ldind_*`, `fixed`, and `ref`/`out` params — all Step 17
@@ -601,6 +607,40 @@ handles a byref `this` for a direct `call`). Recorded so the byref-follow-up
 planner finds it. See
 `openspec/changes/archive/2026-07-06-neo-step19-delegate/ship-log.md`.
 
+### F-8 / NEO-DOUBLE-COMBINE — 2+ double locals combined in one boolean expression (-> future [OPT-HARDEN-3])
+Surfaced by the neo-array-completion review (Finding F-1, Probe #4). When a
+method reads 2+ `double` values into separate locals and combines them in a
+single boolean expression (e.g.
+`if (a0 != expected0 || a1 != expected1)`), the comparison SILENTLY
+MISFIRES (DivideByZero on the assertion trip — i.e. the `||` evaluates the
+wrong branch / a `double` reads as 0). **Refined characterization:** the
+quirk is NOT "3+ locals" and NOT all 8-byte primitives — it is **2+ `double`
+locals combined in one boolean expression**. A single `double` read is
+correct; combine two in one `if` and it misfires. 3 `long` locals combined
+work fine (the quirk is `double`-specific). This is the **F-MAJ-1 class**
+(silent wrong result on 8-byte primitives).
+
+**Pre-existing / latent, NOT introduced by neo-array-completion.** The
+failing comparison uses plain `Ldelem_R8` reads (the pre-existing fast typed-
+indexer path, NOT the new `is Array` branches) and a pure `double`-local
+combine. The corruption is in how the optimizer/runtime handles 2+
+simultaneous `double` locals in a combined expression — upstream of, and
+independent from, the array work. The implementer correctly worked around it
+(incremental `bad`-fold pattern: read one element, fold into a running
+`bool bad`, never combine two `double` reads in one expression) in TC11/TC12/
+TC14 and flagged it.
+
+**Suspect:** `AllocateLocalStackSpaces` 8-byte-primitive slot handling (same
+family as F-MAJ-1 / OPT-HARDEN-2), or the `double`-local combine in copy-
+prop. Exact locus NOT pinned in the review (no dump probe of the failing
+frame layout). **Severity: Major (silent wrong result), pre-existing.**
+
+**Resolution:** future -- new follow-up child `neo-double-combine-quirk` /
+[OPT-HARDEN-3]. The fix should dump-gate the failing frame layout (the F-MAJ-1
+discipline: probe BEFORE designing the fix; STOP if the designed fix is
+wrong). Recorded so the optimizer-hardening planner finds it. See
+`openspec/changes/archive/2026-07-06-neo-array-completion/ship-log.md` (F-1).
+
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
 suspected to hit an optimizer temp-renumber quirk (BCP/copy-prop). **OPT-HARDEN
@@ -689,13 +729,46 @@ pure optimization (non-functional). **Resolution:** opportunistically, when a
 patch-infra step lands (possibly related to HybridPatch, or a dedicated
 optimizer-features step). Low priority.
 
-### D-ARR — array-completion gaps (Step 16 -> opportunistic)
+### D-ARR — array-completion gaps (Step 16 -> PARTIAL RESOLVED 2026-07-06, rank-1)
+**PARTIAL RESOLVED 2026-07-06 (neo-array-completion, rank-1).** The proposal's
+"5 gaps" collapsed to **2 real gaps** in this Mono.Cecil fork: `Code.Ldelem`
+(generic) IS `Code.Ldelem_Any`, `Code.Stelem` (generic) IS `Code.Stelem_Any`
+(both already handled), and `Code.Ldelem_U8` does NOT EXIST (not a real ECMA
+opcode — an 8-byte unsigned load is just `Ldelem_I8`). The 2 real gaps:
+
+- **`Stelem_I` + `Ldelem_I` runtime arms** (`ILIntepreter.Neo.cs`): Option A
+  (`Stelem_I` goto `Stelem_I4`) REJECTED (Stelem_I4's typed casts only handle
+  `int[]`/`uint[]` -> `IntPtr[]` `InvalidCastException`); Option B = dedicated
+  arms dispatching on `int[]`/`uint[]`/`IntPtr[]`/`UIntPtr[]` (native-int is
+  I4-width on this VM; dump-confirmed). `Ldelem_I` also added to the JIT
+  `Translate` switch + a 5-site optimizer cascade (4 `Optimizer.Utils.cs` +
+  `LowerNeoOffsets`); reviewer confirmed NO MISS (FCP/BCP/RegisterCleanup do not
+  enumerate the `Ldelem_*` family).
+- **F-4 other-width CLR-array Stind/Ldind branches:** the step17-completion
+  I4-only `mStack[objIdx] is Array` branch extended to `Stind_I1/I2/I8/R4/R8` +
+  `Ldind_I1/U1/I2/U2/U4/I8/R4/R8` + `Stind_Ref`/`Ldind_Ref`.
+
+**Verification:** NeoStep 161/161 (154 + 7 probes). Stash-toggle TC8/TC12/TC13/
+TC14 FAIL-on-HEAD -> PASS. Legacy-neutral. Review APPROVED (0 Blocker/Major
+introduced; F-1 double-combine quirk pre-existing follow-up; F-2/F-3
+Minor/Trivial). Accepted-known upstream gaps: TC9 (UIntPtr[] — unsupported
+primitive), TC15 (ref-array — Neo `ldelema` NIEs on CLR ref-type arrays).
+See `openspec/changes/archive/2026-07-06-neo-array-completion/ship-log.md`.
+
+**STILL DEFERRED -> `neo-array-multidim` (separate child):** multi-dimensional
+arrays (rank-2+). The rank-aware `Address`/`Get`/`Set` `callvirt`, the rank-
+aware frame model, and `new T[n,m]` construction do NOT fall out of the rank-1
+work. Stays an untagged JIT `NotImplementedException` today.
+
+---
+
 - `Stelem_I` is lowered (correct 3-register encoding) but has NO interpreter arm
   (Step-tagged NIE) — rare `IntPtr[]`/`UIntPtr[]` native-int store.
 - generic-token `Code.Ldelem`/`Code.Stelem` and native `Code.Ldelem_I`/`Ldelem_U8`
   are not enumerated by JIT `Translate` -> JIT-time NIE; rare in C# output.
 - multi-dimensional arrays: rank-1 only.
-**Resolution:** implement the specific variant when a test or feature needs it.
+**Resolution:** rank-1 RESOLVED 2026-07-06 (neo-array-completion); multi-dim
+deferred to `neo-array-multidim`.
 
 ### N-CGTUN — Cgt_Un divergence comment (Step 15 -> opportunistic)
 **RESOLVED 2026-07-06 (neo-opportunistic-cleanup).** The `Cgt_Un` arm's

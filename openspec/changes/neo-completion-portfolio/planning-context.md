@@ -2307,3 +2307,211 @@ more). LEAD non-author diff-read APPROVED. Recorded RESOLVED 2026-07-06
 + §3 entries (N-CGTUN also gets a §4 Resolved bullet). See
 `openspec/changes/archive/2026-07-06-neo-opportunistic-cleanup/ship-log.md`.
 
+
+## Findings -- neo-array-completion (2026-07-06, propose)
+
+**Scoping decision (matches the load-bearing recommendation; verified against
+code).** IN = (1) `Stelem_I` runtime arm, (2) generic-token
+`Code.Ldelem`/`Code.Stelem` + native `Code.Ldelem_I`/`Code.Ldelem_U8` JIT
+`Translate` enumeration, (3) F-4 other-width Stind/Ldind CLR-array branches.
+DEFER multi-dimensional arrays (rank-2+) to a separate child
+`neo-array-multidim` -- the rank-aware `Get`/`Set` callvirt + rank-aware frame
+model + `new T[n,m]` constructor do NOT fall out of the rank-1 work and would
+make the diff unreviewable (the explicit Step 13b / area4 lesson). All three
+in-scope items are small, additive, low-regression-risk and close the rank-1
+story. No `neo-array-multidim` spec capability is created here (the child will
+introduce it); the proposal was re-scoped from a placeholder capability to
+"None" + a `neo-arrays` non-goal boundary to avoid an empty spec.
+
+**All 5 D-ARR gaps CONFIRMED against current code (HEAD).**
+- `Stelem_I`: lowered by `Optimizer.Neo.cs:1010` (in the 3-register Stelem
+  lowering list) and CIL `Code.Stelem_I` enumerated by JIT
+  (`JITCompiler.cs:2226`), but NO runtime arm in the `ILIntepreter.Neo.cs`
+  Stelem switch (`:2984-3049` has I1/I2/I4/I8/R4/R8/Ref/Any; no `Stelem_I`) ->
+  catch-all Step-16 NIE.
+- Generic-token + native NOT enumerated: JIT `Translate` Ldelem list
+  (`JITCompiler.cs:2098-2109`) has I1/U1/I2/U2/I4/U4/I8/R4/R8/Any/Ref -- NO
+  `Code.Ldelem`, `Code.Ldelem_I`, `Code.Ldelem_U8`; Stelem list (`:2226-2234`)
+  has I/I1/I2/I4/I8/R4/R8/Ref/Any -- NO `Code.Stelem` -> JIT-time NIE.
+- F-4: only `Stind_I4` (`:3123`) + `Ldind_I4` (`:3198`) carry the
+  `else if (mStack[objIdx] is Array cArr)` branch from step17-completion; I1/
+  I2/I8/R4/R8 + Ref variants fall to `GetNeoILInstance(mStack, objIdx)` ->
+  `InvalidCastException` on a CLR `Array`. `Stind_I`/`Ldind_I` `goto
+  Stind_I4`/`Ldind_I4` and thus INHERIT the array branch (no change needed).
+
+**Key decisions locked.**
+- D1: `Stelem_I` -> `goto case OpCodeREnum.Stelem_I4` (native int = I4 width
+  on this VM; mirrors the existing `Stind_I` -> `Stind_I4` idiom). OQ2
+  (resolve at apply): dump-confirm a `nint[]`/`UIntPtr[]` round-trip; if the
+  pointer model is 8-byte, fall back to a dedicated typed arm (Option B).
+- D2: each new JIT case gets the SAME 3-register `baseRegIdx`-decrement shape
+  as the existing rank-1 cases (`JITCompiler.cs:2110-2113`). CIL->OpCodeREnum
+  mapping: `Code.Ldelem`->`Ldelem_Any` (token resolved by the runtime arm),
+  `Code.Stelem`->`Stelem_Any`, `Code.Ldelem_I`->`Ldelem_I4`,
+  `Code.Ldelem_U8`->`Ldelem_I8`. OQ1: `Ldelem_U8` semantics (`ulong` vs native
+  unsigned int) -- probe both at apply. `Translate` is SHARED (Legacy uses it
+  too), but the new cases only ADD CIL codes that previously NIE'd -> Legacy
+  byte-identical for existing paths; confirm via stash-toggle.
+- D3: F-4 fix is per-arm (mirror the I4 precedent) rather than a centralized
+  helper -- the arms are width-specialized typed locals; a helper would lose
+  typing or churn the just-shipped I4 arms. Discriminator is unconditional
+  (`is Array` runtime type test; re-affirms the opt-harden-2 / area4 insight
+  that the operand kind determines the branch, no per-slot flag needed).
+- D4: multi-dim is a separate child, NOT folded here.
+
+**Files the implementer will touch (all Neo-only EXCEPT the JIT enumeration,
+which is shared but additive; Legacy `ExecuteR` is the REFERENCE, NOT
+modified):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- new
+  `Stelem_I` arm; F-4 `is Array` branch in I1/I2/I8/R4/R8 + Ref Stind/Ldind
+  arms (`:3099-3260`).
+- `ILRuntime/Runtime/Intepreter/RegisterVM/JITCompiler.cs` -- enumerate 4 CIL
+  codes in `Translate` (`:2098` Ldelem block + `:2226` Stelem block). SHARED;
+  Legacy-neutral (additive).
+- `TestCases/NeoStep16Test.cs` (extend) -- `NeoStep16_*` adversarial probes
+  (Stelem_I nint/UIntPtr; generic-token Ldelem/Stelem; Ldelem_U8 ulong; F-4
+  I8/R4/R8/Ref CLR-array stind/ldind; regression int[]/float[]/object[]/
+  IL-struct[]). Each new probe FAIL-on-HEAD stash-toggle (load-bearing).
+- `openspec/specs/neo-arrays/spec.md` (archive step) + this planning-context
+  + `.trae/documents/neo-deferred-items.md` (D-ARR rank-1 resolved; multi-dim
+  pointer to `neo-array-multidim`).
+
+**Regression risk: LOW-MEDIUM.** All changes additive (new arm + new JIT cases
+that previously NIE'd; no existing rank-1 encoding/representation changes).
+Gate: full `NeoStep` smoke (154/154 baseline) + Legacy-neutral stash-toggle
+for the 4 new JIT cases. Adversarial probes MANDATORY (Step 17 B1 / OPT-HARDEN
+K1 / F-MAJ-1 lessons: a green smoke does NOT prove an array-kind discriminator
+correct -- construct FAIL-on-HEAD stash-toggle probes per new path).
+
+**Baseline note.** NeoStep smoke is 154/154 at HEAD (after neo-vt-ldflda-inline
+/ neo-opportunistic-cleanup). Each new probe FAILS on HEAD (NIE or
+InvalidCastException) and turns green after the fix -- proves load-bearing.
+
+## Findings -- neo-array-completion (apply, 2026-07-06)
+
+**RESOLVED.** D-ARR rank-1 array completion shipped. NeoStep smoke 161/161
+(154 baseline + 7 new keeper probes; TC9 UIntPtr + TC15 ref-array omitted --
+pre-existing upstream gaps). Legacy-neutral (stash-toggle: Legacy NeoStep 8
+failures byte-identical with/without the change).
+
+**Scoping collapse (the proposal's "5 gaps" -> 2 real gaps).** The proposal/
+design named 5 rank-1 gaps. Reading the actual Mono.Cecil fork's `Code` enum
+(Mono.Cecil/Mono.Cecil.Cil/Code.cs) at apply COLLAPSED them to 2:
+1. **`Stelem_I` runtime arm missing** (the JIT `case Code.Stelem_I` at
+   JITCompiler.cs:2226 was already present; the optimizer lists + LowerNeoOffsets
+   already included Stelem_I; only the runtime arm in ILIntepreter.Neo.cs was
+   absent -> Step-16 NIE).
+2. **`Ldelem_I` missing EVERYWHERE** (JIT Translate case + runtime arm + 4
+   optimizer-list entries in Optimizer.Utils.cs + 1 Neo-lowering entry in
+   Optimizer.Neo.cs). The JIT default threw a generic NIE.
+
+The other 3 proposed gaps are NON-ISSUES in this fork:
+- `Code.Ldelem` (generic) does NOT EXIST -- opcode 0xa3 IS `Code.Ldelem_Any`
+  here (already enumerated + handled).
+- `Code.Stelem` (generic) does NOT EXIST -- opcode 0xa4 IS `Code.Stelem_Any`.
+- `Code.Ldelem_U8` does NOT EXIST -- not a real ECMA opcode (an 8-byte unsigned
+  load is just `Ldelem_I8`).
+OQ1 (Ldelem_U8 routing) is MOOT -- no such opcode. Future proposals should
+verify CIL-code existence in THIS fork's `Code` enum before designing JIT cases.
+
+**OQ2 RESOLVED -- native-int is I4-width, but D1 Option A REJECTED.** The 4-byte
+value round-trips correctly (Stelem_I writes val4=100/-7/4660; Ldelem_I reads
+v=100/-7/4660 -- dump-confirmed via temporary runtime Console.WriteLine). BUT
+`goto case Stelem_I4` (Option A) FAILS: the Stelem_I4 arm's typed-indexer casts
+only handle int[]/uint[], so IntPtr[] hits the `((uint[])sa)[si]` fallback ->
+InvalidCastException. Switched to D1 Option B: dedicated Stelem_I + Ldelem_I
+arms dispatching on int[]/uint[]/IntPtr[]/UIntPtr[]. The design's "CLR indexer
+boxes a 4-byte IntPtr correctly" assumption was WRONG for this runtime (it uses
+direct casts, not Array.SetValue). LESSON: when a design offers Option A "reuse
+the typed arm" vs Option B "dedicated arm", dump-confirm the typed arm's cast
+list covers the new array kind BEFORE choosing A.
+
+**Optimizer `Ldelem_I` omission cascade (5 additive edit sites).** Adding
+`Code.Ldelem_I` to JIT Translate exposed FIVE further places enumerating the
+Ldelem family WITHOUT Ldelem_I, each throwing a generic NIE on first contact:
+Optimizer.Utils.cs GetOpcodeSourceRegister / GetOpcodeDestRegister /
+ReplaceOpcodeSource / ReplaceOpcodeDest + Optimizer.Neo.cs LowerNeoOffsets. All
+SHARED (Legacy-neutral: they only add handling for a previously-NIE'd opcode).
+LESSON (durable): when adding a new opcode to the JIT Translate case list, grep
+EVERY `Ldelem_<existing>` enumeration across Optimizer.*.cs and add the new
+opcode to ALL of them -- the runtime arm alone is not enough; the optimizer's
+register-source/dest + lowering passes each have their own per-opcode switch
+that throws on unknowns. (This mirrors the F-MAJ-1 review-fix sweep pattern but
+for JIT/optimizer lists rather than runtime representation.)
+
+**Pre-existing gaps that blocked probes (accepted-known, NOT regressions):**
+- **UIntPtr is an unsupported primitive.** `AppDomain.GetPrimitiveSize`
+  (AppDomain.cs:1947) recognizes IntPtr (returns 8 -- note: NOT 4, despite the
+  runtime treating native-int stores as 4-byte; the array element slot is
+  separate from the value register) but NOT UIntPtr. Any UIntPtr-typed local/
+  temp throws at AllocateLocalStackSpaces. TC9 (UIntPtr[]) omitted. The
+  Stelem_I/Ldelem_I UIntPtr[] branches are correct but unreachable.
+- **Neo `ldelema` NIEs on CLR ref-type arrays** ("ldelema on a CLR array with a
+  reference-type element is deferred (use direct indexing)"). This sits
+  upstream of the new Stind_Ref/Ldind_Ref `is Array` branch, so TC15 (string[]
+  ref) omitted. The Ref branches are correct-by-construction (mirror the I4
+  precedent) but unreachable until the ldelema ref-type gap closes (a Step 17
+  follow-up, NOT D-ARR).
+- **IntPtr value-comparison routes through CLR-struct-method calls**
+  (op_Explicit / op_Equality) which hit the by-value-CLR-struct-param gap
+  (`[NEO-IL-VT-INSTANCE-COVERAGE]` Step 6 family). TC8 asserts length +
+  no-fault; value correctness proven by runtime debug output. On HEAD TC8 NIEs
+  (no Stelem_I arm) -> load-bearing.
+- **Multiple-simultaneous-8-byte-locals optimizer quirk.** Reading 3 long/
+  double elements into separate locals and combining in one `if` yields 0 for
+  all (pre-existing, unrelated to D-ARR). The incremental-assert pattern (read
+  one element, fold into a running `bool bad`) works. LESSON: prefer
+  incremental single-local assertions over multi-local-combined `if` for
+  long/double round-trip probes.
+
+**Stash-toggle (load-bearing proof).** With the 4 source files stashed:
+TC8/TC12/TC13/TC14 FAIL-on-HEAD (Stelem_I NIE / Stind_I8/R4/R8 array-branch
+absent -> InvalidCastException) -> PASS-after-fix. TC10/TC11/TC16 PASS
+throughout (regression guards for already-working paths, as designed). This
+matches the design's intent (some probes are regression guards, not all are
+load-bearing).
+
+**Files edited (working tree UNCOMMITTED):**
+- ILIntepreter.Neo.cs -- Stelem_I + Ldelem_I runtime arms (Option B dispatch);
+  `is Array` branch added to Stind_I1/I2/I8/R4/R8 + Ldind_I1/U1/I2/U2/U4/I8/
+  R4/R8 + Stind_Ref/Ldind_Ref.
+- JITCompiler.cs -- `case Code.Ldelem_I:` (3-register shape, no op.Code
+  rewrite -- direct cast to OpCodeREnum.Ldelem_I).
+- Optimizer.Utils.cs -- Ldelem_I added to 4 lists.
+- Optimizer.Neo.cs -- Ldelem_I added to LowerNeoOffsets Ldelem block.
+- TestCases/NeoStep16Test.cs -- 7 keeper probes + 2 documented omissions.
+
+**Multi-dim DEFERRED to `neo-array-multidim` (separate child).** Rank-2+ arrays
+untouched (the rank-aware Address/Get/Set callvirt + frame model + new T[n,m]
+construction). Out of scope for D-ARR rank-1; tracked separately.
+
+**Did NOT git commit/push** (per process discipline; LEAD commits after review).
+
+### Follow-ups discovered (from neo-array-completion, 2026-07-06)
+
+- **`neo-array-multidim`** (portfolio task #20) -- multi-dimensional arrays
+  (rank-2+). DEFERRED from D-ARR. The rank-aware `Address`/`Get`/`Set`
+  `callvirt` ABI, the rank-aware frame model, and `new T[n,m]` construction do
+  NOT fall out of the rank-1 work; they are a substantially larger change.
+  Stays an untagged JIT `NotImplementedException` today. Tracked in
+  `.trae/documents/neo-deferred-items.md` (D-ARR §3 STILL DEFERRED).
+- **`neo-double-combine-quirk` / [OPT-HARDEN-3]** (portfolio task #21) -- 2+
+  `double` locals combined in one boolean expression silently misfire (F-MAJ-1
+  class; `double`-specific, not all 8-byte primitives; 3 `long` locals
+  combined work fine). Surfaced as the array-completion review's Finding F-1
+  (Major, PRE-EXISTING, upstream of D-ARR). Suspect: `AllocateLocalStackSpaces`
+  8-byte-primitive slot handling or copy-prop `double`-local combine; exact
+  locus NOT pinned (dump-gate at apply). Tracked in
+  `.trae/documents/neo-deferred-items.md` (F-8 / NEO-DOUBLE-COMBINE).
+- **UIntPtr unsupported primitive** (accepted-known, upstream of D-ARR) --
+  `AppDomain.GetPrimitiveSize` (AppDomain.cs:1947) recognizes `IntPtr` but
+  NOT `UIntPtr`; any `UIntPtr`-typed local/temp throws at
+  `AllocateLocalStackSpaces`. The `Stelem_I`/`Ldelem_I` `UIntPtr[]` arms are
+  correct but unreachable. Route: a future primitive-support follow-up (low
+  priority; rare in C# output).
+- **Neo `ldelema` NIEs on CLR ref-type arrays** (accepted-known, upstream of
+  D-ARR) -- sits upstream of the new `Stind_Ref`/`Ldind_Ref` `is Array`
+  branch, so no C# shape can reach the Ref array branch today. Route: the
+  Step-17 stobj-refloop / CLR-object field-hash follow-up
+  (`neo-step17-stobj-refloop`, task #18) -- same family as the D-CONSTRAINED
+  stobj-refloop / CLR-object-field-hash deferral.

@@ -79,8 +79,17 @@
       "prerequisites": ["neo-step19-delegate"], "dependsOn": ["neo-step19-delegate"], "status": "pending", "capability": "neo-dispatch"
     },
     "neo-array-completion": {
-      "pipeline": "small-feature", "wave": 4, "scope": "[D-ARR] Stelem_I arm + generic/native Ldelem/Stelem JIT enum + multi-dim",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-arrays"
+      "pipeline": "small-feature", "wave": 4, "scope": "[D-ARR rank-1] Stelem_I/Ldelem_I arms + F-4 other-width CLR-array Stind/Ldind branches",
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-arrays",
+      "completedDate": "2026-07-06", "smoke": "Neo 161/161 + Legacy-neutral", "review": "APPROVE (0 Blocker/Major; F-1 double-combine quirk pre-existing -> neo-double-combine-quirk; multi-dim -> neo-array-multidim)"
+    },
+    "neo-array-multidim": {
+      "pipeline": "small-feature", "wave": 4, "scope": "[D-ARR] multi-dimensional arrays (rank-2+): rank-aware Get/Set callvirt + frame model + new T[n,m]",
+      "prerequisites": ["neo-array-completion"], "dependsOn": ["neo-array-completion"], "status": "pending", "capability": "neo-arrays"
+    },
+    "neo-double-combine-quirk": {
+      "pipeline": "small-feature", "wave": 4, "scope": "[F-8 NEO-DOUBLE-COMBINE / OPT-HARDEN-3] 2+ double locals combined in one boolean expr silently misfire (F-MAJ-1 class, double-specific)",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-optimizer"
     },
     "neo-peephole-isinst": {
       "pipeline": "small-feature", "wave": 4, "scope": "[D-PEEP] box T;isinst U fusion + PatchKind.IsinstResult (needs patch-infra)",

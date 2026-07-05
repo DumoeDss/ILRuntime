@@ -2925,6 +2925,26 @@ namespace ILRuntime.Runtime.Intepreter
                                     else *(long*)(frameBase + ip->DstOffset) = (long)((ulong[])la)[li];
                                 }
                                 break;
+                            case OpCodeREnum.Ldelem_I:
+                                {
+                                    // native-int element load (I4-width on this VM,
+                                    // OQ2 dump-confirmed). The element type is typically
+                                    // IntPtr[] / UIntPtr[] (the C# `nint[]`/`UIntPtr[]`
+                                    // shape) or int[]/uint[]; Ldelem_I4's typed-indexer
+                                    // casts only handle int[]/uint[], so dispatch on the
+                                    // native-int array kinds explicitly. (D-ARR.)
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int li = *(int*)(frameBase + ip->Operand4);
+                                    Array la = (Array)mStack[srcIdx];
+                                    int v;
+                                    if (la is int[] ia) v = ia[li];
+                                    else if (la is uint[] ua) v = (int)ua[li];
+                                    else if (la is IntPtr[] ipa) v = (int)ipa[li];
+                                    else v = (int)((UIntPtr[])la)[li];
+                                    *(int*)(frameBase + ip->DstOffset) = v;
+                                }
+                                break;
                             case OpCodeREnum.Ldelem_R4:
                                 {
                                     srcIdx = *(int*)(frameBase + ip->SrcOffset);
@@ -3003,6 +3023,29 @@ namespace ILRuntime.Runtime.Intepreter
                                     if (sa is short[] ssa) ssa[si] = val2;
                                     else if (sa is ushort[] susa) susa[si] = (ushort)val2;
                                     else ((char[])sa)[si] = (char)val2;
+                                }
+                                break;
+                            case OpCodeREnum.Stelem_I:
+                                {
+                                    // native-int element store. Native-int is I4-width
+                                    // on this VM (OQ2 dump-confirmed: the 4-byte value
+                                    // is read from ip->Operand4, mirroring Stind_I /
+                                    // Ldind_I). The element type is typically IntPtr[] /
+                                    // UIntPtr[] (the C# `nint[]`/`UIntPtr[]` shape) or
+                                    // int[]/uint[]; the Stelem_I4 arm's typed-indexer
+                                    // casts only handle int[]/uint[], so dispatch on the
+                                    // native-int array kinds explicitly. (Step 16 / D-ARR
+                                    // D1 Option B -- Option A `goto Stelem_I4` would
+                                    // hit the `((uint[])sa)` fallback and throw.)
+                                    srcIdx = *(int*)(frameBase + ip->DstOffset);
+                                    if (srcIdx < 0) throw new NullReferenceException();
+                                    int si = *(int*)(frameBase + ip->SrcOffset);
+                                    int val4 = *(int*)(frameBase + ip->Operand4);
+                                    Array sa = (Array)mStack[srcIdx];
+                                    if (sa is int[] sia) sia[si] = val4;
+                                    else if (sa is uint[] sua) sua[si] = (uint)val4;
+                                    else if (sa is IntPtr[] ipa) ipa[si] = (IntPtr)val4;
+                                    else ((UIntPtr[])sa)[si] = (UIntPtr)val4;
                                 }
                                 break;
                             case OpCodeREnum.Stelem_I4:
@@ -3102,6 +3145,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     sbyte v = *(sbyte*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(sbyte*)(frameBase + off) = v;
+                                    else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); ins.Primitives[off] = (byte)v; }
                                 }
                                 break;
@@ -3111,6 +3155,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     short v = *(short*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(short*)(frameBase + off) = v;
+                                    else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3130,6 +3175,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     long v = *(long*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(long*)(frameBase + off) = v;
+                                    else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3139,6 +3185,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     float v = *(float*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(float*)(frameBase + off) = v;
+                                    else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3148,6 +3195,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     double v = *(double*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(double*)(frameBase + off) = v;
+                                    else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3159,6 +3207,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(sbyte*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) *(int*)(frameBase + ip->DstOffset) = (sbyte)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = ins.Primitives[off]; }
                                 }
                                 break;
@@ -3167,6 +3216,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(byte*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) *(int*)(frameBase + ip->DstOffset) = (byte)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = ins.Primitives[off]; }
                                 }
                                 break;
@@ -3176,6 +3226,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     int v;
                                     if (objIdx == -1) v = *(short*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) v = (short)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<short>(ref ins.Primitives[off]); }
                                     *(int*)(frameBase + ip->DstOffset) = v;
                                 }
@@ -3186,6 +3237,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     int v;
                                     if (objIdx == -1) v = *(ushort*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) v = (ushort)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<ushort>(ref ins.Primitives[off]); }
                                     *(int*)(frameBase + ip->DstOffset) = v;
                                 }
@@ -3205,6 +3257,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     uint v;
                                     if (objIdx == -1) v = *(uint*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) v = (uint)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<uint>(ref ins.Primitives[off]); }
                                     *(uint*)(frameBase + ip->DstOffset) = v;
                                 }
@@ -3214,6 +3267,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) *(long*)(frameBase + ip->DstOffset) = (long)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(long*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<long>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3222,6 +3276,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(float*)(frameBase + ip->DstOffset) = *(float*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) *(float*)(frameBase + ip->DstOffset) = (float)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(float*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<float>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3230,6 +3285,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(double*)(frameBase + ip->DstOffset) = *(double*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) *(double*)(frameBase + ip->DstOffset) = (double)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(double*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<double>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3241,17 +3297,23 @@ namespace ILRuntime.Runtime.Intepreter
                                     // Store a managed reference through the pointer.
                                     // Frame-native target: write the value's mStack
                                     // index as a 4-byte slot at the offset (a ref-
-                                    // typed frame slot). Heap-IL ref field: write
-                                    // the ManagedObjects entry (off is the field's
-                                    // reference offset, stamped by Ldflda via the
-                                    // Operand3 marker -- not yet wired, so NIE for
-                                    // the heap-ref sub-case this step).
+                                    // typed frame slot). CLR array target (a
+                                    // ldelema-produced object[]/string[] address):
+                                    // Array.SetValue the managed object. Heap-IL ref
+                                    // field: write the ManagedObjects entry (off is
+                                    // the field's reference offset, stamped by Ldflda
+                                    // via the Operand3 marker -- not yet wired, so
+                                    // NIE for the heap-ref sub-case this step).
                                     int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     int vIdx = *(int*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1)
                                     {
                                         *(int*)(frameBase + off) = vIdx;
+                                    }
+                                    else if (mStack[objIdx] is Array cArr)
+                                    {
+                                        cArr.SetValue(vIdx >= 0 ? mStack[vIdx] : null, off);
                                     }
                                     else
                                     {
@@ -3274,6 +3336,21 @@ namespace ILRuntime.Runtime.Intepreter
                                         {
                                             dstIdx = frameRefBase + ip->Operand3;
                                             mStack[dstIdx] = mStack[srcIdx];
+                                            *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                        }
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
+                                    }
+                                    else if (mStack[objIdx] is Array cArr)
+                                    {
+                                        // CLR array target (ldelema-produced object[]
+                                        // /string[] address): read the element and
+                                        // materialize it into the dest ref slot.
+                                        object elem = cArr.GetValue(off);
+                                        if (elem != null)
+                                        {
+                                            dstIdx = frameRefBase + ip->Operand3;
+                                            mStack[dstIdx] = elem;
                                             *(int*)(frameBase + ip->DstOffset) = dstIdx;
                                         }
                                         else
