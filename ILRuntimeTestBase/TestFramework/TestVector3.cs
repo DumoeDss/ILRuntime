@@ -23,6 +23,37 @@ namespace ILRuntimeTest.TestFramework
             this.z = z;
         }
 
+        // ---- Step 13 Area 4b/4a instance methods (host C#; called on a value-
+        //      type `this` from IL via the reflection fallback or autogen
+        //      redirect). Non-mutating reader + mutating writer so the probes
+        //      can verify (a) the byref/boxed `this` bytes are read correctly
+        //      and (b) a mutating method's changes propagate (Area 4a re-box). ----
+
+        // 4b: non-mutating instance method, returns a primitive.
+        public int LengthSquaredInt()
+        {
+            return (int)(x * x + y * y + z * z);
+        }
+
+        // 4b: MUTATING instance method (zeroes all fields). For the byref `this`
+        // (in-frame direct-call) the mutation must land in the caller's local
+        // bytes; for the boxed `this` (Area 4a) the autogen wrapper must re-box.
+        public void Reset()
+        {
+            x = 0f;
+            y = 0f;
+            z = 0f;
+        }
+
+        // 4a helper: dispatch a mutating instance method on a BOXED struct via
+        // `object` (the autogen/4a direct-call path reads the box's mStack
+        // index). Mutates by re-boxing.
+        public static TestVector3NoBinding BoxedResetRoundTrip(TestVector3NoBinding input)
+        {
+            object o = input;           // box
+            ((TestVector3NoBinding)o).Reset();  // mutating call on box -- 4a path
+            return (TestVector3NoBinding)o;     // unbox and return
+        }
 
         public static TestVector3NoBinding operator +(TestVector3NoBinding a, TestVector3NoBinding b)
         {
@@ -343,6 +374,27 @@ namespace ILRuntimeTest.TestFramework
         public override string ToString()
         {
             return $"{m1.value}|{m2.value}|{ m3.value}|{ m4.value}|{ m5.value}|{ m6.value}|{ m7.value}|{ m8.value}|{ m9.value}";
+        }
+    }
+
+    // ---- Step 13 Area 4b NIE-guard struct: a CLR struct WITH a reference-type
+    //      field and NO ValueTypeBinder. Reading its flat bytes is impossible (the
+    //      GC ref is unmappable without a binder), so the value-type-`this` read
+    //      must throw a clearly-tagged NotImplementedException. ----
+    public struct TestClrStructWithRef
+    {
+        public int n;
+        public string s; // reference field
+
+        public TestClrStructWithRef(int n, string s)
+        {
+            this.n = n;
+            this.s = s;
+        }
+
+        public int SumLength()
+        {
+            return n + (s != null ? s.Length : 0);
         }
     }
 }

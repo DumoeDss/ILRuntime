@@ -30,6 +30,16 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         public ushort[] PrimitiveSize;
         public ushort[] RefSrc;
         public ushort[] RefDst;
+        // Step 13 Area 4b: per-prim-slot flag -- when true, the source slot holds
+        // an 8-byte frame-native byref (a Ref Slot (-1, structFrameOff) produced
+        // by ldloca) and CopyNeoCallArguments must DEREFERENCE it (read the byref,
+        // copy PrimitiveSize[i] bytes from frameBase + the byref's offset half)
+        // rather than copy the byref bytes verbatim. Set for a CLR value-type
+        // instance `this` slot (the C# compiler lowers `local.VTMethod()` and
+        // `new VT(args)` to `ldloca; call`, so the `this` source is always a
+        // byref). The dest (callee param region) receives the struct's flat
+        // bytes, so the readers read it exactly like a by-value struct param.
+        public bool[] PrimitiveByRefSrc;
     }
 #endif
     struct StackSlotInfo

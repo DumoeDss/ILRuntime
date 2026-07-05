@@ -707,6 +707,54 @@ closes all four for the caught-exception shape). Full detail recorded in
 `.trae/documents/neo-deferred-items.md` (F-4 / NEO-IL-EX-FIELDACCESS, §2 master
 table + §3 detail).
 
+### `[NEO-BYREF-THIS]` -- RESOLVED (direct-`call` shape) by neo-step13-area4 (2026-07-05)
+
+The direct-`call` shape of this follow-up is now CLOSED by `neo-step13-area4`
+(`CopyNeoCallArguments` derefs byref sources at the copy site via the new
+`PrimitiveByRefSrc` flag; the callee param region's `this` slot holds flat
+bytes; `CopyNeoCallThisBack` propagates mutations). Neo 117/117, NeoOptHard
+16/16, Legacy `NeoStep13_` 9/9; stash-toggle 6/9 FAIL-on-HEAD. See the RESOLVED
+prepend at the top of the F-3 / NEO-BYREF-THIS §3 entry in
+`neo-deferred-items.md`. **Still OPEN:** the `callvirt` / `constrained.callvirt`
+shape on a CLR struct override remains a Step 17 D-CONSTRAINED follow-up
+(portfolio task #5 `neo-step17-completion`) -- NOT closed by this change, NOT a
+regression.
+
+### `[NEO-AUTOGEN-VTTHIS-GAP]` (M1) -- autogen VT-`this` read untested (from neo-step13-area4 review)
+
+All 9 `NeoStep13_*` probes use `TestVector3NoBinding` (no binder) -> they
+exercise the **reflection fallback** (`CLRMethod.Invoke(byte*)` HasThis arm)
+ONLY. The autogen `GenerateMethodWraperCode_Neo` VT-`this` `ReadNeoValueType`
+read (+ its `NeoBindingHasReferenceField` NIE guard) is generated but NOT
+exercised by any smoke probe -- it would only fire for a binder-registered
+pure-primitive struct's instance method. **Why Minor not Major:** the autogen
+code mirrors the tested reflection path's `ReadNeoValueType` read exactly (same
+helper, same size source); residual risk is a codegen typo in the emitted
+string template. **Route:** opportunistic test-coverage pass -- add an
+autogen-bound VT-`this` probe (register a binder for a struct with an instance
+method, or add an instance method to a binder-registered struct).
+
+### `[NEO-IL-VT-INSTANCE-COVERAGE]` -- IL value-type instance method calls uncovered by smoke (from neo-step13-area4 review)
+
+IL value-type instance method calls (`ilLocal.VTMethod()`, which lowers
+identically to `ldloca; call`) are uncovered by the smoke. The reviewer
+confirmed this shape works on BOTH engines via a temporary probe
+(`NeoStep12bReviewIlVtInstanceMethod`, an IL struct `Sum()` instance method),
+then removed it (Neo-specific NIE assertions fail on Legacy; accept-both is too
+weak; the existing smoke has ZERO IL-VT-instance-method coverage -- the
+NeoStep12/12b structs are field-only). The `dstIsVtThisSlot` flag DOES fire for
+IL-VT instance calls and is empirically correct, but was previously unverified.
+**Route:** opportunistic test-coverage pass -- add a keeper IL-VT-instance-
+method probe so this path stays green-guarded.
+
+### `[NEO-CONSTRAINED-NIE-TEXT]` (T1) -- stale Constrained NIE string (from neo-step13-area4 review)
+
+The `Constrained` NIE string at `ILIntepreter.Neo.cs:~3141` still says "callvirt
+byref-this dispatch lands in Step 13b / a follow-up", but neo-step13-area4
+reclassified callvirt-on-CLR-struct as Step 17 (D-CONSTRAINED), explicitly NOT
+4b. The message is stale/misleading. **Route:** one-line text fix to "Step 17
+D-CONSTRAINED follow-up (constrained.callvirt on a value type)", anytime.
+
 ## Findings -- neo-il-exception-throw (2026-07-05, propose)
 
 Closes **D-IL-EXCEPTION-THROW** (the second half of the exception follow-up
@@ -872,3 +920,203 @@ This caused a confusing false-failure iteration during probe 7 development.
 - `TestCases/NeoStep14Test.cs` (8 `NeoStep14_ILEx_*` probes + `MyEx`/`DerivedEx`)
 
 **Did NOT git commit/push** (per process discipline; LEAD commits after review).
+
+## Findings -- neo-step13-area4 (2026-07-05, propose)
+
+**Scoping decision: {4b value-type-`this`, 4a `Unsafe.Unbox<T>` direct-call}
+IN; {4c ref/out, 4d CLR-object stind/ldind via field hash} DEFERRED to a
+follow-up child `neo-step13-area4-refandstind`.** Ranked 4a/4b/4c/4d by value x
+low-regression-risk. 4b + 4a are the SAME generated-prologue concern (the
+instance-method `instance_of_this_method` read in `GenerateMethodWraperCode_Neo`
++ the `HasThis` arm of `CLRMethod.Invoke`), so they share the codegen site, the
+same runtime `this`-read path, and the same adversarial probes -- splitting them
+would force two passes over the prologue. 4b is VT-THIS-ADDR's natural consumer
+(the in-frame VT address model just landed; a CLR struct instance method on that
+address is the missing piece). 4c and 4d are independent plumbing (a typed-ref
+bridge; a field-hash scheme) that does NOT fall out of {4a, 4b} and would, if
+bundled, make the diff unreviewable (the explicit 13b lesson).
+
+**The current `*Neo` codegen shape (code-grounded at HEAD after neo-il-
+exception-throw).** A CLR method call from IL flows through TWO readers that
+MUST agree byte-for-byte on the callee param region:
+1. The reflection fallback `CLRMethod.Invoke(byte*)` (`CLRMethod.cs:332`),
+   invoked from `InvokeNeoClrMethod` (`ILIntepreter.Neo.cs:263`) when no
+   `RedirectionNeo` autogen delegate is registered.
+2. The autogen redirect delegate `*_Neo` (`MethodBindingGenerator.cs:249`),
+   whose body is emitted by `GenerateMethodWraperCode_Neo` (prologue reads
+   `this` + each param; epilogue writes the return via `GetReturnValueCodeNeo`).
+
+Both walk a contiguous callee "param region" built by the optimizer
+(`AllocateNeoCallParamSlot`, `Optimizer.Neo.cs:1319`) with a single `__curPrim`
+cursor. The `this` (slot 0 for `HasThis`) precedes the params. Step 13b unified
+the PARAMETER layout (CLR struct by-value param + return via
+`ReadNeoValueType`/`WriteNeoValueType`); the `this` slot was left as a 4-byte
+mStack-index read for reference types and a `// TODO: ValueType instance in Neo`
+(`MethodBindingGenerator.cs:258-262`) for value types.
+
+**The value-type-`this` mechanism (the F-3 / NEO-BYREF-THIS defect class).**
+The `HasThis` arm of `CLRMethod.Invoke` (`CLRMethod.cs:351-356`) reads `this`
+UNCONDITIONALLY as a 4-byte mStack index:
+`int thisIdx = *(int*)(targetBase + curPrim); instance = mStack[thisIdx]; curPrim += 4;`
+For a CLR struct instance method, the C# compiler does NOT emit `newobj` -- it
+lowers `local.method(...)` to `ldloca local; call method(...)`, so `this`
+arrives as a frame-native byref = an 8-byte Ref Slot `(-1, frameByteOff)` from
+`ldloca`. Reading the first 4 bytes as an mStack index yields garbage /
+`ArgumentOutOfRangeException` (the F-3 reproducer). Pre-existing (fails
+identically on `f673b9c9`). SAME defect class as `new ClrStruct(args)` (lowers
+to `initobj; ldloca; call ctor`) and callvirt-on-a-CLR-struct.
+
+**The discriminator (D1, code-grounded).** The `HasThis` arm decides how to
+read `this` by `DeclearingType.IsValueType`:
+- Reference type (or boxed VT used as ref): `this` = 4-byte mStack index (the
+  existing `ReadNeoReference` / `mStack[thisIdx]`). UNCHANGED.
+- Value type, byref (4b in-frame direct-call): `this` = 8-byte frame-native
+  Ref Slot `(-1, frameByteOff)`. Read flat bytes via `ReadNeoValueType` at
+  `frameBase + frameByteOff`. (DUMP-GATED: the `this`-slot WIDTH laid out by
+  `AllocateNeoCallParamSlot` may be the 8-byte Ref Slot OR flat bytes --
+  resolve at apply via a JIT dump of `local.Method()`.)
+- Value type, boxed (4a): `this` = 4-byte mStack index pointing at a BOXED
+  struct. Unbox to a local T, call, write back (re-box) for a mutating method.
+
+This mirrors the 13b M2/M3 discriminator insight: the per-arm TYPE TOKEN
+determines the representation unconditionally (no per-slot flag needed).
+
+**`WriteBackInstance` is a no-op for Neo (13b finding confirmed).**
+`GenerateMethodWraperCode_Neo` does NOT emit `WriteBackInstance` (the Legacy
+StackObject path). The 4a value-type-`this` write-back is a flat-bytes RE-BOX
+into `mStack[__thisBoxIdx]` (D4, conservative -- propagates the mutation; the
+reflection fallback inherits CLR `MethodInfo.Invoke` "boxed struct call drops
+the mutation" semantics for free).
+
+**The load-bearing dump-confirm point.** The call-lowering
+(`Optimizer.Neo.cs:1166-1186`) sizes the `this` slot via
+`AllocateNeoCallParamSlot(DeclearingType)`. For a CLR struct `this`, that
+helper sizes flat bytes (`Size = GetNeoValueTypeManagedSize`) for a by-value
+param, BUT the `this` for a byref call may be the 8-byte Ref Slot. The apply
+phase MUST JIT-dump `local.Method()` to determine which, and D2/D3 read
+accordingly. This is the one untested corner of the 13b unified layout (13b
+tested by-value PARAMS, not the `this` slot).
+
+**Files the implementer will touch (all Neo-only; Legacy is the REFERENCE):**
+- `ILRuntime/CLR/Method/CLRMethod.cs` -- `Invoke(byte*)` `HasThis` arm
+  (`:351-356`): value-type `this` discriminator (D2).
+- `ILRuntime/Runtime/CLRBinding/MethodBindingGenerator.cs` --
+  `GenerateMethodWraperCode_Neo` (`:258-267`): value-type `this` prologue (D3) +
+  boxed-write-back epilogue (D4). Replace `// TODO: ValueType instance in Neo`.
+- Possibly `ILRuntime/Runtime/CLRBinding/BindingGeneratorExtensions.cs` -- an
+  `AppendThisCodeNeo` helper IF the prologue refactor needs it (apply-phase
+  decision; minimal form inlines).
+- `TestCases/NeoStep13bTest.cs` (extend) -- 8 `NeoStep13_*` probes (the `NeoStep`
+  filter catches them; do NOT create NeoStep19Test.cs).
+
+**Regression risk: MEDIUM.** The discriminator keys on
+`DeclearingType.IsValueType`, which is FALSE for every reference-type `this`,
+so the reference-type path is byte-identical. Gate: full `NeoStep` smoke
+(108/108 baseline) + Legacy 518/519 for any shared-engine edit (all changes
+Neo-only). Adversarial probes MANDATORY (Step 17 B1 / OPT-HARDEN K1 / F-MAJ-1
+lessons). The biggest design risk is the `this`-slot-width dump gate (D2/D3) --
+probe BEFORE fixing.
+
+**Follow-up child created: `neo-step13-area4-refandstind`** (4c CLR-method
+ref/out typed-ref bridge + 4d CLR-object stind/ldind via field hash). Both are
+independent plumbing that does not fall out of {4a, 4b}. Add to the portfolio
+Wave 2 (after this child).
+
+**Spec validation gotcha (earned).** The openspec validator requires the
+requirement's DESCRIPTION (not just the title) to contain SHALL/MUST, AND
+appears sensitive to `--` (en-dash separator) in the requirement TITLE when
+combined with backticks. First validation failed with "must contain SHALL or
+MUST" despite SHALL being present in the body -- resolved by (a) leading the
+description with an explicit SHALL sentence and (b) removing the
+`(call ABI -- Area 4b)` parenthetical from the title (kept `(Area 4b)`).
+Re-validate after every spec edit.
+
+
+## Findings -- neo-step13-area4 (apply, 2026-07-05)
+
+**RESOLVED.** 4b (value-type-`this` direct-call) + 4a (Unsafe.Unbox direct-call
+mode) shipped. F-3 / NEO-BYREF-THIS CLOSED for the direct-`call` shape. Neo smoke
+117/117 (108 baseline + 9 new probes); NeoOptHardening 16/16; Legacy-neutral
+(NeoStep13_ probes 9/9 on plain Debug; the 7 pre-existing Legacy NeoStep failures
+reproduce with the fixes stashed -- NOT caused by this change).
+
+**Dump-confirmed `this`-slot representation (the load-bearing finding).** The C#
+compiler lowers `local.VTInstanceMethod()` and `new VT(args)` to `ldloca; call`.
+The `this` SOURCE register holds a frame-native byref = an 8-byte Ref Slot
+`(-1, structFrameOffset)` produced by `ldloca`. The call-lowering sizes the VT
+instance `this` DEST slot via `AllocateNeoCallParamSlot(DeclearingType)` -> the
+`IsValueType` branch -> flat bytes (`GetNeoValueTypeManagedSize`, e.g. 12). So:
+SOURCE = 8-byte byref; DEST = struct's flat-byte width. The pre-fix copy read
+`dstInfo.Size` (12) bytes from the 8-byte byref temp -> garbage (F-3). This is
+neither the "8-byte Ref Slot dest" nor a clean "flat-bytes dest with flat-bytes
+source" -- it's a byref SOURCE flowing into a flat-bytes DEST. The design's open
+question ("is the `this` slot the 8-byte Ref Slot or flat bytes?") was itself
+under-specified: the DEST is flat bytes; the SOURCE is a byref.
+
+**The fix DEVIATED from the design's literal D2/D3 (byref-through + reader
+deref).** The design assumed the readers dereference the byref, but BOTH readers
+lack the real caller `frameBase`: the autogen delegate `CLRRedirectionDelegateNeo`
+is invoked with `targetBase` as `frameBase` (NOT the caller frame); the reflection
+`Invoke(byte*)` only gets `targetBase`. Threading the real `frameBase` through the
+delegate signature would break the checked-in static bindings. The fix
+DEREFERENCES THE BYREF AT THE COPY SITE instead:
+1. `NeoCallParamMap.PrimitiveByRefSrc` (new flag, JITCompiler.cs).
+2. Call-lowering marks the VT instance `this` slot's source as byref (Optimizer.Neo.cs).
+3. `CopyNeoCallArguments` derefs a byref source: reads the 8-byte Ref Slot, copies
+   `PrimitiveSize[i]` bytes from `frameBase + offset` into the dest slot. The
+   callee param region's `this` slot now holds FLAT BYTES.
+4. Both readers (`CLRMethod.Invoke` HasThis + the autogen wrapper) read flat bytes
+   via `ReadNeoValueType` exactly like a by-value VT param -- no frameBase, no
+   discriminator.
+5. For ctor / mutating methods, the reflection reader writes `instance` back to
+   the param region (`WriteNeoValueType`), and a new `CopyNeoCallThisBack`
+   post-call reverse copy (Neo Call arm) propagates the bytes to the caller's
+   in-frame local -- CLR `ref this` struct semantics (verified: `ConstructorInfo.
+   Invoke(box, args)` / `MethodInfo.Invoke(box, args)` mutate the boxed struct in
+   place, NOT a copy).
+
+**D4 boxed-re-box (4a) NOT emitted in the autogen wrapper.** The dump-gate
+confirmed NO direct-`call` path produces a boxed `this` (`objectIndex >= 0`); a
+direct `call` always uses `ldloca` (frame-native byref). A boxed `this` is ONLY
+reachable via `constrained.callvirt` (the Step 17 `Constrained` NIE today). So
+the D4 boxed-re-box discriminator would be dead code in the current scope. The 4a
+write-back IS implemented for the reflection path via `CopyNeoCallThisBack`. The
+autogen 4a boxed-re-box lands with the Step 17 `Constrained` completion child.
+
+**Risk-3 callvirt outcome: FOLLOW-UP (not a regression).** `v.ToString()` on a
+struct override compiles to `constrained.callvirt` -> the Step 17 `Constrained`
+NIE, NOT the 4b direct-call path. So callvirt-on-CLR-struct is a Step 17 (D-
+CONSTRAINED) follow-up. 4b owns the direct `call` lowering of a struct instance
+method (probes 5.1/5.3 green). A standalone callvirt probe was REMOVED (Neo-
+specific NIE assertion fails on Legacy; accept-both is too weak).
+
+**WriteBackInstance no-op confirmed.** The Neo generator does NOT emit
+`WriteBackInstance` (only `GenerateMethodWraperCode_Legacy` at `:780/:786` does).
+The Neo value-type-`this` write-back is the post-call `CopyNeoCallThisBack` reverse
+copy (reflection) / boxed-re-box (autogen, deferred to Step 17).
+
+**CLI host-DLL stale-copy gotcha (earned, re-affirms opt-harden-2).** When a new
+CLR struct is added to ILRuntimeTestBase, the ILRuntimeTestCLI's OWN copy of
+ILRuntimeTestBase.dll (in `ILRuntimeTestCLI/bin/Debug_Neo/net8.0/`) can be a STALE
+cached copy without the new type. The runtime resolves CLR types via
+`System.AppDomain.CurrentDomain.GetAssemblies()`, which finds the host's stale
+copy -> `KeyNotFoundException: Cannot find Type` for the new struct. FIX: rebuild
+the CLI with `--no-incremental` after adding a host type, and verify
+`grep -c NewType ILRuntimeTestCLI/bin/Debug_Neo/net8.0/ILRuntimeTestBase.dll` >= 1.
+(The TestCases/bin copy is NOT the one loaded; the host's own copy is.)
+
+**Files touched (all confirmed, working tree UNCOMMITTED; all runtime changes
+Neo-only / `#if ENABLE_NEO_MODE`-gated files; Legacy byte-identical):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/JITCompiler.cs` -- `PrimitiveByRefSrc`.
+- `ILRuntime/Runtime/Intepreter/RegisterVM/Optimizer.Neo.cs` -- call-lowering flag.
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- deref copy +
+  post-call reverse copy + Call-arm invocation.
+- `ILRuntime/CLR/Method/CLRMethod.cs` -- HasThis VT read + post-invoke write-back.
+- `ILRuntime/Runtime/CLRBinding/MethodBindingGenerator.cs` -- autogen VT `this`.
+- `ILRuntimeTestBase/TestFramework/TestVector3.cs` -- host instance methods + ref-
+  field struct.
+- `TestCases/NeoStep13bTest.cs` -- 9 adversarial probes.
+
+**Did NOT git commit/push** (per process discipline; LEAD commits after review).
+**Did NOT update neo-deferred-items.md / neo-handoff.md** (the shipper does that
+at archive, per implementer process discipline).

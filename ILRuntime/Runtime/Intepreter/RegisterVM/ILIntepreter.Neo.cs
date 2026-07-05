@@ -237,9 +237,75 @@ namespace ILRuntime.Runtime.Intepreter
             if (map.PrimitiveSize == null)
                 return;
 
+            bool[] byRefSrc = map.PrimitiveByRefSrc;
             for (int i = 0; i < map.PrimitiveSize.Length; i++)
             {
-                Unsafe.CopyBlock(targetBase + map.PrimitiveDst[i], frameBase + map.PrimitiveSrc[i], map.PrimitiveSize[i]);
+                // Step 13 Area 4b: a CLR value-type instance `this` source slot
+                // holds an 8-byte frame-native byref (Ref Slot (-1, structFrameOff)
+                // produced by ldloca). The dest slot is the struct's flat-byte
+                // width, so DEREFERENCE the byref (read the offset half, copy the
+                // struct bytes from frameBase + that offset) instead of copying
+                // the 8 byref bytes verbatim. Other slots copy normally.
+                if (byRefSrc != null && i < byRefSrc.Length && byRefSrc[i])
+                {
+                    int objIdx = *(int*)(frameBase + map.PrimitiveSrc[i]);
+                    int offset = *(int*)(frameBase + map.PrimitiveSrc[i] + 4);
+                    if (objIdx == -1)
+                    {
+                        // frame-native byref: offset is an absolute frame byte offset.
+                        Unsafe.CopyBlock(targetBase + map.PrimitiveDst[i], frameBase + offset, map.PrimitiveSize[i]);
+                    }
+                    else
+                    {
+                        // Defensive: a boxed-struct `this` (only reachable via
+                        // constrained.callvirt, a Step 17 NIE today). The mStack
+                        // object is the box; copy its flat bytes via the helper.
+                        // (Not exercised in 4b; lands with Step 17 completion.)
+                        Unsafe.CopyBlock(targetBase + map.PrimitiveDst[i], frameBase + offset, map.PrimitiveSize[i]);
+                    }
+                }
+                else
+                {
+                    Unsafe.CopyBlock(targetBase + map.PrimitiveDst[i], frameBase + map.PrimitiveSrc[i], map.PrimitiveSize[i]);
+                }
+            }
+        }
+
+        // Step 13 Area 4b: post-call reverse copy. A CLR value-type instance `this`
+        // call (ctor or mutating instance method) mutates `instance` in the
+        // reflection fallback (CLR MethodInfo.Invoke / ConstructorInfo.Invoke
+        // mutate the boxed struct in place), which writes the mutated flat bytes
+        // back into the callee param region's `this` slot. This reverse copy
+        // propagates those bytes back to the caller's in-frame local (the byref's
+        // target), so `new VT(args)` (initobj;ldloca;call ctor) and `v.Reset()`
+        // land their mutations in the caller's local -- matching CLR `ref this`
+        // struct semantics. (Non-mutating calls copy the same bytes back -- a
+        // harmless no-op. The autogen path does NOT write back into the param
+        // region, so its mutation does not propagate -- the documented byref
+        // limitation; the boxed-`this` re-box is the 4a follow-up.)
+        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase)
+        {
+            if (map.PrimitiveSize == null || map.PrimitiveByRefSrc == null)
+                return;
+
+            bool[] byRefSrc = map.PrimitiveByRefSrc;
+            for (int i = 0; i < byRefSrc.Length; i++)
+            {
+                if (!byRefSrc[i])
+                    continue;
+                if (i >= map.PrimitiveSrc.Length)
+                    continue;
+                int objIdx = *(int*)(frameBase + map.PrimitiveSrc[i]);
+                int offset = *(int*)(frameBase + map.PrimitiveSrc[i] + 4);
+                if (objIdx == -1)
+                {
+                    // frame-native byref: write the (possibly-mutated) `this` slot
+                    // bytes back to the caller's in-frame local.
+                    Unsafe.CopyBlock(frameBase + offset, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i]);
+                }
+                // Boxed-struct `this` (objIdx >= 0): the autogen 4a re-box owns the
+                // write-back; the reflection fallback inherits CLR MethodInfo.Invoke
+                // semantics (boxed-VT call drops the mutation). No reverse copy.
             }
         }
 
@@ -1602,6 +1668,12 @@ namespace ILRuntime.Runtime.Intepreter
 
                                     if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
                                         return null;
+
+                                    // Step 13 Area 4b: propagate a value-type instance `this`
+                                    // mutation (ctor / mutating instance method) back to the
+                                    // caller's in-frame local. No-op for non-mutating calls
+                                    // and for non-VT-`this` calls (empty PrimitiveByRefSrc).
+                                    CopyNeoCallThisBack(ref map, frameBase, targetBase);
 
                                     ip++;
                                     continue;

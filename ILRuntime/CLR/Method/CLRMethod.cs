@@ -343,6 +343,20 @@ namespace ILRuntime.CLR.Method
 
             int curPrim = 0;
             object instance = null;
+            // Step 13 Area 4b: when the `this` is a CLR value type, the call-lowering
+            // + CopyNeoCallArguments dereference the ldloca-produced byref into the
+            // `this` slot's flat bytes. The reflection path boxes the struct off
+            // those bytes, calls the method (which mutates the BOX in place -- CLR
+            // MethodInfo.Invoke / ConstructorInfo.Invoke semantics for a boxed-VT
+            // call), and then writes the (possibly-mutated) box's flat bytes BACK
+            // to the same slot. A post-call reverse copy in the Neo Call arm
+            // propagates that back to the caller's in-frame local (the byref's
+            // target), so a ctor (`new VT(args)` -> initobj;ldloca;call ctor) and a
+            // mutating instance method (`v.Reset()`) land their mutations in the
+            // caller's local -- matching CLR `ref this` struct semantics.
+            Type vtThisType = null;
+            int vtThisSlotOff = 0;
+            int vtThisSz = 0;
 
             if (isNewObj)
             {
@@ -350,9 +364,44 @@ namespace ILRuntime.CLR.Method
             }
             else if (HasThis)
             {
-                int thisIdx = *(int*)(targetBase + curPrim);
-                instance = mStack[thisIdx];
-                curPrim += 4;
+                // Step 13 Area 4b: discriminate the `this` representation by the
+                // declaring type. A CLR value-type instance `this` arrives as the
+                // struct's FLAT BYTES in the callee param region (the call-lowering
+                // + CopyNeoCallArguments dereference the ldloca-produced byref and
+                // lay the struct bytes into the `this` slot, sized by
+                // AllocateNeoCallParamSlot's IsValueType branch). So a VT `this`
+                // reads exactly like a by-value VT param (ReadNeoValueType). A
+                // reference-type `this` is the byte-identical 4-byte mStack-index
+                // read (UNCHANGED for !IsValueType -- keys on IsValueType).
+                if (DeclearingType is CLRType thisClr && thisClr.IsValueType
+                    && !thisClr.TypeForCLR.IsPrimitive && !thisClr.TypeForCLR.IsEnum)
+                {
+                    // Mirror the 13b param-read NIE guards: a struct `this` WITH
+                    // reference fields and NO binder cannot be materialized from
+                    // flat bytes (GC refs unmappable); a binder struct WITH ref
+                    // fields needs the binder's Neo-cursor ref-mapping (does not
+                    // exist yet). Both stay clearly-tagged NIEs (matches 13b).
+                    if (thisClr.ValueTypeBinder != null)
+                    {
+                        thisClr.GetValueTypeSize(out _, out int managedCount);
+                        if (managedCount > 0)
+                            throw new NotImplementedException("CLR value-type `this` with reference fields via binder in reflection fallback: register a CLR binding redirect (Step 13 Area 4b). Type: " + thisClr.TypeForCLR.FullName);
+                    }
+                    else if (NeoClrStructHasReferenceField(thisClr.TypeForCLR))
+                    {
+                        throw new NotImplementedException("CLR value-type `this` with reference fields and no ValueTypeBinder (Step 13 Area 4b): register a binder. Type: " + thisClr.TypeForCLR.FullName);
+                    }
+                    vtThisType = thisClr.TypeForCLR;
+                    vtThisSlotOff = curPrim;
+                    vtThisSz = Optimizer.GetNeoValueTypeManagedSize(vtThisType);
+                    instance = ILIntepreter.ReadNeoValueType(vtThisType, targetBase, ref curPrim, vtThisSz);
+                }
+                else
+                {
+                    int thisIdx = *(int*)(targetBase + curPrim);
+                    instance = mStack[thisIdx];
+                    curPrim += 4;
+                }
             }
 
             for (int i = 0; i < paramCount; i++)
@@ -427,6 +476,12 @@ namespace ILRuntime.CLR.Method
                         if (instance is CrossBindingAdaptorType && paramCount == 0)
                             return null;
                         cDef.Invoke(instance, param);
+                        // Step 13 Area 4b: a struct ctor mutates `instance` (the
+                        // boxed struct) in place; write the mutated flat bytes back
+                        // to the `this` slot so the post-call reverse copy
+                        // propagates them to the caller's in-frame local.
+                        if (vtThisType != null)
+                            ILIntepreter.WriteNeoValueType(instance, targetBase + vtThisSlotOff, vtThisSz);
                     }
                     else
                         throw new NotImplementedException();
@@ -446,6 +501,11 @@ namespace ILRuntime.CLR.Method
                         throw new NullReferenceException();
                 }
                 res = def.Invoke(instance, param);
+                // Step 13 Area 4b: a struct instance method may mutate `this`
+                // (e.g. Reset()); write the (possibly-mutated) flat bytes back to
+                // the `this` slot so the post-call reverse copy propagates them.
+                if (vtThisType != null)
+                    ILIntepreter.WriteNeoValueType(instance, targetBase + vtThisSlotOff, vtThisSz);
             }
 
             Array.Clear(invocationParam, 0, invocationParam.Length);

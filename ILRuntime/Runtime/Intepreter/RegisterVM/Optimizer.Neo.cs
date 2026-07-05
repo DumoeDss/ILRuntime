@@ -1193,19 +1193,40 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 List<ushort> primSize = new List<ushort>();
                                 List<ushort> refSrc = new List<ushort>();
                                 List<ushort> refDst = new List<ushort>();
-                                
+                                List<bool> primByRef = new List<bool>();
+
                                 for (int p = 0; p < pCnt; p++)
                                 {
                                     var srcInfo = localInfos[srcRegs[p]];
                                     // For Newobj, the ILMethod paramInfos[0] is 'this', so we need to offset the dstInfo by 1
                                     int dstIndex = (op.Code == OpCodeREnum.Newobj) ? p + 1 : p;
                                     var dstInfo = paramInfos[dstIndex];
-                                    
+
+                                    // Step 13 Area 4b: a CLR value-type instance `this`
+                                    // arrives as a frame-native byref (the C# compiler
+                                    // lowers `local.VTMethod()` and `new VT(args)` to
+                                    // `ldloca; call`, so srcRegs[0] holds the byref
+                                    // temp). The dest slot is sized as the struct's flat
+                                    // bytes (AllocateNeoCallParamSlot's IsValueType
+                                    // branch), so the copy must DEREFERENCE the byref
+                                    // and copy the struct bytes -- flag the slot so
+                                    // CopyNeoCallArguments derefs instead of copying
+                                    // the byref verbatim. (A by-value VT PARAM also
+                                    // has a flat-bytes dest but its source is the
+                                    // struct local directly, not a byref -- no flag.)
+                                    bool dstIsVtThisSlot = (targetMethod.HasThis && op.Code != OpCodeREnum.Newobj && p == 0)
+                                        && targetMethod.DeclearingType != null
+                                        && targetMethod.DeclearingType.IsValueType
+                                        && !(targetMethod.DeclearingType.IsPrimitive
+                                             || (targetMethod.DeclearingType.TypeForCLR != null
+                                                 && targetMethod.DeclearingType.TypeForCLR.IsEnum));
+
                                     if (dstInfo.Size > 0)
                                     {
                                         primSrc.Add((ushort)srcInfo.Offset);
                                         primDst.Add((ushort)dstInfo.Offset);
                                         primSize.Add((ushort)dstInfo.Size);
+                                        primByRef.Add(dstIsVtThisSlot);
                                     }
                                     for (int r = 0; r < dstInfo.RefCount; r++)
                                     {
@@ -1220,6 +1241,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     map.PrimitiveSrc = primSrc.ToArray();
                                     map.PrimitiveDst = primDst.ToArray();
                                     map.PrimitiveSize = primSize.ToArray();
+                                    map.PrimitiveByRefSrc = primByRef.ToArray();
                                 }
                                 if (refSrc.Count > 0)
                                 {

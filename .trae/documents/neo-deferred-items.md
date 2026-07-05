@@ -66,7 +66,7 @@ Insert these into the roadmap ordering:
 |----|------|-------------|--------|--------------|----------|
 | D-LDELEMA | `ldelema` opcode | Step 16 | **RESOLVED (Step 17)** | Step 17 Ref-Slot/stind/ldind | resolved (IL VT array path; CLR primitive-array ldelema still NIE) |
 | D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **partial (Step 17)** | Step 17 byref/VT-this-address | arm exists, full VT dispatch DEFERRED (callvirt byref-this) |
-| D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **partial (Step 13b)** | Area 5 core done; Area 4 + CLR ref/out + CLR stind/ldind deferred | roadmap gap (highest value) |
+| D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **partial (Step 13b + neo-step13-area4)** | Area 5 core done; Area 4b (VT-`this` direct-call) + 4a (Unsafe.Unbox direct-call) done in neo-step13-area4; 4c (CLR ref/out) + 4d (CLR stind/ldind) deferred to follow-up child `neo-step13-area4-refandstind` | roadmap gap |
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
 | K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **partial (Step 13b)** | flat-bytes path resolved; boxed-ref bridge deferred | pre-existing |
@@ -74,9 +74,10 @@ Insert these into the roadmap ordering:
 | Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **RESOLVED (Step 18, non-reproducible)** | — | not reproducible on HEAD (JIT dump: distinct frame regions + ref slots per register); same outcome as Q-STRUCT/Q-LONG |
 | Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **RESOLVED in [VT-THIS-ADDR]** | RESOLVED 2026-07-05: inline-stfld owner-type clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back runtime branch | fixed; full NeoStep smoke 99/99 |
 | F-2 / INLINER-REFONLY-VT | ref-only VT (prim-size 0) local `new S(refArgs)` mis-compiles: inlined `stfld.ref.inline` writes don't survive to the following in-frame `ldfld.ref` read | neo-vt-this-addr re-review (F-1 probe) | **future** (fold into K2-FAM bridge or [OPT-HARDEN-3]) | JITCompiler inliner ref-fold over a 0-prim-size VT local | pre-existing (latent) |
-| F-3 / NEO-BYREF-THIS | `new ClrStruct(args)` (CLR struct ctor via byref-`this`) hits a pre-existing reflection gap at `CLRMethod.Invoke:353` (ctor `this` read as a 4-byte mStack index, but the byref `this` is an 8-byte Ref Slot from `ldloca`) | neo-opt-harden-2 re-review | **future** (Step 17 byref-completeness / `[NEO-BYREF-THIS]` follow-up) | `CLRMethod.Invoke` byref-this-to-CLR-struct-ctor | pre-existing (NOT a regression; fails identically on `f673b9c9`) |
+| F-3 / NEO-BYREF-THIS | `new ClrStruct(args)` + `local.VTMethod()` (CLR/IL struct instance method via byref-`this`) hit a pre-existing reflection gap (`CLRMethod.Invoke` read the byref `this` as a 4-byte mStack index; the byref `this` is an 8-byte Ref Slot from `ldloca`) | neo-opt-harden-2 re-review | **RESOLVED for direct `call` (neo-step13-area4); `callvirt`/`constrained.callvirt` still Step 17 D-CONSTRAINED** | `CopyNeoCallArguments` derefs byref sources at the copy site; `this` slot holds flat bytes; `CopyNeoCallThisBack` propagates mutations | pre-existing; direct-`call` shape closed 2026-07-05 (6/9 probes FAIL-on-HEAD) |
 | F-4 / NEO-IL-EX-FIELDACCESS | Reading IL-declared fields/methods off a CAUGHT IL exception via the adaptor bridge is broken on Neo (4 broken read paths: `((CrossBindingAdaptorType)e).ILInstance` callvirt-on-CLR-interface -> InvalidCastException; `e.GetType()` callvirt.clr -> NIE; `appdomain.Invoke` instance-method -> NRE under ENABLE_NEO_MODE; `ILTypeInstance.this[index]` indexer -> null under ENABLE_NEO_MODE) | neo-il-exception-throw apply (OQ1/OQ2) | **future** (Step 13 Area 4 / cross-binding-adaptor follow-up) | Neo callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry + `ILTypeInstance` Neo indexer | pre-existing (NOT introduced; surfaces only because IL exceptions can now be thrown + caught); workaround `e is MyEx` (isinst) |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
+| F-5 / NEO-CALLARG-BOXED-SRC | boxed-source branch of `CopyNeoCallArguments` (`ILIntepreter.Neo.cs:295-300`) mis-copies a boxed `this` (would read an mStack field offset as a struct address); UNREACHABLE today (boxed `this` only via `constrained.callvirt` = Step 17 NIE); also `CopyNeoCallThisBack` comment claims ctor coverage but the newobj path does not invoke it | neo-step13-area4 review (Finding M2) | **future** (Step 17 D-CONSTRAINED completion child `neo-step17-completion`) | add a NIE guard (or correct copy) in the boxed-source branch + tighten the `CopyNeoCallThisBack` comment when the Constrained path lands | latent dead-branch (not a regression) |
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **RESOLVED ([CATCH-COMPLETE] + neo-il-exception-throw)** | CheckExceptionType IL branch + Exception-adaptor + Throw-for-IL all landed | shared-engine gap (fully closed; IL branch now reachable end-to-end) |
 | D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **RESOLVED (neo-il-exception-throw)** | System.Exception CrossBindingAdaptor (built-in) + Throw `as Exception` IL-instance unwrap on BOTH engines | shared-engine gap (closed 2026-07-05; F-4 / NEO-IL-EX-FIELDACCESS follow-up surfaced) |
@@ -118,6 +119,15 @@ lowering needs the value-type `this` address model (= Step 17). No green NeoStep
 test exercises `constrained.` today (zero regression). **Resolution:** fold into
 Step 17 (or a tiny "Step 13 area 3 completion" immediately after Step 17).
 
+**Folded-in obligation from neo-step13-area4 (F-5 / NEO-CALLARG-BOXED-SRC, M2):**
+when the Step 17 Constrained arm is completed (so a boxed `this` becomes
+reachable via `constrained.callvirt`), the boxed-source branch of
+`CopyNeoCallArguments` (`ILIntepreter.Neo.cs:~295-300`) MUST add a NIE guard (or
+a correct copy) — as written it would mis-copy a boxed `this` (it reads an mStack
+field offset as a struct address). Also tighten the `CopyNeoCallThisBack` comment
+to say it covers mutating INSTANCE METHODS (not ctors) — the newobj path does
+NOT invoke it. See the F-5 / NEO-CALLARG-BOXED-SRC §3 entry for full detail.
+
 ### D-13B — Step 13 areas 4-5 (-> new Step 13b)
 Step 13 deliberately scoped down to areas 1-3 (then area 3 also deferred — see
 D-CONSTRAINED). Areas 4-5 were deferred because they touch the CLR binding
@@ -134,6 +144,26 @@ box/unbox mechanics would have made the diff unreviewable.
 **Resolution:** a dedicated `implement-neo-step13b` change. Recommended AFTER
 Step 17 so the byref/param model informs the layout. This is the highest-value
 follow-up — it also closes K2 and K2-FAM.
+- **Area 5 core: DONE (implement-neo-step13b, 2026-07-04)** — unified
+  CLRMethod param layout (removed caller-temp-slot fallback;
+  `ReadNeoValueType`/`WriteNeoValueType` byte-consistent; filled
+  `CLRMethod.Invoke` + return + autogen NIEs). Closes **K2**. K2-FAM PARTIAL
+  (flat-bytes path resolved; boxed-ref-source half still deferred — see K2-FAM
+  below; it depends on 4c + the F-2 inliner).
+- **Area 4b (value-type-`this` direct-call) + 4a (`Unsafe.Unbox<T>` boxed
+  direct-call + write-back): DONE (neo-step13-area4, 2026-07-05)** — closes
+  **F-3 / NEO-BYREF-THIS** for the direct-`call` shape; the boxed re-box is
+  NOT emitted in the autogen wrapper (boxed-`this` only reachable via
+  `constrained.callvirt` = Step 17 NIE today). Neo 117/117, NeoOptHard 16/16,
+  Legacy `NeoStep13_` 9/9. Surfaced **F-5 / NEO-CALLARG-BOXED-SRC** (latent
+  dead-branch mis-copy in `CopyNeoCallArguments`; routed to Step 17). See
+  `openspec/changes/archive/2026-07-05-neo-step13-area4/`.
+- **Area 4c (CLR-method `ref`/`out` typed-ref bridge) + Area 4d (CLR-object
+  `stind`/`ldind`/`stobj`/`ldobj` via field hash): REMAIN DEFERRED** to the
+  follow-up child `neo-step13-area4-refandstind` (portfolio task #17). Both
+  are independent plumbing (a typed-ref bridge; a field-hash scheme) that do
+  NOT fall out of {4a, 4b} — bundling them would make the diff unreviewable
+  (the explicit 13b lesson).
 
 ### K1 — FCP mis-propagates value-type Moves (Step 12b -> RESOLVED in OPT-HARDEN)
 After `b = a`, FCP rewrote later `b.field` reads to `a.field` even AFTER
@@ -265,7 +295,33 @@ fold into the K2-FAM bridge child (ref-field handling on VTs) or a small
 [OPT-HARDEN-3] inliner-hardening. Suspect: the JIT inliner's ref-fold over a
 0-prim-size VT local in `JITCompiler.cs`.
 
-### F-3 / NEO-BYREF-THIS — `new ClrStruct(args)` byref-`this` ctor reflection gap (-> future)
+### F-3 / NEO-BYREF-THIS — `new ClrStruct(args)` + struct-instance-method byref-`this` (RESOLVED for direct `call`; callvirt still Step 17)
+
+**RESOLVED 2026-07-05 (neo-step13-area4, direct-`call` shape).** A DIRECT `call`
+on a CLR struct `this` now works: `new ClrStruct(args)` (lowers to
+`initobj; ldloca; call .ctor`), a read-only `local.VTMethod()` on an in-frame
+local, and a mutating instance method (mutation propagates back to the local).
+The fix deviated from the design's literal reader-side deref (the readers lack
+the real caller `frameBase`): instead, `CopyNeoCallArguments` derefs byref
+sources at the copy site (new `NeoCallParamMap.PrimitiveByRefSrc` flag set in
+`JITCompiler.cs` + the call-lowering in `Optimizer.Neo.cs`), so the callee param
+region's `this` slot holds flat bytes; both readers (`CLRMethod.Invoke` HasThis +
+the autogen `GenerateMethodWraperCode_Neo`) read it via `ReadNeoValueType`. NEW
+`CopyNeoCallThisBack` (post-call reverse copy in the bare `Call` arm) propagates
+ctor/mutating-method mutations to the caller's local (CLR `ref this` semantics).
+Neo 117/117, NeoOptHard 16/16, Legacy `NeoStep13_` 9/9. Stash-toggle: 6/9 probes
+FAIL-on-HEAD. The boxed `this` re-box (autogen D4) is NOT emitted (a boxed `this`
+is only reachable via `constrained.callvirt`, a Step 17 NIE today). See
+`openspec/changes/archive/2026-07-05-neo-step13-area4/`.
+
+**NOT closed by this change (NOT a regression):** the `callvirt` /
+`constrained.callvirt` shape on a CLR struct override compiles to a Step 17
+`Constrained` NIE (`ILIntepreter.Neo.cs:~3140`) — that is the **Step 17
+D-CONSTRAINED** follow-up (portfolio task #5 `neo-step17-completion`), not a 4b
+regression. Only the direct-`call` path was in 4b's scope.
+
+---
+
 Surfaced by the neo-opt-harden-2 round-1 re-review (the "is there a 4th broken
 arm?" completeness sweep). A DIRECT `new ClrStruct(args)` in interpreted IL
 (e.g. `new TestVector3NoBinding(100f,200f,300f)`) fails with
@@ -293,11 +349,12 @@ fix:
   NOT ship a failing test (would regress the smoke for an out-of-scope bug);
   the probe was reverted.
 
-**Resolution:** future -- route to Step 17 byref-completeness work or a
-dedicated `[NEO-BYREF-THIS]` follow-up. The fix would teach
-`CLRMethod.Invoke` to recognise a frame-native byref `this` (8-byte Ref Slot,
-`objIdx == -1`) and read the struct bytes directly, instead of the 4-byte
-mStack-index read.
+**Resolution:** the direct-`call` shape RESOLVED in neo-step13-area4
+(2026-07-05) — see the RESOLVED prepend at the top of this entry. The originally
+hypothesized fix site (`CLRMethod.Invoke` reader-side deref) was superceded by
+deref-at-the-copy-site (see ship-log §2); the readers now read flat bytes via
+`ReadNeoValueType`. The `callvirt`/`constrained.callvirt` shape REMAINS future
+work under Step 17 D-CONSTRAINED (`neo-step17-completion`).
 
 ### F-4 / NEO-IL-EX-FIELDACCESS — reading IL fields/methods off a caught IL exception is broken on Neo (-> future)
 Surfaced by the neo-il-exception-throw apply (OQ1/OQ2). Once an IL exception
@@ -340,6 +397,32 @@ completion) or a dedicated cross-binding-adaptor follow-up. The fix touches
 Neo callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry +
 `ILTypeInstance` Neo indexer (all independent mechanisms; a single follow-up
 likely closes all four for the caught-exception shape).
+
+### F-5 / NEO-CALLARG-BOXED-SRC — boxed-source branch of CopyNeoCallArguments (latent dead-branch; -> Step 17)
+Surfaced by the neo-step13-area4 review (Finding M2). The byref-deref
+discriminator added in `CopyNeoCallArguments` (`ILIntepreter.Neo.cs:~295-300`)
+has an `else` branch for a boxed-struct `this` source (`objectIndex >= 0`) that
+performs `CopyBlock(targetBase + Dst[i], frameBase + offset, Size[i])` — but for
+a boxed source, `offset` is an mStack field offset, so `frameBase + offset` is
+NOT a meaningful struct address. The branch would mis-copy IF reached.
+
+**Reachability:** UNREACHABLE today. A boxed `this` is ONLY produced via
+`constrained.callvirt`, which hits the Step 17 `Constrained` NIE
+(`ILIntepreter.Neo.cs:~3140`). So a direct `call` always uses `ldloca`
+(frame-native byref, `objectIndex == -1`). The branch is dead-on-arrival until
+the Step 17 Constrained arm is completed.
+
+**Related comment-accuracy nit:** the new `CopyNeoCallThisBack` comment claims it
+propagates ctor mutations, but the newobj path does NOT invoke it (the ctor's
+result flows via the method RETURN through `InvokeNeoClrMethod`'s newobj branch,
+not via the reverse copy). Behavior is correct; the comment is misleading.
+
+**Resolution:** future -- the Step 17 D-CONSTRAINED completion child
+(`neo-step17-completion`, portfolio task #5) MUST add a NIE guard (or a correct
+copy) in the boxed-source branch of `CopyNeoCallArguments` when it lands the
+Constrained path, AND tighten the `CopyNeoCallThisBack` comment to cover mutating
+INSTANCE METHODS (not ctors). Not a regression (latent dead code); recorded so
+the Step 17 planner finds it.
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
@@ -457,6 +540,15 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
+- **F-3 / NEO-BYREF-THIS (direct-`call` shape)** — CLR/IL struct instance
+  method via byref `this` (`new ClrStruct(args)`, `local.VTMethod()`). Fixed in
+  neo-step13-area4 (2026-07-05, Neo-only): `CopyNeoCallArguments` derefs byref
+  sources at the copy site (new `PrimitiveByRefSrc` flag); the callee param
+  region's `this` slot holds flat bytes; `CopyNeoCallThisBack` propagates
+  mutations. Neo 117/117, NeoOptHard 16/16, Legacy `NeoStep13_` 9/9. Stash-toggle
+  6/9 FAIL-on-HEAD. CAVEAT: the `callvirt`/`constrained.callvirt` shape REMAINS
+  a Step 17 D-CONSTRAINED follow-up (NOT closed by this change). Surfaced F-5 /
+  NEO-CALLARG-BOXED-SRC (latent dead-branch). See §3 F-3 / NEO-BYREF-THIS.
 - **D-IL-EXCEPTION-THROW** — End-to-end IL-exception catch. Fixed in
   neo-il-exception-throw (2026-07-05, shared-engine): built-in
   `ExceptionAdaptor` + Throw `as Exception` IL-instance unwrap in BOTH Neo

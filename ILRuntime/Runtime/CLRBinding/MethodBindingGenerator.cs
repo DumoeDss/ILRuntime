@@ -255,10 +255,34 @@ namespace ILRuntime.Runtime.CLRBinding
             
             if (!i.IsStatic)
             {
-                if (type.IsValueType)
+                if (type.IsValueType && !type.IsPrimitive && !type.IsEnum)
                 {
-                    sb.AppendLine(string.Format("            {0} instance_of_this_method = default({0});", typeClsName));
-                    sb.AppendLine("            // TODO: ValueType instance in Neo");
+                    // Step 13 Area 4b: a CLR value-type instance `this` arrives in
+                    // the callee param region as the struct's FLAT BYTES (the
+                    // optimizer's call-lowering + CopyNeoCallArguments dereference
+                    // the ldloca-produced byref and lay the struct bytes into the
+                    // `this` slot, sized by AllocateNeoCallParamSlot's IsValueType
+                    // branch). So the wrapper reads the `this` exactly like a
+                    // by-value struct param (ReadNeoValueType -- same helper, same
+                    // size source). A struct `this` WITH reference fields cannot be
+                    // read as flat bytes -> clear NIE (mirrors AppendArgumentCodeNeo
+                    // / the 13b param-read guard). NOTE: the autogen wrapper reads
+                    // `instance_of_this_method` as a local COPY; a mutating method's
+                    // changes do NOT propagate back to the caller's local on the
+                    // autogen path (the boxed-`this` re-box is the Area 4a
+                    // follow-up; the byref case is the documented lossy path). The
+                    // reflection fallback (CLRMethod.Invoke) owns the write-back for
+                    // ctor / mutating calls.
+                    if (BindingGeneratorExtensions.NeoBindingHasReferenceField(type))
+                    {
+                        sb.AppendLine(string.Format("            {0} instance_of_this_method = default({0});", typeClsName));
+                        sb.AppendLine(string.Format("            throw new NotImplementedException(\"CLR value-type `this` with reference fields and no ValueTypeBinder (Step 13 Area 4b): register a binder. Type: {0}\");", type.FullName));
+                    }
+                    else
+                    {
+                        sb.AppendLine(string.Format("            int __thisSz = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({0}));", typeClsName));
+                        sb.AppendLine(string.Format("            {0} instance_of_this_method = ({0})ILIntepreter.ReadNeoValueType(typeof({0}), __frameBase, ref __curPrim, __thisSz);", typeClsName));
+                    }
                 }
                 else
                 {
