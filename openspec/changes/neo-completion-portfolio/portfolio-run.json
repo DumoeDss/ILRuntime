@@ -65,7 +65,8 @@
     },
     "neo-k2fam-bridge": {
       "pipeline": "small-feature", "wave": 2, "scope": "[K2-FAM] boxed-ref CLR-VT-local bridge (Box/Initobj source passed by value)",
-      "prerequisites": ["neo-vt-this-addr", "neo-step13-area4"], "dependsOn": ["neo-vt-this-addr", "neo-step13-area4"], "status": "pending", "capability": "neo-boxing"
+      "prerequisites": ["neo-vt-this-addr", "neo-step13-area4"], "dependsOn": ["neo-vt-this-addr", "neo-step13-area4"], "status": "done", "capability": "neo-boxing",
+      "completedDate": "2026-07-06", "smoke": "Neo 146/146 + K2Fam 7/7 + Legacy-neutral", "review": "APPROVE (no findings; TEST-ONLY — K2-FAM subsumed by opt-harden-2+review-fix+13b; 6 regression guards)"
     },
     "neo-step19-delegate": {
       "pipeline": "small-feature", "wave": 3, "scope": "[Step 19] ldftn/ldvirtftn + delegate newobj + InvokeILMethod Neo path (fresh pooled interpreter) + multicast + Combine/Remove Neo redirects",
@@ -110,7 +111,7 @@
     }
   },
   "runnableFrontier": ["neo-step13-area4", "neo-step19-delegate", "neo-array-completion", "neo-peephole-isinst", "neo-opportunistic-cleanup", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

@@ -836,6 +836,33 @@ detail in `.trae/documents/neo-deferred-items.md` (F-7 / NEO-DELEGATE-REFOUT,
   obligation.
 - **T1 / NEO-CONSTRAINED-NIE-TEXT** -- RESOLVED (the stale NIE text replaced).
 
+### Resolved follow-ups (from neo-k2fam-bridge, 2026-07-06, TEST-ONLY)
+
+- **K2-FAM** (portfolio task #6) -- **RESOLVED (subsumed, TEST-ONLY).** The K2-FAM
+  deferred item (a CLR-VT LOCAL sourced from Box/Initobj, passed by value,
+  reading an int as an mStack index) was probed on HEAD `f7539642` and found
+  SUBSUMED by three changes whose combined effect was NOT re-assessed against
+  K2-FAM until this change: `neo-opt-harden-2` (F-MAJ-1: declared a CLR-VT LOCAL
+  as flat bytes under `#if ENABLE_NEO_MODE` -- the OLD boxed-ref representation
+  `Size=4, RefCount=1` that produced the corruption NO LONGER EXISTS for a
+  CLR-VT local) + its review-fix (rewrote the `Initobj` M1 / `Box` M2 /
+  `Unbox_Any`-dest arms to read/write flat bytes) + `implement-neo-step13b`
+  (unified the by-value-param flat-bytes read in `CopyNeoCallArguments`). All
+  6 adversarial reproducer probes PASS on HEAD. **No new engine fix shipped**;
+  instead 6 regression guards added to `TestCases/NeoStep13bTest.cs`
+  (`NeoStep13_K2Fam_*`: BoxSourceByValue, InitobjSourceByValue, BoxMoveByValue,
+  ReinitThenByValue, BoxUnboxByValueToHost, TwoBoxedStructLocalsByValue -- the
+  last is the load-bearing F-MAJ-1 two-live-struct neighbour-corruption guard,
+  Box-sourced). NeoStep 146/146, K2Fam 7/7, Legacy-neutral. **Lesson re-affirmed
+  (the Q-NEWOBJ / Q-STRUCT / Q-LONG / F-5 family): a deferred item not re-probed
+  on recent HEAD may already be SUBSUMED by later work -- construct the
+  reproducer FIRST, on current HEAD, before designing a fix.** The F-2 /
+  INLINER-REFONLY-VT entry is left intact (distinct inliner ref-fold defect
+  class, still deferred). The IL-side-`Ldfld`-on-CLR-struct gap is the separate
+  `[NEO-IL-VT-INSTANCE-COVERAGE]` Step-6 gap (deliberately out of scope; probes
+  route field reads through host helpers). See
+  `openspec/changes/archive/2026-07-06-neo-k2fam-bridge/ship-log.md`.
+
 ## Findings -- neo-il-exception-throw (2026-07-05, propose)
 
 Closes **D-IL-EXCEPTION-THROW** (the second half of the exception follow-up
@@ -1779,3 +1806,158 @@ byte-identical (only lifecycle changed).
 
 **Did NOT git commit/push** (LEAD commits after re-review).
 
+## Findings -- neo-k2fam-bridge (2026-07-06, propose)
+
+**REPRODUCIBILITY ASSESSMENT: SUBSUMED -- K2-FAM is RESOLVED; this is a TEST-ONLY
+change.** The K2-FAM deferred item (a CLR-VT LOCAL sourced from Box/Initobj,
+passed by value, reading an int as an mStack index) was probed on HEAD `f7539642`
+with 6 adversarial reproducer probes BEFORE proposing. ALL 6 PASS on HEAD:
+
+1. CLR struct local sourced from Box→Unbox (`T t = (T)o`), by value → PASS.
+2. CLR struct local sourced from Initobj (`default(T)`), by value → PASS.
+3. Box→Unbox→Move(struct copy)→by value → PASS.
+4. Re-initobj (`t = default(T)`) then by value → PASS.
+5. Box→Unbox→by-value to host static helper → PASS (returns 15).
+6. TWO Box→Unbox-sourced struct locals, both by value (F-MAJ-1 two-live-struct
+   stress, Box-sourced) → PASS (600 + 3).
+
+**Why subsumed (code-grounded).** Three changes whose combined effect was NOT
+re-assessed against K2-FAM until now collectively closed it:
+- `neo-opt-harden-2` (F-MAJ-1) declared a CLR-VT LOCAL as flat bytes (`Size =
+  GetNeoValueTypeManagedSize, RefCount = 0, localIsRef = false`) in
+  `AllocateLocalStackSpaces` under `#if ENABLE_NEO_MODE`. The OLD boxed-ref
+  representation (`Size=4, RefCount=1`) — the source of the "int-as-mStack-index"
+  corruption — NO LONGER EXISTS for a CLR-VT local.
+- `neo-opt-harden-2` review-fix (round 1) rewrote the three runtime arms that
+  still assumed boxed-ref: `Initobj` (M1: `Unsafe.InitBlock` flat-bytes zero),
+  `Box` (M2: `ReadNeoValueType` flat-bytes read), `Unbox_Any` dest (M2-twin:
+  `WriteNeoValueType` flat-bytes write). So a local sourced from Box/Initobj/
+  Unbox IS flat bytes end-to-end.
+- `implement-neo-step13b` unified the by-value-param read in
+  `CopyNeoCallArguments` to byte-copy N flat bytes from the caller local's
+  `Offset`.
+
+**The 7th probe (instance method `t.LengthSquaredInt()` / field read `t.x` on a
+CLR struct param INSIDE an IL-defined method body) FAILS with `Neo: opcode Ldfld
+not yet implemented (Step 6)`.** This is the SEPARATE pre-existing
+`[NEO-IL-VT-INSTANCE-COVERAGE]` gap (Ldfld on a CLR struct field from IL — also
+surfaced by the `neo-step13-area4` review and Step 19 TC10), NOT K2-FAM. The
+keeper K2-FAM probes deliberately AVOID this gap by routing field reads through
+host helpers (`TestCLRBinding.SumTestVector3NoBindingFields`), not through IL-side
+`Ldfld`. The 7th probe was DROPPED (shipping a failing probe would regress the
+smoke for an out-of-scope bug).
+
+**Fix-or-test-only decision: TEST-ONLY.** No runtime/JIT/optimizer/CLR-binding
+source change. The fix already shipped (opt-harden-2 + review-fix + 13b). This
+change ships 6 adversarial regression guards (so a future change that re-
+introduces a boxed-ref CLR-VT local representation, or breaks a Box/Initobj/
+Unbox flat-bytes arm, is caught by the NeoStep smoke — the Step 17 B1 / F-MAJ-1
+lesson: a green smoke does NOT prove a representation correct without an
+adversarial probe for the specific corruption class). Plus the spec delta (the
+K2-FAM closure requirement → DELIVERED; the Out-of-scope K2-FAM bullet → REMOVED)
+and the deferred-items doc closure.
+
+**Key decisions locked.**
+- D1: TEST-ONLY (no engine fix); the probes that constitute the K2-FAM shape all
+  PASS on HEAD. Shipping an engine fix for a non-reproducing defect would be
+  worse than none (K1 / Q-NEWOBJ / Q-STRUCT / Q-LONG lesson).
+- D2: probes live in `TestCases/NeoStep13bTest.cs` (the existing K2-FAM home;
+  `NeoStep13_K2FamRegression` return-source probe is already there). Naming
+  `NeoStep13_K2Fam_<SourceShape>` so both `NeoStep` and `K2Fam` filters group
+  them.
+- D3: DivideByZero-assertion pattern (no `throw new`; the K2-FAM defect is a
+  SILENT wrong result, so a value-path assertion is correct).
+- D4: `TestVector3NoBinding` (no binder, pure-primitive 3-float) — exercises the
+  reflection-fallback `CLRMethod.Invoke(byte*)` path.
+- D5: `TwoBoxedStructLocalsByValue` is the load-bearing guard (mirrors the F-MAJ-1
+  two-live-struct stress, Box-sourced — the strongest neighbour-corruption
+  detector).
+
+**Files the implementer will touch (TEST-ONLY; no `ILRuntime/` runtime/JIT/
+optimizer/CLR-binding file is modified):**
+- `TestCases/NeoStep13bTest.cs` (extend) -- 6 `NeoStep13_K2Fam_*` probes.
+- `openspec/specs/neo-boxing/spec.md` (delta merged at archive) -- the K2-FAM
+  closure requirement DELIVERED; the Out-of-scope K2-FAM bullet REMOVED.
+- `.trae/documents/neo-deferred-items.md` -- K2-FAM row/entry → RESOLVED
+  (subsumed). F-2 / INLINER-REFONLY-VT entry left intact (distinct defect class).
+
+**Regression risk: NONE (test-only).** No engine file touched. Smoke: NeoStep
+140/140 → 146/146 (additive; all 6 probes PASS on HEAD). Legacy-neutral by
+construction (the F-MAJ-1 fix is `#if ENABLE_NEO_MODE`-gated; the probes are
+representation-agnostic — they assert field-sum correctness, which holds on both
+engines; Legacy's Box/Unbox/Initobj always handled the by-value-param shape).
+
+**Spec-validation gotcha re-affirmed (the area4 finding).** The openspec
+validator requires the requirement DESCRIPTION (not just the title) to contain
+SHALL/MUST. The first K2-FAM requirement draft led with a "When a CLR value type
+LOCAL ... is passed BY VALUE ..." clause (no SHALL until sentence 2) and FAILED
+validation with "must contain SHALL or MUST". Fixed by leading with an explicit
+"A CLR value type LOCAL ... SHALL be byte copied ..." sentence. Re-validate after
+every spec edit.
+
+**Lesson re-affirmed (the Q-NEWOBJ / Q-STRUCT / Q-LONG / F-5 family).** A deferred
+item that has not been re-probed on recent HEAD may already be SUBSUMED by later
+work. The K2-FAM partial-close note (Step 13b apply, 2026-07-04) said the boxed-
+ref-source half "needs IL-side ldfld/stfld on CLR struct fields for a clean
+reproducer" -- but THREE subsequent changes (opt-harden-2 + its review-fix + the
+13b by-value-param read) made the local flat bytes and the boxed-ref
+representation ceased to exist. CONSTRUCT THE REPRODUCER FIRST, on current HEAD,
+before designing a fix. Here the reproducer PROVED the closure, turning a
+would-be engine fix into a test-only lock-in.
+
+
+## Findings -- neo-k2fam-bridge (apply, 2026-07-06)
+
+**RESOLVED (TEST-ONLY).** K2-FAM Box/Initobj/Unbox-source closure locked in
+with 6 adversarial regression guards in `TestCases/NeoStep13bTest.cs`. NO
+runtime/JIT/optimizer/CLR-binding file touched (the fix already shipped via
+`neo-opt-harden-2` + its review-fix + `implement-neo-step13b`).
+
+**The 6 keeper probes (all PASS on HEAD; co-located with the existing
+return-source `NeoStep13_K2FamRegression` in `NeoStep13bTest.cs`):**
+1. `NeoStep13_K2Fam_BoxSourceByValue` -- local via Box->Unbox, by value (==60).
+2. `NeoStep13_K2Fam_InitobjSourceByValue` -- local via `default(T)`, by value
+   (==0).
+3. `NeoStep13_K2Fam_BoxMoveByValue` -- Box->Unbox->struct-copy(Move)->by value
+   (==66).
+4. `NeoStep13_K2Fam_ReinitThenByValue` -- local re-initobj'd via
+   `= default(T)`, by value (==0, the post-re-init value).
+5. `NeoStep13_K2Fam_BoxUnboxByValueToHost` -- Box->Unbox->by-value to a host
+   static helper (==6).
+6. `NeoStep13_K2Fam_TwoBoxedStructLocalsByValue` -- TWO Box->Unbox-sourced
+   locals both by value (the F-MAJ-1 two-live-struct stress, Box-sourced;
+   `r1==600 && r2==3`). LOAD-BEARING neighbour-corruption guard.
+
+**Verification.**
+- Neo full NeoStep smoke: **146/146** (140 baseline + 6 new), 0 failed.
+- `K2Fam` group filter: **7/7** (6 new + the existing return-source probe),
+  0 failed -- collectively cover all K2-FAM source shapes (return/Box/
+  Initobj/Unbox/Move/re-init/two-live).
+- Legacy-neutral: `K2Fam` filter on plain `Debug` + `useRegister=true` =
+  **7/7**, 0 failed (representation-agnostic field-sum assertions hold on
+  both engines). The 2 failures in the broader Legacy `NeoStep13` filter are
+  the PRE-EXISTING `NeoStep13Test.NeoTestClrStructNoBindingBoxRoundTrip`
+  family (different file/class, already listed in the standing Legacy pre-
+  existing failure set) -- NOT caused by this change and NOT in the K2-FAM
+  family.
+
+**Probe design constraints honoured.**
+- All field reads routed through host helpers
+  (`TestCLRBinding.SumTestVector3NoBindingFields` -- by-value param, returns
+  the int field sum). NO IL-side `Ldfld` on a CLR struct field anywhere (the
+  `[NEO-IL-VT-INSTANCE-COVERAGE]` Step-6 gap is out of scope; the dropped 7th
+  probe would have hit it).
+- `TestVector3NoBinding` (no binder, pure-primitive 3-float struct) used
+  throughout -> exercises the reflection-fallback
+  `CLRMethod.Invoke(byte*)` path (same as the existing 13b probes).
+- DivideByZero-assertion pattern (`int _ = 1/0` on a wrong result), not
+  `throw new` / `[ExpectedException]` (neither exists in the harness).
+
+**Stale-DLL gotcha re-confirmed.** `--no-incremental` rebuild of TestCases
+after adding the probes; verified `TestCases.dll` mtime > `NeoStep13bTest.cs`
+mtime before running the smoke (incremental hash hit can silently run the old
+DLL).
+
+**Did NOT git commit/push** (LEAD commits after review). Did NOT modify any
+`ILRuntime/` runtime file (test-only). Did NOT update
+`neo-deferred-items.md` (the shipper does at archive).

@@ -239,6 +239,138 @@ namespace TestCases
             }
         }
 
+        // =====================================================================
+        // K2-FAM adversarial regression guards (the Box/Initobj/Unbox-source
+        // half of K2-FAM, subsumed by neo-opt-harden-2 + its review-fix +
+        // step13b). Each probe sources a CLR-VT LOCAL from Box/Initobj/Unbox
+        // (NOT a method return -- that is the return-source half already
+        // covered by NeoStep13bClrStructByValueParamNoBinding above), then
+        // passes it BY VALUE to a host helper. A future regression that re-
+        // introduces a boxed-ref CLR-VT local representation (or breaks the
+        // flat-bytes Box/Initobj/Unbox_Any arms) mis-copies the local and
+        // these probes turn red. Field reads go THROUGH host helpers -- no
+        // IL-side Ldfld on a CLR struct field (the [NEO-IL-VT-INSTANCE-
+        // COVERAGE] Step-6 gap, out of scope). All PASS on HEAD (regression
+        // guards, not reproducers).
+        // =====================================================================
+
+        // K2-FAM (1) -- local sourced from Box->Unbox, passed by value.
+        //      object o = v; T t = (T)o; Sum(t). The local `t` is sourced
+        //      from a Box (M2 reads flat bytes) then an Unbox_Any dest (the
+        //      twin write). By-value param read (D2) delivers flat bytes.
+        public static void NeoStep13_K2Fam_BoxSourceByValue()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(10f, 20f, 30f);
+            object o = v; // box (M2: read flat bytes -> independent boxed copy)
+            ILRuntimeTest.TestFramework.TestVector3NoBinding t =
+                (ILRuntimeTest.TestFramework.TestVector3NoBinding)o; // unbox (write flat bytes)
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(t);
+            if (r != 60) // 10+20+30
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // K2-FAM (2) -- local sourced from default(T) (Initobj), by value.
+        //      M1 wrote a boxed default into a STALE RefOffset (RefCount=0)
+        //      before the review-fix; now `Unsafe.InitBlock` zeroes flat
+        //      bytes. Sum of all-zero fields == 0.
+        public static void NeoStep13_K2Fam_InitobjSourceByValue()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding t =
+                default(ILRuntimeTest.TestFramework.TestVector3NoBinding); // initobj
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(t);
+            if (r != 0) // all fields zero
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // K2-FAM (3) -- Box->Unbox->struct-copy(Move)->by value. Exercises
+        //      the Move path on a Box-sourced local (the original K2-FAM
+        //      "Move-path scalar->boxed-ref" signature, now flat-bytes end
+        //      to end). The copy must preserve all fields.
+        public static void NeoStep13_K2Fam_BoxMoveByValue()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(11f, 22f, 33f);
+            object o = v; // box
+            ILRuntimeTest.TestFramework.TestVector3NoBinding t =
+                (ILRuntimeTest.TestFramework.TestVector3NoBinding)o; // unbox
+            ILRuntimeTest.TestFramework.TestVector3NoBinding t2 = t; // Move (struct copy)
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(t2);
+            if (r != 66) // 11+22+33
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // K2-FAM (4) -- local assigned, then re-initobj'd via = default(T),
+        //      by value. The M1 reproduction subtlety: a re-initobj AFTER
+        //      the local held a real value must zero it (the post-re-init
+        //      value, not the prior value). Guards the Initobj flat-bytes
+        //      zero against a stale-RefOffset clobber regression.
+        public static void NeoStep13_K2Fam_ReinitThenByValue()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding t =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f);
+            t = default(ILRuntimeTest.TestFramework.TestVector3NoBinding); // re-initobj
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(t);
+            if (r != 0) // expect 0 (the re-init value), NOT 600
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // K2-FAM (5) -- Box->Unbox->by-value to a host static helper. The
+        //      full chain (box read -> unbox write -> by-value param read)
+        //      lands in SumTestVector3NoBindingFields. Distinct field values
+        //      from probe (1) to distinguish the byte path.
+        public static void NeoStep13_K2Fam_BoxUnboxByValueToHost()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 2f, 3f);
+            object o = v; // box
+            ILRuntimeTest.TestFramework.TestVector3NoBinding t =
+                (ILRuntimeTest.TestFramework.TestVector3NoBinding)o; // unbox
+            // Pass by value to the host helper (D2 by-value param read).
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(t);
+            if (r != 6) // 1+2+3
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // K2-FAM (6) -- TWO Box->Unbox-sourced struct locals, BOTH passed by
+        //      value (the F-MAJ-1 two-live-struct stress, Box-sourced). This
+        //      is the LOAD-BEARING neighbour-corruption guard: if a future
+        //      change re-introduces an under-sized local declaration or a
+        //      boxed-ref representation, the second Box->Unbox overflows the
+        //      first local's slot and BOTH Sum reads resolve corrupted bytes
+        //      -> r1 != 600 OR r2 != 3. Mirrors NeoStep13bTwoClrStructLocals
+        //      Regression but sources both locals from Box->Unbox (the K2-FAM
+        //      source shape) instead of method returns.
+        public static void NeoStep13_K2Fam_TwoBoxedStructLocalsByValue()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding va =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(100f, 200f, 300f);
+            ILRuntimeTest.TestFramework.TestVector3NoBinding vb =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 1f, 1f);
+            object oa = va; // box
+            object ob = vb; // box
+            ILRuntimeTest.TestFramework.TestVector3NoBinding ta =
+                (ILRuntimeTest.TestFramework.TestVector3NoBinding)oa; // unbox
+            ILRuntimeTest.TestFramework.TestVector3NoBinding tb =
+                (ILRuntimeTest.TestFramework.TestVector3NoBinding)ob; // unbox
+            int r1 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(ta); // 600
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(tb); // 3
+            if (r1 != 600 || r2 != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
         // 5.8 -- reference-type CLR instance call (byte-identical). The
         //        value-type-`this` discriminator keys on IsValueType, so a
         //        reference-type `this` is the unchanged 4-byte mStack-index path.

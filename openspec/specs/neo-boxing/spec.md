@@ -269,31 +269,78 @@ the call operates on a copy) and SHALL NOT perform the autogen re-box.
 
 ### Requirement: Boxed-ref-local to flat-bytes-param bridge (K2-FAM closure)
 
-When a CLR value type LOCAL (stored as a boxed-object reference per the
-`CLR value-type Box with and without ValueTypeBinder` requirement) is passed
-BY VALUE to a CLR method, the call param-setup SHALL unbox the local's
-primitive bytes into the callee's flat-bytes param slot (reusing the unbox
-helpers), NOT copy the 4-byte mStack index. This closes the K2-FAM pre-existing
-bug where a scalar/boxed-ref CLR value-type local was mis-read as an mStack
-index at the call boundary.
+A CLR value type LOCAL that is passed BY VALUE to a CLR method SHALL be byte
+copied from the local's flat-managed-bytes frame region into the callee's flat-
+bytes param slot via `CopyNeoCallArguments`, regardless of how the local was
+sourced (method return, Box+Unbox, or Initobj). The call param-setup SHALL NOT
+copy a 4-byte mStack index for a CLR value-type local (the K2-FAM
+"int-as-mStack-index" mis-copy SHALL NOT occur for any source shape).
 
-**Status:** PARTIAL / DEFERRED (Step 13b apply pass 2026-07-04). The
-return-source shape (a CLR struct local obtained from a CLR method RETURN,
-which is stored as flat bytes by the return-value requirement) IS closed: that
-local is already flat bytes and works without a bridge, and is covered by the
-by-value parameter scenario. The Box/Initobj-source shape (a local created via
-Box/Initobj, then passed by value) remains DEFERRED: it is not exercised by any
-green scenario and has no clean test surface (it needs IL-side `ldfld`/`stfld`
-on CLR struct fields, a separate deferred concern). The Box/Initobj-source half
-is a documented accepted-known deferred item (silent wrong-result for that
-specific source shape), NOT a regression of a previously-green case.
+A Neo CLR value-type LOCAL is stored as flat managed bytes (`Size =
+GetNeoValueTypeManagedSize, RefCount = 0, localIsRef = false` under
+`ENABLE_NEO_MODE`, per the F-MAJ-1 fix to the `CLR value-type Box with and
+without ValueTypeBinder` requirement's deferred note). The Box, Initobj, and
+Unbox_Any ExecuteNeo arms SHALL read/write that local as flat bytes (the opt-
+harden-2 review-fix arms M1/M2/M3-twin), so a local sourced from Box/Initobj/
+Unbox is flat bytes end-to-end.
 
-#### Scenario: CLR struct local passed by value
-- WHEN a CLR struct is declared as a local, assigned, and then passed by value
-  to a CLR method
-- THEN the callee observes the assigned field values (no mStack-index
-  misinterpretation). (DEFERRED for the Box/Initobj-source shape; the
-  return-source shape is covered by the by-value parameter scenario.)
+**Status:** DELIVERED (resolved-by-recent-work). The closure was a side effect
+of three changes whose combined effect was re-assessed against K2-FAM by the
+`neo-k2fam-bridge` change and confirmed via adversarial reproducer probes on
+HEAD:
+
+- `neo-opt-harden-2` (F-MAJ-1) declared a CLR-VT LOCAL as flat bytes — the OLD
+  boxed-ref representation (`Size=4, RefCount=1`) that produced the
+  "int-as-mStack-index" corruption NO LONGER EXISTS for a CLR-VT local.
+- `neo-opt-harden-2` review-fix (round 1) rewrote the `Initobj` (M1), `Box`
+  (M2), and `Unbox_Any`-dest arms to read/write flat bytes — so a local sourced
+  from Box/Initobj/Unbox is FLAT BYTES end-to-end.
+- `implement-neo-step13b` unified the by-value-param read in
+  `CopyNeoCallArguments` to byte-copy N flat bytes from the caller local's
+  `Offset`.
+
+The closure holds for ALL source shapes of a CLR-VT local (return / Box /
+Initobj / Unbox) — a local obtained from any of these is flat bytes and passes
+by value correctly. The Box/Initobj-source half that was previously DEFERRED is
+now realized. A separate, unrelated gap — `[NEO-IL-VT-INSTANCE-COVERAGE]` (an
+IL-side `Ldfld` on a CLR struct field, which throws a Step-6 NIE) — is NOT
+K2-FAM and is out of scope here.
+
+#### Scenario: CLR struct local sourced from Box then Unbox, passed by value
+- **WHEN** an IL method declares a CLR struct local `v`, boxes it (`object o = v`),
+  unboxes into a new local (`T t = (T)o`), and passes `t` by value to a CLR method
+  that sums its fields
+- **THEN** the callee observes the original field values (no mStack-index
+  mis-interpretation), and the field sum equals the value computed from the
+  original local.
+
+#### Scenario: CLR struct local sourced from Initobj, passed by value
+- **WHEN** an IL method declares a CLR struct local via `default(T)` (Initobj)
+  and passes it by value to a CLR method that sums its fields
+- **THEN** the callee observes all-zero fields (the default), and the field sum
+  equals zero.
+
+#### Scenario: CLR struct local re-initobj'd then passed by value
+- **WHEN** an IL method declares a CLR struct local, assigns it a value, then
+  re-initializes it via `t = default(T)` (re-initobj), and passes it by value
+- **THEN** the callee observes the re-initialized (all-zero) fields, and the
+  field sum equals zero (the post-re-init value, not the prior assigned value).
+
+#### Scenario: Two CLR struct locals both sourced from Box, both passed by value
+- **WHEN** an IL method declares TWO CLR struct locals, boxes and unboxes each
+  into distinct locals, and passes BOTH by value to a CLR method that sums their
+  fields (the F-MAJ-1 two-live-struct stress, but Box-sourced)
+- **THEN** each callee invocation observes its OWN local's field values with NO
+  cross-corruption between the two simultaneously-live locals (each field sum
+  equals the value computed from its own source local).
+
+#### Scenario: No regression on the return-source shape
+- **WHEN** the existing `NeoStep13_K2FamRegression` probe (a CLR struct local
+  sourced from a CLR method RETURN, passed by value — the Step 13b return-source
+  shape) is run after this change
+- **THEN** it remains green (the return-source shape was already closed by Step
+  13b; the `neo-k2fam-bridge` change adds the Box/Initobj/Unbox source shapes
+  alongside it without perturbing the return-source path).
 
 ### Requirement: constrained. callvirt specialization on a value type
 
@@ -363,8 +410,6 @@ throw a clearly-tagged `NotImplementedException` (NOT silently misbehave):
   `CLRType.Get/SetFieldValue(hash, target)`. The current Step 17 arms dispatch
   only on frame-native (`objectIndex == -1`) and heap-IL (`GetNeoILInstance`);
   a CLR-object target stays a clearly-tagged NIE.
-- The Box/Initobj-source half of the boxed-ref-local to flat-bytes-param bridge
-  (K2-FAM): see that requirement's DEFERRED status.
 - A CLR struct instance method `this` (or by-value param) WITH reference fields
   and NO registered `ValueTypeBinder`: throw a clearly-tagged
   `NotImplementedException` directing the user to register a binder (the
@@ -378,12 +423,16 @@ direct-call and write-back" requirements). The Neo wrapper does NOT emit the
 Legacy `WriteBackInstance`; the Area 4a value-type-`this` write-back is a
 flat-bytes re-box.
 
+The K2-FAM `Boxed-ref-local to flat-bytes-param bridge` is NO LONGER deferred --
+it is DELIVERED (resolved-by-recent-work: `neo-opt-harden-2` + its review-fix +
+`implement-neo-step13b`); see that requirement's DELIVERED status.
+
 Also accepted-known (not a deferral, a pre-existing bug): the F-2 /
 INLINER-REFONLY-VT inliner mis-compile for a ref-only VT local constructed via
 `new S(refArgs)` (inlined `stfld.ref.inline` writes do not survive to the
 following in-frame `ldfld.ref` read). Suspect: the JIT inliner's ref-fold over
-a 0-prim-size VT local. Target for a future optimizer-hardening step or the
-K2-FAM bridge child.
+a 0-prim-size VT local. Target for a future optimizer-hardening step. (Distinct
+from K2-FAM; K2-FAM is closed.)
 
 #### Scenario: Deferred items still throw clearly-tagged NIEs
 - **WHEN** an IL method invokes a CLR method with a `ref`/`out` parameter, or

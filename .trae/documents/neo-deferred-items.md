@@ -69,7 +69,7 @@ Insert these into the roadmap ordering:
 | D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **partial (Step 13b + neo-step13-area4)** | Area 5 core done; Area 4b (VT-`this` direct-call) + 4a (Unsafe.Unbox direct-call) done in neo-step13-area4; 4c (CLR ref/out) + 4d (CLR stind/ldind) deferred to follow-up child `neo-step13-area4-refandstind` | roadmap gap |
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
-| K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **partial (Step 13b)** | flat-bytes path resolved; boxed-ref bridge deferred | pre-existing |
+| K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **RESOLVED 2026-07-06 (neo-k2fam-bridge, TEST-ONLY — subsumed by opt-harden-2 + review-fix + step13b; 6 regression guards)** | flat-bytes path resolved; boxed-ref bridge subsumed (declare-side flat-bytes + Initobj/Box/Unbox_Any flat-bytes arms + by-value-param flat-bytes read) | pre-existing (closed by recent work; no new engine fix) |
 | F-MAJ-1 | 2+ simultaneous CLR struct locals -> silent wrong result (representation mismatch, NOT slot-reuse) | Step 13b | **RESOLVED ([OPT-HARDEN-2])** | dump-confirmed: D6 return-write flat-bytes into a 4-byte boxed-ref local slot overflowed 8 bytes into the neighbour; fixed by declaring a CLR-VT local as flat-bytes (Option B, gated `#if ENABLE_NEO_MODE`) | pre-existing (13b made reachable); fixed 2026-07-05 |
 | Q-NEWOBJ | Newobj dest/arg aliasing after a `newarr` | Step 16 | **RESOLVED (Step 18, non-reproducible)** | — | not reproducible on HEAD (JIT dump: distinct frame regions + ref slots per register); same outcome as Q-STRUCT/Q-LONG |
 | Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **RESOLVED in [VT-THIS-ADDR]** | RESOLVED 2026-07-05: inline-stfld owner-type clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back runtime branch | fixed; full NeoStep smoke 99/99 |
@@ -230,6 +230,26 @@ address = potential mutation through it). Gated `#if ENABLE_NEO_MODE`
 `openspec/changes/archive/2026-07-04-implement-neo-opt-hardening/`.
 
 ### K2 / K2-FAM — Move-path boxed-ref CLR-VT-local (Step 12b / Step 13 -> Step 13b)
+**RESOLVED 2026-07-06 (neo-k2fam-bridge, TEST-ONLY).** The Box/Initobj/Unbox-
+source half that was DEFERRED here is now closed — NOT by a new engine fix, but
+as a side effect of three changes whose combined effect was re-assessed against
+K2-FAM by `neo-k2fam-bridge` and confirmed via adversarial reproducer probes on
+HEAD (all 6 PASS on HEAD): `neo-opt-harden-2` (F-MAJ-1) declared a CLR-VT LOCAL
+as flat bytes (`Size = GetNeoValueTypeManagedSize, RefCount = 0, localIsRef =
+false` under `#if ENABLE_NEO_MODE`) — the OLD boxed-ref representation
+(`Size=4, RefCount=1`) that produced the "int-as-mStack-index" corruption NO
+LONGER EXISTS for a CLR-VT local; the `neo-opt-harden-2` review-fix (round 1)
+rewrote the `Initobj` (M1) / `Box` (M2) / `Unbox_Any`-dest arms to read/write
+flat bytes; and `implement-neo-step13b` unified the by-value-param read in
+`CopyNeoCallArguments` to byte-copy N flat bytes. The closure holds for ALL
+source shapes of a CLR-VT local (return / Box / Initobj / Unbox). The
+`neo-k2fam-bridge` change shipped 6 adversarial regression guards in
+`TestCases/NeoStep13bTest.cs` (`NeoStep13_K2Fam_*`) to lock the closure in
+(plus the spec delta + this doc update). The F-2 / INLINER-REFONLY-VT cross-
+reference is left intact (F-2 is a distinct inliner ref-fold defect class —
+still deferred). See
+`openspec/changes/archive/2026-07-06-neo-k2fam-bridge/ship-log.md`.
+
 - **K2:** the Step 8 VT-by-value param copy reads a primitive-field VALUE as an
   mStack index -> `ArgumentOutOfRangeException`. The call param-setup path uses
   `NeoCallParamMap`/`CopyNeoCallArguments`, not `Move_Vt`. **RESOLVED (Step 13b):**
@@ -656,6 +676,16 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
+- **K2-FAM** — Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack
+  index). RESOLVED 2026-07-06 (neo-k2fam-bridge, TEST-ONLY — subsumed): the
+  closure was a side effect of `neo-opt-harden-2` (F-MAJ-1: declared a CLR-VT
+  local as flat bytes — the OLD boxed-ref representation that produced the
+  corruption NO LONGER EXISTS) + its review-fix (rewrote the Initobj/Box/
+  Unbox_Any arms to read/write flat bytes) + `implement-neo-step13b` (unified
+  by-value-param flat-bytes read). No new engine fix shipped; instead 6
+  adversarial regression guards added to `TestCases/NeoStep13bTest.cs`
+  (`NeoStep13_K2Fam_*`) lock the closure in. NeoStep 146/146, K2Fam 7/7,
+  Legacy-neutral. See §3 K2/K2-FAM.
 - **D-CONSTRAINED ({a,d,M2} scope)** — `constrained.callvirt T.M` on a value
   type `T`. Fixed in neo-step17-completion (2026-07-05, Neo-only): the runtime
   `Constrained` arm OWNS the dispatch (JIT order is `[Push..., Constrained T,
