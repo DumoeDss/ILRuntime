@@ -2515,3 +2515,243 @@ construction). Out of scope for D-ARR rank-1; tracked separately.
   Step-17 stobj-refloop / CLR-object field-hash follow-up
   (`neo-step17-stobj-refloop`, task #18) -- same family as the D-CONSTRAINED
   stobj-refloop / CLR-object-field-hash deferral.
+
+## Findings -- neo-double-combine-quirk (2026-07-06, propose)
+
+Closes **F-8 / NEO-DOUBLE-COMBINE** (the silent-wrong-result quirk surfaced
+by the neo-array-completion review, Finding F-1). The proposal is DUMP-GATED
+(mirrors the F-MAJ-1 / OPT-HARDEN-2 discipline: probe BEFORE designing the
+fix; STOP if the designed fix is wrong; never force a fix the dump does not
+confirm). The fix lands ONLY if an apply-time JIT/optimizer dump on current
+HEAD (`fe13c25e`) pinpoints the defect; otherwise F-8 -> DEFERRED (the
+Q-STRUCT / Q-LONG / Q-NEWOBJ outcome).
+
+**Refined characterization (from the array-completion review's independent
+reproduction).** The quirk is NOT "3+ locals" and NOT all 8-byte primitives
+-- it is **2+ `double` locals combined in one boolean expression** that
+yields a silent wrong result. A single `double` read is correct; combine two
+in one `if` and the comparison misfires. **3 `long` locals combined work
+fine** -- the quirk is `double`-specific. This is the F-MAJ-1 class (silent
+wrong result) but on an 8-byte PRIMITIVE, not a CLR struct.
+
+**Key code-grounded finding (the discriminator, established at propose).**
+The F-8 symptom (`long` works, `double` fails) CANNOT be a frame-slot sizing
+or alignment defect: `AllocateLocalStackSpaces` (`JITCompiler.cs:1561-1574`)
+sizes BOTH `double` and `long` to 8 bytes (`GetPrimitiveSize`,
+`AppDomain.cs:1898-1921`) and aligns BOTH to 8 (`AlignUp(offset, size)`,
+`size=8` for both). They get byte-identical frame slots. So the divergence is
+in the COMPUTATION path (R8 type-specialization / R8 compare / R8 copy-prop),
+NOT the slot sizing. This mirrors the F-MAJ-1 lesson
+(`AllocateLocalStackSpaces` monotonic allocation was NOT the F-MAJ-1 fix
+site). The spec records this so a future "fix the 8-byte-primitive slot
+allocator" proposal is rejected on the same grounds.
+
+**F-MAJ-1 vs F-8 distinction (durable).**
+- **F-MAJ-1** = a CLR-struct-local REPRESENTATION MISMATCH (the declare-side
+  `Size=4, RefCount=1` boxed-ref disagreed with the D6 return-write's flat
+  12-byte write -> 8-byte overflow into the neighbour). Fixed by declaring a
+  CLR-VT local as flat bytes (Option B, gated `#if ENABLE_NEO_MODE`).
+- **F-8** = an R8 COMPUTATION-path defect on an 8-byte PRIMITIVE (`double`).
+  A `double` local is a primitive, sized 8 and stored flat in the frame
+  (byte-identical to `long`). There is NO representation mismatch -- the F-MAJ-1
+  mechanism does NOT apply. The defect is `double`-specific because the I8
+  (long) computation path works; the divergence is in the R8 type-spec / R8
+  compare / R8 copy-prop arm. The two bugs are the same SEVERITY class (silent
+  wrong result) but DIFFERENT root-cause families.
+
+**Leading candidate root cause (D2, dump-gated).** The `||`/`&&` combine
+lowers through the typed-compare machinery (`GetTypedCompareOpcode`,
+`GetTypedBranchOpcode`, `GetTypedImmediateCompareOpcode`,
+`JITCompiler.cs:1182-1346`). All three HAVE an R8 case. But an R8 operand
+flowing into the combine (e.g. from `Ldelem_R8`, which may lack the dest-type
+seed that `Conv_R8` has at `JITCompiler.cs:776`) may be read by the compare
+type-specialization BEFORE its `registerType` is seeded -> `InferPrimTag`
+(`:1052-1086`) falls back to `I4` -> the compare emits `Ceq_I4`/`Bne_Un_I4`
+(reading 4 bytes of an 8-byte `double` slot) -> silent wrong result. This
+fits the `double`-specific signature exactly (the I8 path is exercised by
+the working 3-`long` case, so I8 is correct). The fix = the missing producer
+dest-type seed (mirror the `Conv_R8` / `Ldloca` / `Ldflda` dest-typing rules;
+the `neo-vt-this-addr` "Newobj-dest typing" fix is the precedent). SHARED
+type-spec pass: confirm Legacy-neutral (the seed is byte-identical for every
+existing I4/I8 operand, only ADDING a correct R8 seed) OR gate
+`#if ENABLE_NEO_MODE`.
+
+**Fallback candidates (dump-gated, in order).**
+- D3: R8 copy-prop fold width-mishandles a `double` (FCP/BCP/copy-prop, all
+  SHARED -- gate `#if ENABLE_NEO_MODE`). Confirm only if D2 is refuted (the
+  emitted opcodes are already `*_R8` but a `double` value is re-materialized
+  at a 4-byte width after the fold).
+- D4: `LowerNeoOffsets` R8 operand overlap (Neo-only). Refuted in principle
+  (lowering is width-agnostic -- advances by the slot's declared `Size=8` for
+  both `double` and `long`), but the dump confirms.
+- D5 (defer): if D2, D3, AND D4 are all refuted, F-8 -> DEFERRED. Ship NO
+  guessed fix. Pin the dump + reproducer.
+
+**Key decisions locked.**
+- D1: the fix is dump-gated; the 8-byte-slot-sizing hypothesis is REFUTED at
+  propose (`double` and `long` get byte-identical frame slots).
+- D2: leading fix = missing R8 producer dest-type seed in the type-spec pass
+  (the dump-named producer case, likely `Ldelem_R8`). SHARED -- confirm
+  Legacy-neutral OR gate `#if ENABLE_NEO_MODE`.
+- D6: test convention = `NeoOptHardTest_Dbl_*` probes in
+  `NeoOptHardeningTest.cs` (NOT promoted to `NeoStep`; the smoke stays 161/161
+  green pre-fix). MANDATORY adversarial probes (the silent-corruption class --
+  green smoke MISSES it): the F-8 signature + 3-double + double+long boundary
+  + double+int + isolated + live-range + single-local regression + F-MAJ-1
+  probes still green + full NeoStep smoke 161/161.
+
+**Files the implementer will touch (dump-locked; Legacy is the REFERENCE):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/JITCompiler.cs` -- the R8
+  type-spec cases (`:1182-1346`) + the producer dest-typing loop (`:537-847`)
+  is the LIKELY fix site for D2. SHARED -- Legacy-neutrality gate.
+- `ILRuntime/Runtime/Intepreter/RegisterVM/Optimizer.FCP.cs` /
+  `Optimizer.BCP.cs` / copy-prop -- ONLY if D3 is dump-confirmed (SHARED;
+  gate `#if ENABLE_NEO_MODE`).
+- `ILRuntime/Runtime/Intepreter/RegisterVM/Optimizer.Neo.cs` --
+  `LowerNeoOffsets` ONLY if D4 is dump-confirmed (Neo-only).
+- `TestCases/NeoOptHardeningTest.cs` (extend) -- `NeoOptHardTest_Dbl_*` probes
+  (separate filter, mirrors K1 / F-MAJ-1).
+
+**Regression risk: MEDIUM.** The fix site is the R8 computation path (NOT the
+broad frame allocator touched by F-MAJ-1; the slot sizing is provably
+correct). Gate: full `NeoStep` smoke (161/161 baseline) + Legacy 518/519
+stash-toggle for any shared-engine edit. Adversarial probes MANDATORY (Step 17
+B1 / OPT-HARDEN K1 / F-MAJ-1 lessons: a green smoke does NOT prove an
+optimizer/type-spec gate correct).
+
+**Baseline note.** NeoStep smoke is 161/161 at HEAD (after neo-array-
+completion). The F-8 reproducer FAILS on HEAD (array-completion reviewer
+stash-reproduced it); the `Dbl_*` probes run under a separate filter. The
+array-completion TC11/TC12/TC14 already use the incremental `bad`-fold
+workaround in the smoke, so the smoke stays green pre-fix.
+
+## Findings -- neo-double-combine-quirk (apply, 2026-07-06)
+
+**RESOLVED.** F-8 / NEO-DOUBLE-COMBINE FIXED. NeoStep smoke 161/161 (no
+regression); NeoOptHard 24/24 (16 K1/F-MAJ-1 + 8 new Dbl); Legacy-neutral (all
+8 Dbl probes PASS on Legacy too; the bug was Neo-only). Working tree
+UNCOMMITTED.
+
+**VERDICT: candidate D4 (LowerNeoOffsets operand-union overlap), NOT D2.** The
+propose-time LEADING candidate (D2 R8 type-spec mis-types the combine) was
+REFUTED by the dump; the actual defect is a D4 shape the propose dismissed as
+"long shot, refuted in principle" -- and the propose D4 refutation ("lowering
+is width-agnostic") was CORRECT for the field it considered and WRONG about
+the dead `Operand3` field write it did NOT consider.
+
+**Dump evidence (Block 0).**
+- D2 REFUTED: a JIT type-spec diagnostic showed the two `Ldelem_R8` dest
+  registers ARE correctly seeded `System.Double`, and the emitted compare/
+  branch opcodes are the correct R8 forms (`Bnei_Un_R8`, `Ceqi_R8`).
+- D4 CONFIRMED: a runtime diagnostic in the `Bnei_Un_R8` arm showed
+  `val=1.5 opd=2.121995791E-314 -> branch=True` -- the compared VALUE is
+  correct, but the IMMEDIATE CONSTANT `opd` (should be 1.5) is GARBAGE (a small
+  int's bit pattern as a double).
+
+**The defect (code-grounded).** `OpCodeR` is `[StructLayout(LayoutKind.Explicit)]`:
+`Operand3` (int) @ offset 16 OVERLAPS the HIGH 4 bytes of `OperandLong`/
+`OperandDouble` (offset 12-19). In `Optimizer.Neo.cs LowerNeoOffsets`, the
+immediate-branch case stamped `op.Operand3 = localInfos[r1].RefOffset` for
+EVERY immediate branch (I4/I8/R4/R8). `Operand3` is NEVER READ by any
+immediate-branch runtime arm (each reads only `DstOffset` + the immediate
+field + `Operand4`). The write is DEAD -- but DESTRUCTIVE for the I8/R4/R8
+forms: it clobbers the high 4 bytes of the 8-byte immediate constant.
+
+**The long-works / double-fails discriminator RESOLVED (NOT slot sizing).**
+- double: copy-prop folds `Ldc_R8 1.5` INTO the immediate form (`Bnei_Un_R8`)
+  -> the `Operand3` write corrupts `OperandDouble` -> silent wrong branch.
+- long: copy-prop keeps `Ldc_I8` in a register, emits REGISTER-REGISTER
+  `Bne_Un_I8` (dump of ThreeLongCombine confirmed). The I8 immediate branch is
+  never produced for the long combine, so the corruption is unreachable.
+- single double (no combine): does not produce `Bnei_Un_R8` (lowers to
+  `ceqi.r8; brfalse`; `Ceqi_R8` uses `LowerR1R2` which does NOT write
+  `Operand3`). Only the combined `||` form trips the bug.
+
+So the discriminator is: **does the optimizer's constant-folding produce a
+wide-immediate branch form?** For double yes; for long no. It is a property of
+the constant-folding, NOT the frame layout (re-confirms the propose-time
+slot-sizing refutation: `double` and `long` get byte-identical 8-byte slots).
+
+**The fix (Neo-only, 1 conditional).** `Optimizer.Neo.cs LowerNeoOffsets`
+immediate-branch case: a single `immLarge` boolean gates the existing
+`op.Operand3 = localInfos[r1].RefOffset` line OFF for the I8/R4/R8 forms.
+The I4 forms keep the write byte-identical (their immediate `Operand` @8 does
+not collide). The whole file is `#if ENABLE_NEO_MODE`; Neo-only by
+construction. NO type-spec / copy-prop / runtime change. (+39/-1.)
+
+**Stash-toggle proof.** Stashing JUST `Optimizer.Neo.cs` and rebuilding the
+CLI reproduces the F-8 failure on stashed HEAD (`TwoDoubleCombine` -> 1
+failed); restoring it turns it green. Proves pre-existing (HEAD `fe13c25e`)
++ load-bearing.
+
+**F-MAJ-1 vs F-8 distinction (durable).**
+- F-MAJ-1 = CLR struct LOCAL representation mismatch (boxed-ref `Size=4,
+  RefCount=1` vs flat-bytes write). A 12-byte flat write overflowed a 4-byte
+  boxed-ref slot into the neighbour. Fixed by declaring a CLR-VT local as flat
+  bytes under `#if ENABLE_NEO_MODE`.
+- F-8 = R8 immediate-branch constant corruption via the OpCodeR explicit-
+  layout union (a DEAD `Operand3` write at offset 16 clobbers the high 4 bytes
+  of the 8-byte `OperandDouble`/`OperandLong` immediate at 12-19). A
+  COMPUTATION-path defect on an 8-byte PRIMITIVE, NOT a representation
+  mismatch -- the frame slots are byte-identical to `long`. Fixed by gating
+  the dead `Operand3` write off for the wide-immediate forms.
+
+**Lesson re-affirmed (the K1 / F-MAJ-1 / Q-NEWOBJ / F-6 family).** The propose
+ranked D2 LEADING and D4 "refuted in principle". The dump REFUTED D2 and
+CONFIRMED D4 -- but a D4 shape the propose did NOT enumerate (a dead field
+write colliding via the union). **"Refuted in principle" must enumerate EVERY
+field the case writes, not just the ones the design focused on.** The
+`OpCodeR` explicit-layout union (`Register1`/`DstOffset` @4, `Register2`/
+`SrcOffset` @6, `Operand`/`OperandFloat` @8, `Operand2`/`OperandLong`/
+`OperandDouble` @12, `Operand3` @16, `Operand4` @20) is a recurring sharp
+edge: ANY optimizer pass that writes a "spare" field MUST verify it does not
+alias a wide-immediate/long/double field used by another consumer. Future
+optimizer hardening should grep for `op.Operand2 =`/`op.Operand3 =` writes and
+cross-check against the runtime arms' field reads.
+
+**Files touched (all Neo-only; Legacy `ExecuteR` byte-identical, the file is
+`#if ENABLE_NEO_MODE`):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/Optimizer.Neo.cs` -- the fix.
+- `TestCases/NeoOptHardeningTest.cs` -- 8 `NeoOptHardTest_Dbl_*` probes.
+- `openspec/changes/neo-double-combine-quirk/{proposal,design,tasks,ship-log}.md`
+  + `specs/neo-optimizer/spec.md`.
+
+**Did NOT git commit/push** (LEAD commits after review). Did NOT update
+`neo-deferred-items.md` (the shipper does at archive).
+
+**OpCodeR union gotcha (NEW durable insight).** The explicit-layout union means
+a pass that writes `Operand` (4B @8), `Operand2` (4B @12), or `Operand3` (4B
+@16) can SILENTLY clobber part of `OperandFloat` (@8), `OperandLong`/
+`OperandDouble` (@12-19), respectively. The reverse is also true: writing
+`OperandDouble`/`OperandLong` clobbers `Operand2` + `Operand3`. A consumer
+that reads `OperandDouble` and a pass that writes `Operand3` are MUTUALLY
+DESTRUCTIVE even though they appear to use "different" fields. This is the F-8
+mechanism in one sentence. The `LowerNeoOffsets` immediate-branch case is now
+gated, but OTHER cases in the same pass (or other passes) that write `Operand2`/
+`Operand3` for an opcode whose runtime arm reads `OperandDouble`/`OperandLong`
+have the SAME latent hazard. Flag for future optimizer-hardening sweeps.
+
+### Shipper resolution (archive, 2026-07-06)
+
+- **F-8 / NEO-DOUBLE-COMBINE -> RESOLVED.** Archived as
+  `openspec/changes/archive/2026-07-06-neo-double-combine-quirk/`. The F-8
+  requirement merged into the canonical `openspec/specs/neo-optimizer/spec.md`
+  (ADDED: "Combining 2+ double locals in one boolean expression computes the
+  correct result"); the 4 pre-existing neo-optimizer requirements (FCP K1,
+  Q-STRUCT, Q-LONG, F-MAJ-1) are preserved unchanged.
+- **F2 accepted-known (no fix needed).** The `immLarge` set in
+  `LowerNeoOffsets` includes the 10 R4 immediate-branch forms unnecessarily --
+  R4's `OperandFloat` (@8-11) is disjoint from `Operand3` (@16), so the dead
+  `Operand3` write was already harmless for R4. The destructive set is
+  strictly I8 + R8; R4 is included for uniform "I4 keeps the legacy write,
+  everything else skips it" auditability. Recorded; no fix shipped (review F2
+  = Trivial).
+- **OpCodeR union gotcha reinforced.** 3rd concrete instance (Step 12 frame-VT
+  offsets, OPT-HARDEN K1 Move/Move_Vt, now F-8 immediate-branch). Future
+  optimizer work: any `LowerNeoOffsets` case that stamps an `OpCodeR` field
+  MUST enumerate every overlapping field via the explicit layout and confirm
+  none is the live payload for that opcode's runtime arm -- a "dead" write can
+  still be destructive through the union. Grep `op.Operand2 =` / `op.Operand3
+  =` and cross-check against runtime-arm field reads.
+- `neo-deferred-items.md` F-8 row (§2) + entry (§3) updated to
+  `RESOLVED 2026-07-06 (neo-double-combine-quirk, D4)`; §4 bullet added.

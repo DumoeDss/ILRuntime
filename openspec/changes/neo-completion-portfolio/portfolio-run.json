@@ -89,7 +89,8 @@
     },
     "neo-double-combine-quirk": {
       "pipeline": "small-feature", "wave": 4, "scope": "[F-8 NEO-DOUBLE-COMBINE / OPT-HARDEN-3] 2+ double locals combined in one boolean expr silently misfire (F-MAJ-1 class, double-specific)",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-optimizer"
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-06", "smoke": "Neo 161/161 + NeoOptHard 24/24 + Legacy-neutral", "review": "APPROVE (D4 root cause: dead Operand3 write clobbers 8-byte immediate via OpCodeR union overlap; F1 test-comment fixed, F2 accepted-known)"
     },
     "neo-peephole-isinst": {
       "pipeline": "small-feature", "wave": 4, "scope": "[D-PEEP] box T;isinst U fusion + PatchKind.IsinstResult (needs patch-infra)",
@@ -122,7 +123,7 @@
     }
   },
   "runnableFrontier": ["neo-step13-area4", "neo-step19-delegate", "neo-array-completion", "neo-peephole-isinst", "neo-opportunistic-cleanup", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

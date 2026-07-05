@@ -344,5 +344,167 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // ====================================================================
+        // F-8 / NEO-DOUBLE-COMBINE probes (change: neo-double-combine-quirk,
+        // [OPT-HARDEN-3]). 2+ `double` locals combined in one boolean expr
+        // silently misfire. The dump-CONFIRMED root cause is D4 (NOT the
+        // propose-time D2 type-spec candidate -- that was REFUTED by the dump;
+        // the Ldelem_R8 dest registers ARE correctly seeded `System.Double`
+        // and the emitted opcodes ARE the `*_R8` forms). The defect is a DEAD
+        // but DESTRUCTIVE field write in `Optimizer.Neo.cs LowerNeoOffsets`:
+        // the immediate-branch case stamped `op.Operand3 =
+        // localInfos[r1].RefOffset` for EVERY immediate branch (I4/I8/R4/R8).
+        // The `OpCodeR` struct is `[StructLayout(LayoutKind.Explicit)]` --
+        // `Operand3` (@16) overlaps the HIGH 4 bytes of `OperandLong`/
+        // `OperandDouble` (@12-19); `Operand3` is NEVER READ by any
+        // immediate-branch runtime arm (each reads only `DstOffset` + the
+        // immediate field + `Operand4`), so the write is dead -- but it
+        // clobbers the 8-byte immediate constant for the I8/R8 forms. The
+        // `long`-works / `double`-fails split: copy-prop folds a `double`
+        // `Ldc_R8` INTO the immediate form (`Bnei_Un_R8`, constant in the
+        // opcode, corruption reachable) but keeps `Ldc_I8` in a register
+        // (`Bne_Un_I8`, register-register, I8 immediate form never produced ->
+        // corruption unreachable). The FIX gates the dead `Operand3` write
+        // OFF for the I8/R4/R8 immediate-branch forms (single `immLarge`
+        // boolean in `LowerNeoOffsets`); I4 byte-identical (its immediate
+        // `Operand` @8 is disjoint from @16). NO JITCompiler.cs change.
+        // (Refuted: AllocateLocalStackSpaces slot sizing -- double and long
+        // get byte-identical 8-byte slots; long works, only double fails, so
+        // the discriminator is the constant-folding, NOT the frame layout.)
+        // Prefix `NeoOptHardTest_Dbl_` keeps these OUT of the `NeoStep` smoke
+        // filter (run under the `NeoOptHardTest_Dbl_` / `Dbl` filter).
+        // ====================================================================
+
+        // Helper: build a double[] element-by-element (array initializer emits
+        // Ldtoken which is a Step-6 NIE; use new + indexed store).
+        static double[] MakeDoubles(double a, double b, double c)
+        {
+            double[] arr = new double[3];
+            arr[0] = a;
+            arr[1] = b;
+            arr[2] = c;
+            return arr;
+        }
+
+        // (1) The exact F-8 reproducer: 2 double locals from a double[],
+        // combined in one boolean expr. Expected: both hold their values, so
+        // the combined || is FALSE -> no divide-by-zero (PASS). On HEAD the
+        // combine reads 4 bytes of each 8-byte slot -> wrong comparison -> the
+        // || trips -> DivideByZero (FAIL).
+        public static void NeoOptHardTest_Dbl_TwoDoubleCombine()
+        {
+            double[] arr = MakeDoubles(1.5, 2.5, 0.0);
+            double a0 = arr[0]; // 1.5 via Ldelem_R8
+            double a1 = arr[1]; // 2.5 via Ldelem_R8
+            if (a0 != 1.5 || a1 != 2.5)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (2) 3 double locals combined.
+        public static void NeoOptHardTest_Dbl_ThreeDoubleCombine()
+        {
+            double[] arr = MakeDoubles(1.5, 2.5, 3.5);
+            double a0 = arr[0];
+            double a1 = arr[1];
+            double a2 = arr[2];
+            if (a0 != 1.5 || a1 != 2.5 || a2 != 3.5)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (3) Boundary control: 3 LONG locals combined. PASSES on HEAD -- the
+        // I8 type-spec / compare path is correct (Ldelem_I8 dest IS seeded).
+        // Proves the quirk is double-specific.
+        public static void NeoOptHardTest_Dbl_ThreeLongCombine()
+        {
+            long[] arr = new long[3];
+            arr[0] = 10L; arr[1] = 20L; arr[2] = 30L;
+            long a0 = arr[0];
+            long a1 = arr[1];
+            long a2 = arr[2];
+            if (a0 != 10L || a1 != 20L || a2 != 30L)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (4) double + long mix in one boolean expr (the boundary).
+        public static void NeoOptHardTest_Dbl_DoubleLongMix()
+        {
+            double[] darr = MakeDoubles(7.25, 0.0, 0.0);
+            long[] larr = new long[2];
+            larr[0] = 99L; larr[1] = 0L;
+            double d0 = darr[0];
+            long l0 = larr[0];
+            if (d0 != 7.25 || l0 != 99L)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (5) double + int mix in one boolean expr.
+        public static void NeoOptHardTest_Dbl_DoubleIntMix()
+        {
+            double[] darr = MakeDoubles(4.5, 0.0, 0.0);
+            int[] iarr = new int[2];
+            iarr[0] = 42; iarr[1] = 0;
+            double d0 = darr[0];
+            int i0 = iarr[0];
+            if (d0 != 4.5 || i0 != 42)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (6) double locals NOT combined (each in its own if). PASSES on HEAD --
+        // a single double read is correct (no combine -> no mis-typed compare).
+        // Verify still works after the fix.
+        public static void NeoOptHardTest_Dbl_SingleDoubleEach()
+        {
+            double[] arr = MakeDoubles(1.5, 2.5, 0.0);
+            double a0 = arr[0];
+            double a1 = arr[1];
+            if (a0 != 1.5)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+            if (a1 != 2.5)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (7) double local live across an intervening method call, then
+        // combined (live range). The call is a host helper returning a known
+        // int (does not consume the double locals).
+        public static void NeoOptHardTest_Dbl_LiveRangeAcrossCall()
+        {
+            double[] arr = MakeDoubles(8.75, 9.75, 0.0);
+            double a0 = arr[0];
+            // Intervening call (host static helper).
+            int n = ILRuntimeTest.TestFramework.TestCLRBinding.MixedFrameSum(
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(0f, 0f, 0f), 0, "");
+            double a1 = arr[1];
+            // n is unused; combine the double locals.
+            if (a0 != 8.75 || a1 != 9.75 || n < 0)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // (8) Single double local regression (read + check, no combine).
+        public static void NeoOptHardTest_Dbl_SingleDoubleRegression()
+        {
+            double[] arr = MakeDoubles(3.14, 0.0, 0.0);
+            double a0 = arr[0];
+            if (a0 != 3.14)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
     }
 }

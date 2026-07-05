@@ -759,9 +759,47 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             // routing the branch operand through the alias map
                             // would redirect it to the alias base (the wrong local)
                             // -> the branch reads the wrong slot (B1).
+                            //
+                            // F-8 / [OPT-HARDEN-3]: the I8/R4/R8 immediate-branch
+                            // forms carry their 8-byte/4-byte constant in
+                            // OperandLong/OperandDouble (offset 12..19) /
+                            // OperandFloat (offset 8..11). The legacy I4-only arm
+                            // below also stamped `op.Operand3 = RefOffset`
+                            // (offset 16) -- that field is NEVER read by ANY
+                            // immediate-branch runtime arm, but for the I8/R4/R8
+                            // forms it OVERLAPS the high bytes of the immediate
+                            // constant (Operand3 @16 aliases the high half of
+                            // OperandLong/OperandDouble), corrupting the constant
+                            // -> silent wrong branch. The long-works / double-fails
+                            // signature: copy-prop folds a `double` Ldc_R8 into the
+                            // immediate form (Bnei_Un_R8) but leaves a `long`
+                            // Ldc_I8 in a register (register-register Bne_Un_I8),
+                            // so only the R8/R4 immediate form trips the corruption.
+                            // Fix: resolve DstOffset (always needed) but SKIP the
+                            // dead Operand3 write for the I8/R4/R8 forms (their
+                            // immediate lives at offset 12..19). The I4 forms keep
+                            // the Operand3 write byte-identical (their immediate
+                            // Operand @8 does not collide; preserved for safety).
                             short r1 = op.Register1;
-                            op.Operand3 = localInfos[r1].RefOffset;
                             op.DstOffset = (ushort)localInfos[r1].Offset;
+                            bool immLarge =
+                                op.Code == OpCodeREnum.Bnei_Un_I8 || op.Code == OpCodeREnum.Beqi_I8 ||
+                                op.Code == OpCodeREnum.Blti_I8 || op.Code == OpCodeREnum.Blti_Un_I8 ||
+                                op.Code == OpCodeREnum.Bgti_I8 || op.Code == OpCodeREnum.Bgti_Un_I8 ||
+                                op.Code == OpCodeREnum.Blei_I8 || op.Code == OpCodeREnum.Blei_Un_I8 ||
+                                op.Code == OpCodeREnum.Bgei_I8 || op.Code == OpCodeREnum.Bgei_Un_I8 ||
+                                op.Code == OpCodeREnum.Bnei_Un_R4 || op.Code == OpCodeREnum.Beqi_R4 ||
+                                op.Code == OpCodeREnum.Blti_R4 || op.Code == OpCodeREnum.Blti_Un_R4 ||
+                                op.Code == OpCodeREnum.Bgti_R4 || op.Code == OpCodeREnum.Bgti_Un_R4 ||
+                                op.Code == OpCodeREnum.Blei_R4 || op.Code == OpCodeREnum.Blei_Un_R4 ||
+                                op.Code == OpCodeREnum.Bgei_R4 || op.Code == OpCodeREnum.Bgei_Un_R4 ||
+                                op.Code == OpCodeREnum.Bnei_Un_R8 || op.Code == OpCodeREnum.Beqi_R8 ||
+                                op.Code == OpCodeREnum.Blti_R8 || op.Code == OpCodeREnum.Blti_Un_R8 ||
+                                op.Code == OpCodeREnum.Bgti_R8 || op.Code == OpCodeREnum.Bgti_Un_R8 ||
+                                op.Code == OpCodeREnum.Blei_R8 || op.Code == OpCodeREnum.Blei_Un_R8 ||
+                                op.Code == OpCodeREnum.Bgei_R8 || op.Code == OpCodeREnum.Bgei_Un_R8;
+                            if (!immLarge)
+                                op.Operand3 = localInfos[r1].RefOffset;
                         }
                         break;
                     case OpCodeREnum.Initobj:

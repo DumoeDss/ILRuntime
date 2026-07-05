@@ -88,7 +88,7 @@ Insert these into the roadmap ordering:
 | N-CATCHWRAP | catch slot stores ILRuntimeException wrapper | Step 14 | **accept** (matches Legacy) | — | not-a-bug |
 | N-TC2 | Step 14 TC2 asserts `e != null` | Step 14 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** (was resolved by Step 15; the test-tighten follow-up is now done) | — | cleanup |
 | F-7 / NEO-DELEGATE-REFOUT | byref-aware arg marshaling in `DelegateAdapter.NeoInvokeSub` (delegate ref/out params) | Step 19 | **future** (route to a byref follow-up child — same family as D-13B area 4c / neo-step17-stobj-refloop) | byref-typed Ref Slot in the delegate Invoke param region | pre-existing (latent; the only reachable shape today is plain primitives via `WriteNeoCallSlot`) |
-| F-8 / NEO-DOUBLE-COMBINE | 2+ `double` locals combined in one boolean expression silently misfire (F-MAJ-1 class; `double`-specific, not all 8-byte primitives) | neo-array-completion review (F-1) | **future** (new follow-up child `neo-double-combine-quirk` / [OPT-HARDEN-3]) | optimizer/runtime handling of 2+ simultaneous `double` locals in a combined expression (suspect: `AllocateLocalStackSpaces` 8-byte-primitive slot handling or copy-prop `double`-local combine — same family as F-MAJ-1) | pre-existing (NOT introduced by D-ARR; upstream of the array work; surfaced when the array probes needed combined `double` assertions) |
+| F-8 / NEO-DOUBLE-COMBINE | 2+ `double` locals combined in one boolean expression silently misfire (F-MAJ-1 class; `double`-specific, not all 8-byte primitives) | neo-array-completion review (F-1) | **RESOLVED 2026-07-06 (neo-double-combine-quirk, D4)** | dead `Operand3 = RefOffset` write in `Optimizer.Neo.cs LowerNeoOffsets` immediate-branch case clobbered the high 4 bytes of `OperandDouble`/`OperandLong` (@12-19) via the `[StructLayout(Explicit)]` union; copy-prop folds `Ldc_R8` into `Bnei_Un_R8` (reachable) but keeps `Ldc_I8` register-register (unreachable) -> double-fails/long-works | pre-existing (NOT introduced by D-ARR; upstream of the array work; surfaced when the array probes needed combined `double` assertions) |
 
 ---
 
@@ -607,7 +607,7 @@ handles a byref `this` for a direct `call`). Recorded so the byref-follow-up
 planner finds it. See
 `openspec/changes/archive/2026-07-06-neo-step19-delegate/ship-log.md`.
 
-### F-8 / NEO-DOUBLE-COMBINE — 2+ double locals combined in one boolean expression (-> future [OPT-HARDEN-3])
+### F-8 / NEO-DOUBLE-COMBINE — 2+ double locals combined in one boolean expression (RESOLVED 2026-07-06, neo-double-combine-quirk / [OPT-HARDEN-3], D4)
 Surfaced by the neo-array-completion review (Finding F-1, Probe #4). When a
 method reads 2+ `double` values into separate locals and combines them in a
 single boolean expression (e.g.
@@ -635,10 +635,42 @@ family as F-MAJ-1 / OPT-HARDEN-2), or the `double`-local combine in copy-
 prop. Exact locus NOT pinned in the review (no dump probe of the failing
 frame layout). **Severity: Major (silent wrong result), pre-existing.**
 
-**Resolution:** future -- new follow-up child `neo-double-combine-quirk` /
-[OPT-HARDEN-3]. The fix should dump-gate the failing frame layout (the F-MAJ-1
-discipline: probe BEFORE designing the fix; STOP if the designed fix is
-wrong). Recorded so the optimizer-hardening planner finds it. See
+**RESOLVED 2026-07-06 (neo-double-combine-quirk, D4).** The propose-time
+leading candidate D2 (R8 type-spec mis-types the combine -- `Ldelem_R8` dest
+lacks a registerType seed) was REFUTED by the dump (the dest registers ARE
+correctly seeded `System.Double`; the emitted opcodes ARE `*_R8`). The actual
+defect is a D4 shape the propose had dismissed as a "long shot, refuted in
+principle": in `Optimizer.Neo.cs LowerNeoOffsets`, the immediate-branch case
+stamped `op.Operand3 = localInfos[r1].RefOffset` for EVERY immediate branch
+(I4/I8/R4/R8). `OpCodeR` is `[StructLayout(LayoutKind.Explicit)]` --
+`Operand3` (@16) overlaps the HIGH 4 bytes of `OperandLong`/`OperandDouble`
+(@12-19); `Operand3` is NEVER READ by any immediate-branch runtime arm, so the
+write is dead -- but destructive for I8/R8 (clobbers the 8-byte immediate's
+high 4 bytes). The `long`-works / `double`-fails split: copy-prop folds a
+`double` `Ldc_R8` INTO the immediate form (`Bnei_Un_R8`, corruption reachable)
+but keeps `Ldc_I8` in a register (`Bne_Un_I8`, I8 immediate form never
+produced -> corruption unreachable). **Fix:** gate the dead `Operand3` write
+OFF for the I8/R4/R8 immediate-branch forms (single `immLarge` boolean); I4
+byte-identical (its immediate `Operand` @8 is disjoint from @16). Neo-only
+(`#if ENABLE_NEO_MODE`); NO `AllocateLocalStackSpaces` change (the 8-byte-slot
+hypothesis was propose-refuted -- double + long get byte-identical 8-byte
+slots). **Accepted-known:** F2 -- `immLarge` includes R4 unnecessarily (R4's
+`OperandFloat` @8-11 is disjoint from `Operand3` @16, so the dead write was
+harmless for R4; the broader set is safe, just not minimal). **Verification:**
+NeoStep 161/161, NeoOptHard 24/24 (16 K1/F-MAJ-1 + 8 new `NeoOptHardTest_Dbl_*`),
+Legacy-neutral; Block-0 dump-gate + stash-proven pre-existing; 5 probes
+FAIL-on-HEAD -> PASS; review APPROVED. **The OpCodeR union gotcha** -- a
+recurring class (handoff §4 warns; this is the 3rd instance after Step 12 +
+OPT-HARDEN). See
+`openspec/changes/archive/2026-07-06-neo-double-combine-quirk/ship-log.md`.
+(The previous "future" resolution is preserved below for the history trail.)
+See `openspec/changes/archive/2026-07-06-neo-array-completion/ship-log.md` (F-1).
+
+**Resolution (prior, pre-fix):** future -- new follow-up child
+`neo-double-combine-quirk` / [OPT-HARDEN-3]. The fix should dump-gate the
+failing frame layout (the F-MAJ-1 discipline: probe BEFORE designing the fix;
+STOP if the designed fix is wrong). Recorded so the optimizer-hardening
+planner finds it. See
 `openspec/changes/archive/2026-07-06-neo-array-completion/ship-log.md` (F-1).
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
@@ -805,6 +837,28 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
+- **F-8 / NEO-DOUBLE-COMBINE** — 2+ `double` locals combined in one boolean
+  expression silently misfire. RESOLVED 2026-07-06 (neo-double-combine-quirk,
+  [OPT-HARDEN-3], D4): dump-confirmed the propose-time D2 type-spec candidate
+  REFUTED (R8 dests ARE seeded; opcodes ARE `*_R8`) and the D4 lowering
+  candidate CONFIRMED. The dead `op.Operand3 = localInfos[r1].RefOffset` write
+  in `Optimizer.Neo.cs LowerNeoOffsets`'s immediate-branch case clobbers the
+  high 4 bytes of `OperandDouble`/`OperandLong` (@12-19) via the
+  `[StructLayout(Explicit)]` union (`Operand3` @16 is never read by any
+  immediate-branch arm -- dead but destructive for I8/R8). Copy-prop folds
+  `Ldc_R8` into `Bnei_Un_R8` (reachable) but keeps `Ldc_I8` register-register
+  (`Bne_Un_I8`, I8 immediate form never produced -> unreachable) -- that is
+  the long-works/double-fails discriminator, NOT 8-byte-slot sizing (double +
+  long get byte-identical 8-byte slots). Fix: gate the dead `Operand3` write
+  OFF for I8/R4/R8 immediate-branch forms (single `immLarge` boolean); I4
+  byte-identical. Neo-only (`#if ENABLE_NEO_MODE`); NO
+  `AllocateLocalStackSpaces` change. Accepted-known: F2 -- `immLarge` includes
+  R4 unnecessarily (harmless; R4's `OperandFloat` @8-11 is disjoint from
+  @16). Verification: NeoStep 161/161, NeoOptHard 24/24 (16 K1/F-MAJ-1 + 8
+  new `NeoOptHardTest_Dbl_*`), Legacy-neutral; stash-proven pre-existing; 5
+  probes FAIL-on-HEAD -> PASS; review APPROVED. **The OpCodeR union gotcha**
+  -- 3rd concrete instance (after Step 12 + OPT-HARDEN); handoff §4 warns.
+  See §3 F-8 / NEO-DOUBLE-COMBINE.
 - **N-CGTUN** — `Cgt_Un` divergence comment. RESOLVED 2026-07-06
   (neo-opportunistic-cleanup, comment-only): the `ILIntepreter.Neo.cs` comment
   now names BOTH symmetric sentinel collisions — (a) operand
