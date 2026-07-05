@@ -896,6 +896,41 @@ neutral. Review APPROVED (0 Blocker/Major; 2 Minor/Trivial accepted-known):
 
 See `openspec/changes/archive/2026-07-06-neo-vt-ldflda-inline/ship-log.md`.
 
+### Follow-ups from neo-step13-area4-refandstind (2026-07-06, Step 13 Area 4 4c+4d)
+
+D-13B is now FULLY RESOLVED — Area 4c (CLR-method `ref`/`out` typed-ref
+bridge) + Area 4d (CLR-object `stind`/`ldind`/`stobj`/`ldobj` via field
+identity) shipped alongside the prior 4b/4a (neo-step13-area4). All of Area 4
+is done. Verification: NeoStep 175/175 (161 + 14 probes), NeoOptHard 24/24,
+Legacy-neutral; all 13 functional probes FAIL-on-HEAD -> PASS. Review APPROVED
+(0 Blocker/Major). See
+`openspec/changes/archive/2026-07-06-neo-step13-area4-refandstind/ship-log.md`.
+
+New + noted follow-ups recorded in `.trae/documents/neo-deferred-items.md`:
+
+- **F-9 / NEO-INLINED-RETURN-MOVE (NEW follow-up).** An `int` returned from an
+  inlined IL method is MOVED AS A REFERENCE -> `mStack[intValue]` OOB (the
+  trivial-inliner mis-classifies the return value). Pre-existing (latent);
+  surfaced when the 4d.2 `LdindClrIntFieldPeek` probe needed to defeat it via
+  `int v = slot; return v + 0;`. Route to a future inliner/optimizer
+  follow-up (the trivial-inliner's return-value classification in
+  `JITCompiler.cs`). NOT introduced by 4d; probe-avoidance is the load-bearing
+  evidence the edge is real.
+- **F-7 / NEO-DELEGATE-REFOUT (still OPEN).** 4c's typed-ref bridge is the
+  **IL->CLR** direction (an IL method passes a byref to a CLR method). F-7's
+  `DelegateAdapter.NeoInvokeSub` is the **CLR->IL** callback direction (a
+  delegate Invoke calls back into an IL method taking a byref param). DIFFERENT
+  sites, OPPOSITE directions — the 4c helper does NOT apply. F-7 remains OPEN.
+- **M-1 (`ref arr[i]` to a CLR method NIEs) -- accepted-known.** A byref-param
+  to an array element passed to a CLR method hits `NeoMarshalByrefFieldToSlot`'s
+  Array-branch NIE (the array case is owned by the stind/ldind array arm, not
+  the field accessor). Documented limitation, scoped out (HEAD also could not
+  do this). Route to a future `ldelema`+byref-param follow-up.
+- **M-2 (ref/out write-back mStack growth) -- accepted-known.** Each
+  reference-type ref/out write-back parks a NEW mStack entry (monotonic growth
+  per call). GC-collected; matches the existing reference-param pattern. Not a
+  correctness issue. Flag for a future de-dup pass.
+
 ## Findings -- neo-il-exception-throw (2026-07-05, propose)
 
 Closes **D-IL-EXCEPTION-THROW** (the second half of the exception follow-up
@@ -2755,3 +2790,218 @@ have the SAME latent hazard. Flag for future optimizer-hardening sweeps.
   =` and cross-check against runtime-arm field reads.
 - `neo-deferred-items.md` F-8 row (§2) + entry (§3) updated to
   `RESOLVED 2026-07-06 (neo-double-combine-quirk, D4)`; §4 bullet added.
+
+## Findings -- neo-step13-area4-refandstind (2026-07-06, propose)
+
+**Scoping decision (D1): SHIP 4c + 4d together; F-7 deferred unless it falls
+out at apply (OQ2).** 4c (CLR-method `ref`/`out` typed-ref bridge) and 4d
+(CLR-object `stind`/`ldind`/`stobj`/`ldobj` via field identity) are
+independent plumbing that do NOT share fix sites, but each is small (4c = a
+byref arm in each of 2 readers + a write-back epilogue; 4d = a new `else`
+branch in the stind/ldind/stobj/ldobj arms + a CLR-field-identity stamp in
+`Ldflda`). Together they stay reviewable and form one cohesive
+CLR-binding/byref completion (closes D-13B Area 4 4c+4d). F-7
+(NEO-DELEGATE-REFOUT) depends on the SAME byref-marshaling primitives as 4c
+but lives in a THIRD site (`DelegateAdapter.NeoInvokeSub` /
+`WriteNeoCallSlot`); it is a stretch ONLY if 4c's shared helper factors
+cleanly (OQ2 at apply). Default lean: defer F-7 to its own follow-up child,
+recording that 4c's helper is the ready-made primitive. This mirrors the
+portfolio's serial policy + the 13b "don't bundle the unreviewable" lesson.
+
+**Current-state assessment (code-grounded on HEAD `2ca6614f`).**
+- **4c reflection fallback (`CLRMethod.Invoke(byte*)`, `CLRMethod.cs:407-474`)
+  = SILENT-WRONG.** The param loop has NO `IsByRef` check. For `ref int`,
+  `t = pt.TypeForCLR` strips the byref modifier -> `int` -> reads 4 bytes via
+  `ReadNeoInt32` = the Ref Slot's `objectIndex` half (garbage); CLR
+  `MethodInfo.Invoke` mutates the boxed copy; NO write-back to the caller's
+  local. Same shape for `ref struct`/`out T`.
+- **4c autogen (`AppendArgumentCodeNeo`, `BindingGeneratorExtensions.cs:135`)
+  = SILENT-WRONG + a load-bearing dead-discriminator codegen bug.** The
+  `pt.IsByRef` check at `:173` is DEAD: `pt` is already de-byref'd at `:140`
+  (`var pt = p.IsByRef ? p.GetElementType() : p;`), so `pt.IsByRef` is ALWAYS
+  false. The branch that fires for a byref param is... none — byref params
+  fall through to the primitive/struct/ref dispatch keyed on the ELEMENT type,
+  which mis-reads the 8-byte Ref Slot. The fix MUST key on `p.IsByRef` (the
+  original param type), NOT `pt.IsByRef`. This is the D2 load-bearing detail;
+  recorded so the apply-phase does not re-introduce the dead discriminator.
+  Even when keyed correctly, the current arm body emits `default(...)` + a
+  `// TODO: ByRef ... DEFERRED` comment = silent-wrong, no write-back.
+- **4d = CLEAN Step-17/13b NIE (not InvalidCastException).** A `ref
+  clrObj.field` via `ldflda` -> `stind`/`ldind` reaches the consumer `else`
+  branch (non-frame-native, non-Array), which calls `GetNeoILInstance`
+  (`ILIntepreter.Neo.cs:3890-3903`); that helper throws a clean NIE
+  ("Step 17/13b: field/element access on a CLR object via the IL-instance path
+  is deferred (CLR field-hash plumbing lands in Step 13b)") rather than a raw
+  cast. The `Ldflda` arm (`:877-883`) stamps `(objIdx, field.PrimitiveOffset)`
+  for the CLR operand, but `field.PrimitiveOffset` is meaningless for a CLR
+  field (no `Primitives[]`) — so the fix must ALSO stamp the CLR field
+  identity (D4).
+
+**Design (load-bearing decisions).**
+- **D3 unified field-accessor primitive.** 4c's mStack-object byref
+  (`ref heapIlObj.field` / `ref clrObj.field`) and 4d's `ldflda`-produced
+  CLR-object Ref Slot are the SAME operation (read/write a field via an
+  identity resolved from the Ref Slot offset half). Factoring a shared
+  `ReadNeoFieldRef`/`WriteNeoFieldRef` (or `MarshalNeoByrefArg`) helper keeps
+  both arms small + consistent and gives F-7 a ready-made primitive.
+- **D2 discriminator = the param's type token (`p.IsByRef`/`pt.IsByRef` on the
+  `IType`, `ParameterType.IsByRef` on the CLR `ParameterInfo`).** Per-arm
+  type-token discriminator (13b / opt-harden-2 insight): no per-slot runtime
+  flag stamped at lowering.
+- **D4 CLR-field identity stamp in `Ldflda`.** Option A (PREFERRED): resolve
+  the CLR `FieldInfo` at JIT time + stamp its `MetadataToken`/cache-index into
+  the offset half; consumer resolves token -> `FieldInfo` ->
+  `GetValue`/`SetValue`. Option B fallback (domain-cached list index) if the
+  JIT dump (OQ1) shows the `Ldflda` operand carries only an IL-side `IField`
+  wrapper. IL heap-field stamp (`field.PrimitiveOffset`) unchanged.
+- **D5 write-back gating.** Reflection: gate on `!IsIn || IsOut` (a
+  `readonly`/`in` param is not written back). Autogen: emit write-back for
+  `ref`/`out` (an `in`-only byref is rare; a no-op write-back is harmless).
+  Mirrors Legacy's `shouldFreeParam = hasByRef ? "false" : "true"`.
+- **D6 reflection `ref struct` uses boxed-copy semantics.** CLR
+  `MethodInfo.Invoke` boxes a struct, mutates the box, returns; the write-back
+  re-flattens via `WriteNeoValueType` (the 4b pattern at `CLRMethod.cs:493,517`).
+  OQ3: does `ref int` observe the box mutation through `object[]`, or does it
+  need a separate byref channel? Legacy uses `Reference*` pushees (not an
+  oracle); probe at apply.
+
+**Capability spec home: `neo-byref` (NOT `neo-boxing`).** 4c is the IL-to-CLR
+byref call-ABI; 4d is the stind/ldind/stobj/ldobj consumer + the ldflda field-
+identity producer — all `neo-byref`'s Ref-Slot/byref territory. `neo-boxing`'s
+deferral sentence ("the byref CLR crossing ... and CLR-object stind/ldind via
+field hash remain deferred") is updated at archive to note both are now closed
+by this change (cross-reference, no `neo-boxing` delta needed). Delta =
+`neo-byref` only: 1 ADDED (`CLR-method ref/out parameter marshaling`) + 4
+MODIFIED (`stind/ldind/stobj/ldobj dispatch`; `ldflda/ldarga`; `ref/out
+IL-parameter call ABI`; `Deferred byref sub-cases throw tagged NIE` — 4c/4d
+struck from the deferred list).
+
+**Files to touch (all Neo-only; Legacy `ExecuteR`/`AppendArgumentCode` are the
+REFERENCE, untouched):**
+- `ILRuntime/CLR/Method/CLRMethod.cs:407-474` — reflection byref arm +
+  post-call write-back.
+- `ILRuntime/Runtime/CLRBinding/BindingGeneratorExtensions.cs:135-237` —
+  autogen byref codegen (key on `p.IsByRef`, NOT `pt.IsByRef` — D2) +
+  write-back epilogue helper.
+- `ILRuntime/Runtime/CLRBinding/MethodBindingGenerator.cs:249-310` — wire the
+  write-back epilogue into the autogen wrapper.
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` —
+  `Ldflda` CLR-field-identity stamp (`:877-883`) + stind/ldind/stobj/ldobj
+  CLR-object-field `else` branch (`:3142-3407`) + shared field-accessor
+  helper (D3).
+- `DelegateAdapter.cs` (F-7 stretch only, OQ2).
+- `TestCases/NeoStep13bTest.cs` (4c `NeoStep13_*`) + `NeoStep17Test.cs` (4d
+  `NeoStep17_*`).
+
+**Regression risk: MEDIUM.** 4c touches the shared CLR-binding codegen
+(`*Neo` variants on every Neo CLR call); the `p.IsByRef` discriminator fires
+ONLY for a byref-typed param (every by-value path byte-identical). 4d is an
+additive `else` branch (frame-native + Array + ILTypeInstance paths
+unchanged). Gate: full NeoStep smoke (161/161) + Legacy 518/519 stash-toggle.
+Adversarial probes MANDATORY (Step 17 B1 / OPT-HARDEN K1 / F-MAJ-1 / the
+double-combine-quirk lessons). Biggest design risks: the D2
+dead-discriminator codegen bug (must key on `p.IsByRef`), the D4
+field-identity/JIT-resolvability dump gate (OQ1), and the D6 reflection
+`ref int` boxing channel (OQ3) — all dump-gated at apply, STOP-if-wrong
+discipline binding.
+
+## Findings -- neo-step13-area4-refandstind (apply, 2026-07-06)
+
+**RESOLVED.** 4c (CLR-method ref/out typed-ref bridge) + 4d (CLR-object
+stind/ldind/stobj/ldobj via field identity) shipped. Neo smoke 175/175 (161
+baseline + 14 new probes: 8 reflection 4c + 1 NIE + 5 4d). Legacy-neutral
+(plain Debug builds clean; new probes pass on Legacy; the 8 Legacy NeoStep
+failures are all pre-existing). Working tree UNCOMMITTED.
+
+**Scoping decision: 4c + 4d shipped; F-7 (delegate ref/out) DEFERRED.** 4c
+and 4d are independent plumbing that share the D3 field-accessor primitive.
+F-7 lives in a THIRD site (`DelegateAdapter.NeoInvokeSub` /
+`WriteNeoCallSlot`) in the CLR->IL callback direction -- the 4c helper (IL->CLR
+deref-at-copy-site) does NOT trivially route through it. F-7 stays OPEN (the
+shipper records it in neo-deferred-items at archive).
+
+**Current-state assessment confirmed (both gaps real + load-bearing).**
+- 4c SILENT-WRONG in BOTH readers (the reflection fallback read the byref Ref
+  Slot's objectIndex half as the value + no write-back; the autogen emitted
+  `default(...)` for the dead `pt.IsByRef` arm + no write-back).
+- 4d a clean NIE (`GetNeoILInstance` threw for a CLR-object-field byref).
+
+**DUMP-GATE D4 + D6 RESOLVED (OPT-HARDEN K1 / double-combine-quirk discipline
+held).**
+- **D4 (FieldInfo at JIT): CONFIRMED, NO JIT change needed.** The `Ldflda` arm
+  already stamps `fieldPrimOff = type.GetFieldIndex(token)` = the CLR FieldInfo
+  hash for a CLR declaring type. At runtime, `((CLRType)appdomain.GetType
+  (obj.GetType())).GetFieldValue(hash, obj)` resolves it. The 4d consumer adds a
+  `NeoIsClrObject` discriminator branch (before the ILTypeInstance fallback)
+  routing to `NeoReadClrObjectField`/`NeoWriteClrObjectField` (CLRType.
+  GetFieldValue/SetFieldValue by hash). Additive; IL heap-field + Array +
+  frame-native byte-identical.
+- **D6 (reflection `ref int` boxing): NOT APPLICABLE.** The area4b blocker
+  applies identically: the readers (`CLRMethod.Invoke(byte*)` + the autogen
+  redirect) only receive `targetBase` (callee param region), NOT the caller
+  `frameBase` (threading it would break the checked-in delegate signature). So
+  4c uses the SAME deref-at-copy-site mechanism as area4b -- the reflection
+  `ref int` boxing channel never arises (the reader reads FLAT BYTES, not a
+  byref; CLR mutates the box; the reflection write-back re-flattens `param[i]`
+  into the dest slot; `CopyNeoCallThisBack` propagates it).
+
+**The D2 dead-discriminator (HIGHEST 4c risk) FIXED, keyed on `p.IsByRef`.**
+The old `AppendArgumentCodeNeo` `pt.IsByRef` arm was DEAD (`pt` is de-byref'd at
+the top). The fix keys the WRITE-BACK epilogue (`AppendNeoWriteBackCode`) on
+`p.IsByRef` (the raw ParameterType). The READ dispatches on the element type
+(`pt`). Confirmed via the dump-noise-gated diagnostic (the byref codegen fires
+for `ref int`; by-value byte-identical).
+
+**KEY IMPLEMENTATION DEVIATION from the design's literal D2/D3 (reader-deref):
+4c uses DEREF-AT-COPY-SITE (the area4b pattern).** The design assumed the
+readers deref the byref; they lack the caller frameBase (area4b blocker). The
+optimizer call-lowering sizes a CLR-callee byref param's dest by ELEMENT type +
+flags it; `CopyNeoCallArguments` derefs (frame-native CopyBlock OR mStack-
+object via the field accessor); the reader reads flat bytes; `CopyNeoCallThisBack`
+reverse-copies for ref/out (gated `!IsIn || IsOut`). The IL-callee byref path
+is UNCHANGED (its callee region keeps the 8-byte Ref Slot, read by ExecuteNeo
+as a byref local -- the Step 17 path; the byref flag fires only for CLR
+callees).
+
+**D3 unified field accessor: `NeoMarshalByrefFieldToSlot` (read+write).** Used
+by BOTH 4c's mStack-object byref deref AND 4d's stind/ldind CLR-object field
+path (via the `NeoReadClrObjectField`/`NeoWriteClrObjectField` thin wrappers).
+ILTypeInstance -> Primitives[off]; CLR object -> GetFieldValue/SetFieldValue
+by hash; Array -> NIE-tagged (owned by the stind/ldind array arm).
+
+**F-7 routing: DEFERRED.** The helper is IL->CLR (deref at the IL call site);
+F-7 is CLR->IL (WriteNeoCallSlot in DelegateAdapter.NeoInvokeSub). Different
+direction + site; the helper does NOT trivially route through. F-7 stays OPEN.
+
+**Two pre-existing gaps surfaced + addressed/avoided.**
+1. **Null-ref-param reflection read (FIXED in passing).** `CLRMethod.Invoke`'s
+   reference-param read did `mStack[idx]` with no null check; a null ref param
+   (mStack index -1) threw OOB. Fixed to materialize null for idx<0. Surfaced
+   by the 4d probes passing a null string to `MakeArea4dHolder`.
+2. **Inlined-IL-method-return-move misclassification (AVOIDED, not fixed).**
+   An inlined IL method returning an `ldind.i4` result triggers a return-Move
+   that moves the int as a reference (mStack[intValue] OOB). Unrelated to 4d
+   (the inliner's return-value classification). The 4d.2 probe drives the
+   ldflda;ldind path via a non-trivial helper body (`int v = slot; return v +
+   0;`) that defeats the trivial-inliner. Flagged as a separate follow-up.
+
+**CLI filter + dump-noise gotchas re-affirmed.** The ILRuntimeTestCLI name
+filter is a plain `Contains` (no regex/`|`); run each probe name separately.
+The JIT-dump flood from `OUTPUT_JIT_RESULT` is useless for tracing a specific
+arm -- gate a temp `Console.WriteLine` INSIDE the runtime arm (fires only when
+that arm executes for the probe), run the single probe, then remove it. This
+was how the byref-slot shape + the D6 frameBase-blocker + the reflection
+read-arm mis-dispatch were confirmed.
+
+**Lesson re-affirmed (OPT-HARDEN K1 / double-combine-quirk / vt-this-addr).**
+The propose-time design assumed reader-deref; the apply-time DUMP refuted it
+(the readers lack the caller frameBase). The dump-gated discipline held: probe
+the IR + Ref Slot contents BEFORE designing, STOP if the designed fix is wrong,
+and reuse the area4b deref-at-copy-site pattern instead of forcing a guessed
+reader-deref. The fix deviated from the design's mechanism but BOTH the
+propose-time reader-deref and the area4b copy-site approaches were testable
+from the dump -- the process worked exactly as designed.
+
+**Spec deltas (the shipper syncs at archive).** The `neo-byref` MODIFIED
+deltas: 4c (CLR-method ref/out call-ABI bridge) + 4d (CLR-object stind/ldind/
+stobj/ldobj via field identity) delivered. F-7 (delegate ref/out) stays OPEN.

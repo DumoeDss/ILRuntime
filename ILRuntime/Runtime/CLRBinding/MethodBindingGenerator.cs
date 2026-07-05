@@ -432,6 +432,13 @@ namespace ILRuntime.Runtime.CLRBinding
                 i.ReturnType.GetReturnValueCodeNeo(sb);
             }
 
+            // Step 13 Area 4c: the autogen byref write-back epilogue. Emits, for
+            // each ref/out param, a post-call store of the (possibly-mutated) local
+            // back into the callee param region (CopyNeoCallThisBack then propagates
+            // it to the caller). Mirrors the reflection fallback's write-back.
+            if (!isMultiArr)
+                sb.AppendNeoWriteBackCode(param, isMultiArr);
+
             sb.AppendLine("        }");
         }
 

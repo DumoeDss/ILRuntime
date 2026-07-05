@@ -693,5 +693,88 @@ namespace TestCases
             int got = ReadPointX(ref n);
             if (got != 321) { int z = 1; int d = 0; int _ = z / d; }
         }
+
+        // ---- Step 13 Area 4d probes: stind/ldind/stobj/ldobj on a byref to a
+        //      CLR OBJECT field via field identity. Before 4d the Ldflda arm
+        //      stamped field.PrimitiveOffset (meaningless for a CLR object) and
+        //      the stind/ldind consumer threw a clean NIE. Each probe is a
+        //      FAIL-on-HEAD stash-toggle -> PASS-after guard. ----
+
+        // 4d.1 -- ldflda clrObj.intField; stind_i4 write. The CLR object's int
+        //         field is mutated via a managed ref produced by ldflda.
+        static void StindClrIntField(ref int slot, int v) { slot = v; }
+
+        public static void NeoStep17_StindClrObjectIntField()
+        {
+            ILRuntimeTest.TestFramework.TestCLRBinding.Area4dHolder h =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeArea4dHolder(0, "seed");
+            // Mutate the CLR object's int field via ldflda + stind.
+            StindClrIntField(ref h.intField, 7173);
+            int got = ILRuntimeTest.TestFramework.TestCLRBinding.ReadArea4dIntField(h);
+            if (got != 7173) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4d.2 -- ldflda; ldind_i4 read of a CLR object's int field. The C#
+        //        compiler lowers `ref` reading helpers; to exercise the ldflda;
+        //        ldind.i4 path on a CLR-object field WITHOUT an inlined IL-method
+        //        return move (a pre-existing inliner edge), this probe writes the
+        //        field via stind (4d.1 path) then reads it back via ldind into a
+        //        frame local through a non-trivial helper, and compares.
+        static int LdindClrIntFieldPeek(ref int slot) { int v = slot; return v + 0; }
+
+        public static void NeoStep17_LdindClrObjectIntField()
+        {
+            ILRuntimeTest.TestFramework.TestCLRBinding.Area4dHolder h =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeArea4dHolder(7, "seed");
+            // Write via stind (exercises the stind CLR-object path).
+            StindClrIntField(ref h.intField, 99);
+            // Read via ldind (exercises the ldind CLR-object path).
+            int got = LdindClrIntFieldPeek(ref h.intField);
+            if (got != 99) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4d.3 -- stind_ref/ldind_ref on a CLR object's reference-type field
+        //         (string). The field-hash path must route the managed ref.
+        static void StindClrRefField(ref string slot, string v) { slot = v; }
+        static string LdindClrRefField(ref string slot) { return slot; }
+
+        public static void NeoStep17_ClrObjectRefFieldReadWrite()
+        {
+            ILRuntimeTest.TestFramework.TestCLRBinding.Area4dHolder h =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeArea4dHolder(0, "initial");
+            StindClrRefField(ref h.refField, "updated");
+            string got = LdindClrRefField(ref h.refField);
+            int len = ILRuntimeTest.TestFramework.TestCLRBinding.StringLength(got);
+            if (len != "updated".Length) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4d.4 -- read-after-write roundtrip: write then read back the same
+        //         CLR int field, then verify the underlying object's state.
+        public static void NeoStep17_ClrObjectFieldRoundTrip()
+        {
+            ILRuntimeTest.TestFramework.TestCLRBinding.Area4dHolder h =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeArea4dHolder(1, "seed");
+            StindClrIntField(ref h.intField, 500);
+            int r1 = LdindClrIntFieldPeek(ref h.intField);
+            StindClrIntField(ref h.intField, r1 + 250);
+            int r2 = ILRuntimeTest.TestFramework.TestCLRBinding.ReadArea4dIntField(h);
+            if (r1 != 500 || r2 != 750) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // 4d.5 -- a CLR-object-field ref passed to a 4c CLR method (4c+4d
+        //         interaction). The byref PARAM's Ref Slot points at a CLR
+        //         object's field (objectIndex >= 0); the 4c marshal must deref
+        //         through the field accessor (the mStack-object case).
+        public static void NeoStep17_ClrObjectFieldRefToClrMethod()
+        {
+            ILRuntimeTest.TestFramework.TestCLRBinding.Area4dHolder h =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeArea4dHolder(0, "seed");
+            // The 4c CLR method BumpRefInt takes ref int; passing a CLR object
+            // field's address exercises both 4d (ldflda on a CLR object) and
+            // 4c's mStack-object byref deref in one round-trip.
+            ILRuntimeTest.TestFramework.TestCLRBinding.BumpRefInt(ref h.intField);
+            int got = ILRuntimeTest.TestFramework.TestCLRBinding.ReadArea4dIntField(h);
+            if (got != 10) { int z = 1; int d = 0; int _ = z / d; }
+        }
     }
 }

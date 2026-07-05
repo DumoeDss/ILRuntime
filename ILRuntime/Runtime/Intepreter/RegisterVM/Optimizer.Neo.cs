@@ -1234,7 +1234,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     // via GetPrimitiveSize (AllocateNeoCallParamSlot's IsValueType
                                     // branch), so primitives/enums/IL-VTs/refs are byte-identical and
                                     // only the CLR-struct branch changes.
-                                    paramInfos[dstIndex] = AllocateNeoCallParamSlot(paramType, ref curPrim, ref curRef, domain);
+                                    //
+                                    // Step 13 Area 4c: a CLR-method byref param (ref/out/in) arrives
+                                    // as an 8-byte Ref Slot in the source register. The readers
+                                    // (CLRMethod.Invoke / the autogen wrapper) only see the callee
+                                    // param region (targetBase), NOT the caller frameBase, so they
+                                    // CANNOT dereference the byref (the area4b finding). Instead size
+                                    // the dest slot by the ELEMENT type (de-byref) and flag the slot
+                                    // so CopyNeoCallArguments derefs the byref at the copy site (the
+                                    // 4b PrimitiveByRefSrc pattern, extended to params + the mStack-
+                                    // object sub-case). The reader then reads flat bytes exactly
+                                    // like a by-value param of the element type. A by-value param is
+                                    // unaffected (its type is not IsByRef -> element == itself).
+                                    if (paramType != null && paramType.IsByRef)
+                                    {
+                                        var elemType = paramType.ElementType;
+                                        paramInfos[dstIndex] = AllocateNeoCallParamSlot(elemType, ref curPrim, ref curRef, domain);
+                                    }
+                                    else
+                                        paramInfos[dstIndex] = AllocateNeoCallParamSlot(paramType, ref curPrim, ref curRef, domain);
                                 }
                             }
 
@@ -1246,6 +1264,15 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 List<ushort> refSrc = new List<ushort>();
                                 List<ushort> refDst = new List<ushort>();
                                 List<bool> primByRef = new List<bool>();
+                                List<bool> primByRefWriteBack = new List<bool>();
+                                List<System.Type> primByRefElemType = new List<System.Type>();
+                                // Step 13 Area 4c: the CLR ParameterInfo[] for the
+                                // IsIn/IsOut write-back gate. Null for an IL callee
+                                // (the byref-param flag only fires for CLR callees;
+                                // an IL callee's byref params keep the 8-byte Ref Slot
+                                // in the callee region, read by ExecuteNeo as a byref
+                                // local -- the Step 17 path, byte-identical).
+                                System.Reflection.ParameterInfo[] clrParams = (targetMethod is ILRuntime.CLR.Method.CLRMethod) ? ((ILRuntime.CLR.Method.CLRMethod)targetMethod).ParametersCLR : null;
 
                                 for (int p = 0; p < pCnt; p++)
                                 {
@@ -1273,12 +1300,50 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                              || (targetMethod.DeclearingType.TypeForCLR != null
                                                  && targetMethod.DeclearingType.TypeForCLR.IsEnum));
 
+                                    // Step 13 Area 4c: a CLR-method byref PARAM. The
+                                    // param's source register holds an 8-byte Ref Slot
+                                    // (frame-native or mStack-object field). Flag it so
+                                    // CopyNeoCallArguments derefs at the copy site (the
+                                    // dest is sized by the element type per the sizing
+                                    // loop above). `dstIsVtThisSlot` (4b) is the
+                                    // frame-native-only subset; the param case adds the
+                                    // mStack-object sub-case (handled at runtime by the
+                                    // objIdx discriminator in CopyNeoCallArguments).
+                                    int paramLogical = p - ((targetMethod.HasThis && op.Code != OpCodeREnum.Newobj) ? 1 : 0);
+                                    bool dstIsByRefParam = false;
+                                    bool byRefWriteBack = false;
+                                    System.Type byRefElemType = null;
+                                    if (!dstIsVtThisSlot && clrParams != null && paramLogical >= 0 && paramLogical < clrParams.Length)
+                                    {
+                                        var pinfo = clrParams[paramLogical];
+                                        if (pinfo.ParameterType.IsByRef)
+                                        {
+                                            dstIsByRefParam = true;
+                                            // D5: write back for ref/out, NOT for in-only.
+                                            // ref = neither IsIn-only nor IsOut; out = IsOut;
+                                            // in = IsIn && !IsOut.
+                                            byRefWriteBack = !pinfo.IsIn || pinfo.IsOut;
+                                            // The element CLR Type, for the mStack-object
+                                            // field deref (a `ref obj.field` shape). Null
+                                            // when the byref is frame-native (the byte
+                                            // width alone suffices there). Source it from
+                                            // the CLR ParameterInfo (de-byref'd element).
+                                            var elemClr = pinfo.ParameterType.GetElementType();
+                                            byRefElemType = elemClr;
+                                        }
+                                    }
+                                    bool dstByRef = dstIsVtThisSlot || dstIsByRefParam;
+
                                     if (dstInfo.Size > 0)
                                     {
                                         primSrc.Add((ushort)srcInfo.Offset);
                                         primDst.Add((ushort)dstInfo.Offset);
                                         primSize.Add((ushort)dstInfo.Size);
-                                        primByRef.Add(dstIsVtThisSlot);
+                                        primByRef.Add(dstByRef);
+                                        // 4b VT `this` always writes back (a ctor / mutating
+                                        // instance method); 4c keys on the ref/out gate.
+                                        primByRefWriteBack.Add(dstIsVtThisSlot || byRefWriteBack);
+                                        primByRefElemType.Add(byRefElemType);
                                     }
                                     for (int r = 0; r < dstInfo.RefCount; r++)
                                     {
@@ -1286,7 +1351,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                         refDst.Add((ushort)(dstInfo.RefOffset + r));
                                     }
                                 }
-                                
+
                                 NeoCallParamMap map = new NeoCallParamMap();
                                 if (primSrc.Count > 0)
                                 {
@@ -1294,6 +1359,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     map.PrimitiveDst = primDst.ToArray();
                                     map.PrimitiveSize = primSize.ToArray();
                                     map.PrimitiveByRefSrc = primByRef.ToArray();
+                                    map.PrimitiveByRefWriteBack = primByRefWriteBack.ToArray();
+                                    map.PrimitiveByRefElemType = primByRefElemType.ToArray();
                                 }
                                 if (refSrc.Count > 0)
                                 {

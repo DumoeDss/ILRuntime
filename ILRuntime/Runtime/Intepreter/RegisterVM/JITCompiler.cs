@@ -39,7 +39,29 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // `new VT(args)` to `ldloca; call`, so the `this` source is always a
         // byref). The dest (callee param region) receives the struct's flat
         // bytes, so the readers read it exactly like a by-value struct param.
+        //
+        // Step 13 Area 4c: ALSO set for a CLR-method byref PARAM (ref/out/in).
+        // A byref param source holds an 8-byte Ref Slot that may be frame-native
+        // (-1, off) OR an mStack-object field (objIdx >= 0, fieldHash); the copy
+        // derefs BOTH shapes (the mStack-object sub-case routes through the field
+        // accessor). The dest (callee param region) is sized by the element type
+        // (de-byref'd), so the reader reads flat bytes like a by-value param of
+        // the element type.
         public bool[] PrimitiveByRefSrc;
+        // Step 13 Area 4c: per-prim-slot write-back gate. When true, the post-
+        // call reverse copy (CopyNeoCallWriteBack) writes the (possibly-mutated)
+        // dest slot bytes BACK through the source byref. Set for a `ref`/`out`
+        // param (gate on !IsIn || IsOut) and for a mutating VT `this` slot. NOT
+        // set for an `in`-only param (CLR contract forbids mutation). Absent for
+        // any by-value param (no byref to write through).
+        public bool[] PrimitiveByRefWriteBack;
+        // Step 13 Area 4c: per-prim-slot element CLR Type. For a byref PARAM
+        // whose Ref Slot is mStack-object (a `ref obj.field` shape), the copy
+        // helper must read/write the FIELD via the field accessor and flatten/
+        // re-box per the element type. The element type is captured here (null
+        // for a frame-native byref -- the byte width alone suffices there, and
+        // null for a non-byref slot).
+        public System.Type[] PrimitiveByRefElemType;
     }
 #endif
     struct StackSlotInfo

@@ -426,5 +426,136 @@ namespace TestCases
             }
             // (No further assertion -- success on Legacy, NIE on Neo, both valid.)
         }
+
+        // ---- Step 13 Area 4c probes: a CLR method with ref/out params (the
+        //      typed-ref bridge). These route through the reflection fallback
+        //      (TestCLRBinding has no autogen redirect for BumpRefInt etc.).
+        //      Before 4c the byref param's 8-byte Ref Slot was read as the raw
+        //      value (silent-wrong) and never written back. Each probe is a
+        //      FAIL-on-HEAD stash-toggle -> PASS-after guard. ----
+
+        // 4c.1 -- ref int mutation propagates to the caller's local.
+        public static void NeoStep13_RefIntMutation()
+        {
+            int x = 5;
+            ILRuntimeTest.TestFramework.TestCLRBinding.BumpRefInt(ref x);
+            if (x != 15)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.2 -- out int assignment observed by the caller.
+        public static void NeoStep13_OutIntAssign()
+        {
+            ILRuntimeTest.TestFramework.TestCLRBinding.ProduceOutInt(out int r);
+            if (r != 4242)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.3 -- ref to a pure-primitive CLR struct (no binder -> reflection
+        //         fallback). The struct mutation must propagate to the caller's
+        //         local. Sum the fields after the call to observe.
+        public static void NeoStep13_RefStructMutation()
+        {
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(10f, 20f, 30f);
+            ILRuntimeTest.TestFramework.TestCLRBinding.BumpRefStruct(ref v);
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v);
+            if (r != 66) // (10+1)+(20+2)+(30+3) = 66
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.4 -- out reference-type (string). The caller observes the assigned
+        //         reference. Read back via StringLength to avoid an IL-side
+        //         ref-field read.
+        public static void NeoStep13_OutRefTypeAssign()
+        {
+            ILRuntimeTest.TestFramework.TestCLRBinding.ProduceOutString(out string s);
+            int len = ILRuntimeTest.TestFramework.TestCLRBinding.StringLength(s);
+            if (len != "from-clr-out".Length)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.5 -- multiple byref params in one call (ref int + out int). Both
+        //         must marshal independently.
+        public static void NeoStep13_MultipleByRefParams()
+        {
+            int a = 1;
+            ILRuntimeTest.TestFramework.TestCLRBinding.BumpRefAndProduceOut(ref a, out int b);
+            if (a != 101 || b != 999)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.6 -- `in`-only param: the call observes the value (returns v+5)
+        //         but the caller's local is UNCHANGED (write-back gated off).
+        public static void NeoStep13_InOnlyNotWrittenBack()
+        {
+            int x = 7;
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.ObserveInOnly(in x);
+            if (r != 12 || x != 7) // observed 12; local unchanged at 7
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.7 -- non-byref CLR method regression (byte-identical control).
+        //         The discriminator must NOT fire for a plain by-value param.
+        public static void NeoStep13_NonByRefRegression()
+        {
+            int r = ILRuntimeTest.TestFramework.TestCLRBinding.PlainByValue(21);
+            if (r != 42)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.8 -- read-after-intervening-heap-writes: a ref int call, then a
+        //         heap write to an unrelated object, then re-read the mutated
+        //         local. Guards against the write-back landing on the wrong slot
+        //         after intervening mStack churn.
+        public static void NeoStep13_RefThenInterveningHeapWrite()
+        {
+            int x = 100;
+            ILRuntimeTest.TestFramework.TestCLRBinding.BumpRefInt(ref x); // x = 110
+            // Intervening heap allocation + write (churn the mStack).
+            ILRuntimeTest.TestFramework.TestVector3NoBinding v =
+                ILRuntimeTest.TestFramework.TestCLRBinding.MakeTestVector3NoBinding(1f, 2f, 3f);
+            int sum = ILRuntimeTest.TestFramework.TestCLRBinding.SumTestVector3NoBindingFields(v);
+            if (x != 110 || sum != 6)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // 4c.9 -- NIE probe: a CLR value type WITH a reference field and no
+        //         binder, passed by ref. The reflection fallback's byref read
+        //         derefs to flat bytes; a struct WITH reference fields cannot be
+        //         materialized from flat bytes (GC refs unmappable without a
+        //         binder) -> a clearly-tagged NIE on Neo. Accept EITHER outcome
+        //         (Legacy's StackObject binder path handles it; Neo NIEs).
+        public static void NeoStep13_RefClrStructWithRefNIE()
+        {
+            try
+            {
+                ILRuntimeTest.TestFramework.TestClrStructWithRef s =
+                    new ILRuntimeTest.TestFramework.TestClrStructWithRef(5, "hi");
+                ILRuntimeTest.TestFramework.TestCLRBinding.BumpRefClrStructWithRef(ref s);
+            }
+            catch (System.NotImplementedException)
+            {
+                // Neo's clearly-tagged NIE -- acceptable (struct with ref field,
+                // no binder, passed by ref: GC refs unmappable from flat bytes).
+            }
+            // (No further assertion -- success on Legacy, NIE on Neo, both valid.)
+        }
     }
 }

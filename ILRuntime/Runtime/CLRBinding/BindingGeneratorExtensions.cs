@@ -148,6 +148,16 @@ namespace ILRuntime.Runtime.CLRBinding
                 varName = (name != null ? "@" + name : "a" + idx);
             }
 
+            // Step 13 Area 4c: capture the dest-slot offset at read time so the
+            // post-call write-back epilogue (AppendNeoWriteBackCode) can store a
+            // ref/out param's mutated value back into the callee param region.
+            // Emitted for every param (cheap); the write-back is gated on p.IsByRef
+            // + the ref/out modifier in the epilogue.
+            if (!isMultiArr)
+            {
+                sb.AppendLine($"            int __off_{idx} = __curPrim;");
+            }
+
             if (pt.IsValueType && !pt.IsPrimitive && valueTypeBinders != null && valueTypeBinders.Contains(pt))
             {
                 // Step 13b (D5): CLR struct param WITH a registered ValueTypeBinder.
@@ -170,10 +180,18 @@ namespace ILRuntime.Runtime.CLRBinding
             }
             else
             {
-                if (pt.IsByRef || pt == typeof(System.TypedReference))
+                // Step 13 Area 4c (D2): the `pt.IsByRef` arm that was here is DEAD
+                // (`pt` is de-byref'd at the top, so pt.IsByRef is always false).
+                // A byref PARAM is now handled by the per-param write-back epilogue
+                // (AppendNeoWriteBackCode) keyed on `p.IsByRef`, and the READ below
+                // dispatches on the element type (`pt`) exactly like a by-value
+                // param -- the dest slot is sized by the element type + deref'd by
+                // CopyNeoCallArguments. The `pt == typeof(TypedReference)` shape
+                // stays a default+TODO (genuinely unsupported).
+                if (pt == typeof(System.TypedReference))
                 {
                     sb.AppendLine($"            {realClsName} {varName} = default({realClsName});");
-                    sb.AppendLine("            // TODO: ByRef parameters in Neo (CLR-method ref/out: Step 13b DEFERRED -- needs a typed-reference bridge).");
+                    sb.AppendLine("            // TODO: TypedReference param in Neo (rare; not a byref marshal).");
                 }
                 else if (pt.IsValueType && !pt.IsPrimitive && !pt.IsEnum)
                 {
@@ -232,6 +250,45 @@ namespace ILRuntime.Runtime.CLRBinding
                             sb.AppendLine($"            {realClsName} {varName} = ({realClsName})ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);");
                         }
                     }
+                }
+            }
+        }
+
+        // Step 13 Area 4c: the autogen write-back epilogue. After the CLR call, for
+        // each ref/out param, write the (possibly-mutated) local back into the
+        // callee param region at the offset captured in AppendArgumentCodeNeo
+        // (__off_<idx>). The post-call reverse copy (CopyNeoCallThisBack) then
+        // propagates it to the caller's local/field. The element-type write mirrors
+        // the reflection path's write-back (primitive/enum/struct via
+        // WriteNeoValueType; reference via the mStack index). An `in`-only param is
+        // NOT written back (CLR contract forbids mutation -- the gate).
+        internal static void AppendNeoWriteBackCode(this StringBuilder sb, System.Reflection.ParameterInfo[] param, bool isMultiArr)
+        {
+            if (param == null)
+                return;
+            for (int j = 0; j < param.Length; j++)
+            {
+                var p = param[j];
+                if (!p.ParameterType.IsByRef)
+                    continue;
+                // D5: write back for ref/out, NOT for in-only.
+                if (p.IsIn && !p.IsOut)
+                    continue;
+                var elem = p.ParameterType.GetElementType();
+                int idx = j + 1; // AppendArgumentCodeNeo uses idx = j + 1 (slot 0 = this)
+                string varName = isMultiArr ? ("a" + idx) : ("@" + p.Name);
+                string offVar = "__off_" + idx;
+                if (elem.IsValueType)
+                {
+                    string szVar = "__wb_sz_" + idx;
+                    sb.AppendLine($"            int {szVar} = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({elem.FullName}));");
+                    sb.AppendLine($"            ILIntepreter.WriteNeoValueType({varName}, __frameBase + {offVar}, {szVar});");
+                }
+                else
+                {
+                    // reference-type element: store the mStack index (park the object).
+                    sb.AppendLine($"            if ({varName} == null) *(int*)(__frameBase + {offVar}) = -1;");
+                    sb.AppendLine($"            else {{ int __wb_idx = __mStack.Count; __mStack.Add({varName}); *(int*)(__frameBase + {offVar}) = __wb_idx; }}");
                 }
             }
         }

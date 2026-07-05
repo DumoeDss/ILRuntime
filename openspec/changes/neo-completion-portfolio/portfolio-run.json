@@ -47,8 +47,9 @@
       "completedDate": "2026-07-05", "smoke": "Neo 117/117 + NeoOptHard 16/16 + Legacy-neutral", "review": "APPROVE (0 Blocker/Major; M1/M2/T1 accepted-known-Minor); F-3 closed (direct-call); 4c/4d -> neo-step13-area4-refandstind"
     },
     "neo-step13-area4-refandstind": {
-      "pipeline": "small-feature", "wave": 2, "scope": "[D-13B Area4 4c+4d] CLR-method ref/out (typed-ref bridge) + CLR-object stind/ldind via field hash",
-      "prerequisites": ["neo-step13-area4"], "dependsOn": ["neo-step13-area4"], "status": "pending", "capability": "neo-boxing"
+      "pipeline": "small-feature", "wave": 2, "scope": "[D-13B Area4 4c+4d] CLR-method ref/out typed-ref bridge + CLR-object stind/ldind/stobj/ldobj via field identity",
+      "prerequisites": ["neo-step13-area4"], "dependsOn": ["neo-step13-area4"], "status": "done", "capability": "neo-byref",
+      "completedDate": "2026-07-06", "smoke": "Neo 175/175 + NeoOptHard 24/24 + Legacy-neutral", "review": "APPROVE (0 Blocker/Major; D-13B fully resolved; F-9 inlined-return-move + F-7 delegate-ref/out follow-ups; M-1/M-2 accepted-known)"
     },
     "neo-step17-completion": {
       "pipeline": "small-feature", "wave": 2, "scope": "[D-CONSTRAINED a/d/M2] constrained.-on-VT dispatch (Option F') + CLR-array ldelema + F-5 boxed-source NIE-guard + F1 IL-VT-inherited-method fix",
@@ -123,7 +124,7 @@
     }
   },
   "runnableFrontier": ["neo-step13-area4", "neo-step19-delegate", "neo-array-completion", "neo-peephole-isinst", "neo-opportunistic-cleanup", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

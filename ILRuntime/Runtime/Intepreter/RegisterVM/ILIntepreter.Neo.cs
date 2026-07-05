@@ -311,20 +311,25 @@ namespace ILRuntime.Runtime.Intepreter
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void CopyNeoCallArguments(ref NeoCallParamMap map, byte* frameBase, byte* targetBase)
+        static void CopyNeoCallArguments(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain)
         {
             if (map.PrimitiveSize == null)
                 return;
 
             bool[] byRefSrc = map.PrimitiveByRefSrc;
+            System.Type[] byRefElemType = map.PrimitiveByRefElemType;
             for (int i = 0; i < map.PrimitiveSize.Length; i++)
             {
-                // Step 13 Area 4b: a CLR value-type instance `this` source slot
-                // holds an 8-byte frame-native byref (Ref Slot (-1, structFrameOff)
-                // produced by ldloca). The dest slot is the struct's flat-byte
-                // width, so DEREFERENCE the byref (read the offset half, copy the
-                // struct bytes from frameBase + that offset) instead of copying
-                // the 8 byref bytes verbatim. Other slots copy normally.
+                // Step 13 Area 4b / 4c: a byref source slot holds an 8-byte Ref Slot
+                // (objectIndex, offset). The dest slot is sized by the REFERENT type
+                // (a struct `this` for 4b; the byref param's element type for 4c), so
+                // DEREFERENCE the byref and copy the referent bytes into the dest
+                // instead of copying the 8 byref bytes verbatim. The byref may be:
+                //  - frame-native (objIdx == -1): offset is an absolute frame byte
+                //    offset; copy PrimitiveSize[i] bytes from frameBase + offset.
+                //  - mStack-object field (objIdx >= 0): a `ref obj.field` shape; read
+                //    the field via the field accessor (CLR object -> GetFieldValue by
+                //    hash; ILTypeInstance -> Primitives[off]) and flatten into dest.
                 if (byRefSrc != null && i < byRefSrc.Length && byRefSrc[i])
                 {
                     int objIdx = *(int*)(frameBase + map.PrimitiveSrc[i]);
@@ -336,16 +341,11 @@ namespace ILRuntime.Runtime.Intepreter
                     }
                     else
                     {
-                        // F-5 / NEO-CALLARG-BOXED-SRC closure (Step 17 D-CONSTRAINED):
-                        // a boxed-struct `this` source (objIdx >= 0) is NOT produced by
-                        // the constrained.callvirt box-once (that path bypasses this copy
-                        // and writes the boxed receiver's mStack index directly into the
-                        // callee slot). Should a future caller route a boxed source
-                        // through PrimitiveByRefSrc, `offset` here would be an mStack
-                        // FIELD offset -- NOT a struct address -- so a CopyBlock would
-                        // SILENTLY mis-copy. Guard it explicitly (no silent mis-copy).
-                        throw new NotImplementedException(
-                            "Step 17: a boxed-struct `this` source via PrimitiveByRefSrc is not handled (constrained box-once bypasses this path; the mStack field offset is not a struct address)");
+                        // 4c mStack-object field deref. `offset` is the field hash (CLR
+                        // object) or the Primitives byte offset (ILTypeInstance). Read
+                        // the field as a boxed object and flatten into the dest slot.
+                        System.Type elemType = (byRefElemType != null && i < byRefElemType.Length) ? byRefElemType[i] : null;
+                        NeoMarshalByrefFieldToSlot(appdomain, mStack, objIdx, offset, elemType, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i], isWrite: false);
                     }
                 }
                 else
@@ -355,28 +355,127 @@ namespace ILRuntime.Runtime.Intepreter
             }
         }
 
-        // Step 13 Area 4b: post-call reverse copy. A CLR value-type instance `this`
-        // MUTATING INSTANCE METHOD call mutates `instance` in the reflection fallback
-        // (CLR MethodInfo.Invoke mutates the boxed struct in place), which writes the
-        // mutated flat bytes back into the callee param region's `this` slot. This
-        // reverse copy propagates those bytes back to the caller's in-frame local
-        // (the byref's target), so `v.Reset()` lands its mutation in the caller's
-        // local -- matching CLR `ref this` struct semantics. (Non-mutating calls copy
-        // the same bytes back -- a harmless no-op. The autogen path does NOT write
-        // back into the param region, so its mutation does not propagate -- the
-        // documented byref limitation; the boxed-`this` re-box is the 4a follow-up.)
-        // NOTE (F-5 / Step 17): this covers MUTATING INSTANCE METHODS, NOT
-        // constructors -- the newobj path (VT-THIS-ADDR) performs its own slot-0 ->
-        // caller-dest copy-back in ExecuteNeo's Ret arm and does NOT invoke this.
-        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase)
+        // Step 13 Area 4c: the shared byref-field marshal (D3 unification). Reads
+        // OR writes a referent through a Ref Slot (objIdx, off) where the referent
+        // is a FIELD of an mStack object. The object is a CLR object (off = field
+        // hash) or an ILTypeInstance (off = Primitives byte offset). For a CLR
+        // object: read via GetFieldValue / write via SetFieldValue, flatten/re-box
+        // per the element type. For an ILTypeInstance: read/write Primitives bytes
+        // directly (the field's flat-bytes region).
+        static unsafe void NeoMarshalByrefFieldToSlot(ILRuntime.Runtime.Enviorment.AppDomain appdomain, AutoList mStack, int objIdx, int off, System.Type elemType, byte* slot, int sz, bool isWrite)
+        {
+            object target = mStack[objIdx];
+            if (target is ILTypeInstance ili)
+            {
+                // IL heap field: flat-bytes region at Primitives[off].
+                if (isWrite)
+                    Unsafe.CopyBlock(ref ili.Primitives[off], ref *slot, (uint)sz);
+                else
+                    Unsafe.CopyBlock(ref *slot, ref ili.Primitives[off], (uint)sz);
+                return;
+            }
+            if (target is Array)
+            {
+                // An array-element byref reaches here only via ldelema + a byref-
+                // param call -- the ldelema path encodes (arrIdx, elemByteOff) and
+                // the element bytes are in the CLR array backing store. Reading/
+                // writing a CLR-array element through this field-marshal is not
+                // supported (the array case is owned by the stind/ldind consumer).
+                throw new NotImplementedException(
+                    "Step 13 Area 4c: a CLR-array-element byref param is not handled (route via the array stind/ldind path, not the field accessor)");
+            }
+            // CLR object field: route via the field-hash accessor.
+            if (isWrite)
+            {
+                // Flatten the dest slot bytes into a boxed element and write it.
+                object value;
+                if (elemType != null && (elemType.IsPrimitive || elemType.IsEnum))
+                {
+                    int cur = 0;
+                    value = ILIntepreter.ReadNeoValueType(elemType, slot, ref cur, sz);
+                }
+                else if (elemType != null && elemType.IsValueType)
+                {
+                    int cur = 0;
+                    value = ILIntepreter.ReadNeoValueType(elemType, slot, ref cur, sz);
+                }
+                else
+                {
+                    // reference-type field: the slot holds an mStack index.
+                    int vIdx = *(int*)slot;
+                    value = vIdx >= 0 ? mStack[vIdx] : null;
+                }
+                NeoWriteClrObjectField(appdomain, target, off, value);
+            }
+            else
+            {
+                object fieldValue = NeoReadClrObjectField(appdomain, target, off);
+                if (elemType != null && (elemType.IsPrimitive || elemType.IsEnum))
+                {
+                    // Flatten the boxed primitive/enum into the slot.
+                    if (fieldValue != null)
+                        ILIntepreter.WriteNeoValueType(fieldValue, slot, sz);
+                    else
+                        Unsafe.InitBlock(slot, 0, (uint)sz);
+                }
+                else if (elemType != null && elemType.IsValueType)
+                {
+                    if (fieldValue != null)
+                        ILIntepreter.WriteNeoValueType(fieldValue, slot, sz);
+                    else
+                        Unsafe.InitBlock(slot, 0, (uint)sz);
+                }
+                else
+                {
+                    // reference-type field: store the object's mStack index. The
+                    // field value is either already on mStack or must be parked.
+                    if (fieldValue == null)
+                    {
+                        *(int*)slot = -1;
+                    }
+                    else
+                    {
+                        int newIdx = mStack.Count;
+                        mStack.Add(fieldValue);
+                        *(int*)slot = newIdx;
+                    }
+                }
+            }
+        }
+
+        // Step 13 Area 4b / 4c: post-call reverse copy (write-back). After a CLR
+        // call, for each byref slot flagged for write-back (a `ref`/`out` param or
+        // a mutating VT `this`), write the (possibly-mutated) dest slot bytes BACK
+        // through the source byref -- the inverse of CopyNeoCallArguments. The
+        // reflection fallback's struct mutation lands in the callee param region
+        // (the boxed-struct in-place mutation), so this propagates it to the
+        // caller's local/field. The autogen path's struct `this` does NOT write
+        // into the param region (documented 4a limitation); a `ref`/`out` param's
+        // write-back IS observed because the redirect reads the param into a local,
+        // calls with `ref`/`out`, and the local's final value is what the reader
+        // wrote... NOTE: the autogen wrapper reads the param ONCE (prologue) and
+        // does NOT re-flatten after the call, so the autogen write-back for a
+        // byref param is owned by the wrapper's own epilogue (the 4c autogen
+        // write-back). This helper covers the reflection fallback's callee-region
+        // mutation for BOTH the `this` slot and the byref-param slots.
+        // NOTE (F-5 / Step 17): this covers MUTATING INSTANCE METHODS / ref-out
+        // PARAMS, NOT constructors -- the newobj path (VT-THIS-ADDR) performs its
+        // own slot-0 -> caller-dest copy-back in ExecuteNeo's Ret arm.
+        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain)
         {
             if (map.PrimitiveSize == null || map.PrimitiveByRefSrc == null)
                 return;
 
             bool[] byRefSrc = map.PrimitiveByRefSrc;
+            bool[] writeBack = map.PrimitiveByRefWriteBack;
+            System.Type[] byRefElemType = map.PrimitiveByRefElemType;
             for (int i = 0; i < byRefSrc.Length; i++)
             {
                 if (!byRefSrc[i])
+                    continue;
+                // 4c: gate the write-back on the per-slot flag (ref/out, not in-only).
+                // 4b VT `this` is always flagged for write-back.
+                if (writeBack != null && i < writeBack.Length && !writeBack[i])
                     continue;
                 if (i >= map.PrimitiveSrc.Length)
                     continue;
@@ -384,13 +483,16 @@ namespace ILRuntime.Runtime.Intepreter
                 int offset = *(int*)(frameBase + map.PrimitiveSrc[i] + 4);
                 if (objIdx == -1)
                 {
-                    // frame-native byref: write the (possibly-mutated) `this` slot
-                    // bytes back to the caller's in-frame local.
+                    // frame-native byref: write the (possibly-mutated) slot bytes
+                    // back to the caller's in-frame local.
                     Unsafe.CopyBlock(frameBase + offset, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i]);
                 }
-                // Boxed-struct `this` (objIdx >= 0): the autogen 4a re-box owns the
-                // write-back; the reflection fallback inherits CLR MethodInfo.Invoke
-                // semantics (boxed-VT call drops the mutation). No reverse copy.
+                else
+                {
+                    // 4c mStack-object field: write back through the field accessor.
+                    System.Type elemType = (byRefElemType != null && i < byRefElemType.Length) ? byRefElemType[i] : null;
+                    NeoMarshalByrefFieldToSlot(appdomain, mStack, objIdx, offset, elemType, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i], isWrite: true);
+                }
             }
         }
 
@@ -878,6 +980,15 @@ namespace ILRuntime.Runtime.Intepreter
                                     {
                                         // Heap IL / CLR-object operand: its slot
                                         // holds an mStack index (objectIndex >= 0).
+                                        // For a CLR object, fieldPrimOff is the
+                                        // FieldInfo hash (set by AppDomain.GetFieldOffset
+                                        // for a non-IL declaring type as type.GetFieldIndex
+                                        // (token)); the stind/ldind/stobj/ldobj consumer
+                                        // resolves it via CLRType.GetFieldValue /
+                                        // SetFieldValue (Step 13 Area 4d). For an IL heap
+                                        // object, fieldPrimOff is the field's PrimitiveOffset
+                                        // (the Primitives byte offset). No JIT change was
+                                        // needed for 4d -- the hash was already stamped.
                                         *(int*)(frameBase + dst + 0) = objIdx;
                                         *(int*)(frameBase + dst + 4) = fieldPrimOff;
                                     }
@@ -1827,7 +1938,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int crParamIdx = ip->Operand;
                                     ref var crMap = ref nf.NeoCallParams[crParamIdx];
                                     byte* crTargetBase = newEsp;
-                                    CopyNeoCallArguments(ref crMap, frameBase, crTargetBase);
+                                    CopyNeoCallArguments(ref crMap, frameBase, crTargetBase, mStack, AppDomain);
 
                                     bool crIsNewObj = (ip->Operand4 & 0x2) == 0x2;
                                     byte* crRetDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
@@ -1850,7 +1961,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                     // Reference parameters are passed as existing mStack indices in the frame bytes.
                                     // The primitive copy above has already copied those indices into targetBase.
@@ -1871,7 +1982,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     // mutation (ctor / mutating instance method) back to the
                                     // caller's in-frame local. No-op for non-mutating calls
                                     // and for non-VT-`this` calls (empty PrimitiveByRefSrc).
-                                    CopyNeoCallThisBack(ref map, frameBase, targetBase);
+                                    CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                     ip++;
                                     continue;
@@ -1915,7 +2026,7 @@ namespace ILRuntime.Runtime.Intepreter
                                             // Legacy `ILIntepreter.Register.cs:3539-3561`.
                                             if (clrDeclType.IsDelegate)
                                             {
-                                                CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                                CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
                                                 // DUMP-confirmed (NeoStep19_StaticAction): the CLR
                                                 // delegate ctor's NeoCallParamMap has 2 entries --
                                                 // [0] = target (object, 4-byte mStack index),
@@ -1948,7 +2059,7 @@ namespace ILRuntime.Runtime.Intepreter
                                                 ip++;
                                                 continue;
                                             }
-                                            CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                            CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
                                             var clrCtor = targetMethod as CLRMethod;
                                             InvokeNeoClrMethod(clrCtor, true, targetBase, mStack, retDstPtr, newobjDstIdx);
 
@@ -1967,7 +2078,7 @@ namespace ILRuntime.Runtime.Intepreter
                                         // built a NeoCallParamMap: map[0]=target, map[1]=
                                         // fnptr), build the adapter via DelegateManager (the
                                         // IL-overload FindDelegateAdapter), store it.
-                                        CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                        CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
                                         int ildTargetOff = map.PrimitiveDst[0];
                                         int ildMethodOff = map.PrimitiveDst[1];
                                         int ildTargetIdx = *(int*)(targetBase + ildTargetOff);
@@ -2064,7 +2175,7 @@ namespace ILRuntime.Runtime.Intepreter
 
                                         // 3) Copy the remaining ctor args (slots [1..]). The
                                         //    lowering built the NeoCallParamMap skipping slot 0.
-                                        CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                        CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                         // 4) Invoke the ctor directly via ExecuteNeo (not
                                         //    InvokeNeoCallTarget) so we can pass the caller's dest
@@ -2090,7 +2201,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     *(int*)retDstPtr = newobjDstIdx;
 
                                     *(int*)targetBase = newobjDstIdx;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                     int targetRetRefBase = frameRefBase + dstRefOffset;
                                     mStack.Add(mStack[newobjDstIdx]); // push 'this'
@@ -2113,7 +2224,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
@@ -2158,7 +2269,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
@@ -2180,7 +2291,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
@@ -2204,7 +2315,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
@@ -3146,6 +3257,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     sbyte v = *(sbyte*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(sbyte*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
                                     else { ins = GetNeoILInstance(mStack, objIdx); ins.Primitives[off] = (byte)v; }
                                 }
                                 break;
@@ -3156,6 +3268,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     short v = *(short*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(short*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3166,6 +3279,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int v = *(int*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(int*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3176,6 +3290,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     long v = *(long*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(long*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3186,6 +3301,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     float v = *(float*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(float*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3196,6 +3312,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     double v = *(double*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(double*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -3208,6 +3325,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(sbyte*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(int*)(frameBase + ip->DstOffset) = (sbyte)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) *(int*)(frameBase + ip->DstOffset) = (sbyte)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = ins.Primitives[off]; }
                                 }
                                 break;
@@ -3217,6 +3335,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(byte*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(int*)(frameBase + ip->DstOffset) = (byte)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) *(int*)(frameBase + ip->DstOffset) = (byte)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = ins.Primitives[off]; }
                                 }
                                 break;
@@ -3227,6 +3346,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int v;
                                     if (objIdx == -1) v = *(short*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) v = (short)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) v = (short)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<short>(ref ins.Primitives[off]); }
                                     *(int*)(frameBase + ip->DstOffset) = v;
                                 }
@@ -3238,6 +3358,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int v;
                                     if (objIdx == -1) v = *(ushort*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) v = (ushort)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) v = (ushort)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<ushort>(ref ins.Primitives[off]); }
                                     *(int*)(frameBase + ip->DstOffset) = v;
                                 }
@@ -3248,6 +3369,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(int*)(frameBase + ip->DstOffset) = (int)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) *(int*)(frameBase + ip->DstOffset) = (int)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<int>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3258,6 +3380,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     uint v;
                                     if (objIdx == -1) v = *(uint*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) v = (uint)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) v = (uint)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); v = Unsafe.ReadUnaligned<uint>(ref ins.Primitives[off]); }
                                     *(uint*)(frameBase + ip->DstOffset) = v;
                                 }
@@ -3268,6 +3391,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(long*)(frameBase + ip->DstOffset) = (long)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) *(long*)(frameBase + ip->DstOffset) = (long)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(long*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<long>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3277,6 +3401,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(float*)(frameBase + ip->DstOffset) = *(float*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(float*)(frameBase + ip->DstOffset) = (float)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) *(float*)(frameBase + ip->DstOffset) = (float)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(float*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<float>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3286,6 +3411,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(double*)(frameBase + ip->DstOffset) = *(double*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(double*)(frameBase + ip->DstOffset) = (double)cArr.GetValue(off);
+                                    else if (NeoIsClrObject(mStack, objIdx)) *(double*)(frameBase + ip->DstOffset) = (double)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(double*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<double>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3299,11 +3425,13 @@ namespace ILRuntime.Runtime.Intepreter
                                     // index as a 4-byte slot at the offset (a ref-
                                     // typed frame slot). CLR array target (a
                                     // ldelema-produced object[]/string[] address):
-                                    // Array.SetValue the managed object. Heap-IL ref
-                                    // field: write the ManagedObjects entry (off is
-                                    // the field's reference offset, stamped by Ldflda
-                                    // via the Operand3 marker -- not yet wired, so
-                                    // NIE for the heap-ref sub-case this step).
+                                    // Array.SetValue the managed object. 4d: a CLR
+                                    // object field target -- route through the field-
+                                    // hash accessor (off is the FieldInfo hash). Heap-
+                                    // IL ref field: write the ManagedObjects entry (off
+                                    // is the field's reference offset, stamped by Ldflda
+                                    // via the Operand3 marker -- not yet wired, so NIE
+                                    // for the heap-ref sub-case this step).
                                     int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     int vIdx = *(int*)(frameBase + ip->SrcOffset);
@@ -3314,6 +3442,10 @@ namespace ILRuntime.Runtime.Intepreter
                                     else if (mStack[objIdx] is Array cArr)
                                     {
                                         cArr.SetValue(vIdx >= 0 ? mStack[vIdx] : null, off);
+                                    }
+                                    else if (NeoIsClrObject(mStack, objIdx))
+                                    {
+                                        NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, vIdx >= 0 ? mStack[vIdx] : null);
                                     }
                                     else
                                     {
@@ -3356,6 +3488,20 @@ namespace ILRuntime.Runtime.Intepreter
                                         else
                                             *(int*)(frameBase + ip->DstOffset) = -1;
                                     }
+                                    else if (NeoIsClrObject(mStack, objIdx))
+                                    {
+                                        // 4d: CLR-object reference-type field -- read it
+                                        // via the field-hash accessor and materialize.
+                                        object elem = NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
+                                        if (elem != null)
+                                        {
+                                            dstIdx = frameRefBase + ip->Operand3;
+                                            mStack[dstIdx] = elem;
+                                            *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                        }
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
+                                    }
                                     else
                                     {
                                         throw new NotImplementedException(
@@ -3375,6 +3521,15 @@ namespace ILRuntime.Runtime.Intepreter
                                     if (objIdx == -1)
                                     {
                                         Unsafe.CopyBlock(frameBase + off, frameBase + ip->SrcOffset, (uint)primSize);
+                                    }
+                                    else if (NeoIsClrObject(mStack, objIdx))
+                                    {
+                                        // 4d: a CLR-object value-type field -- box the
+                                        // src flat bytes into the element type and write
+                                        // via the field-hash accessor.
+                                        int srcCur = ip->SrcOffset;
+                                        object boxed = ILIntepreter.ReadNeoValueType(t.TypeForCLR, frameBase, ref srcCur, primSize);
+                                        NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, boxed);
                                     }
                                     else
                                     {
@@ -3396,6 +3551,14 @@ namespace ILRuntime.Runtime.Intepreter
                                     if (objIdx == -1)
                                     {
                                         Unsafe.CopyBlock(frameBase + ip->DstOffset, frameBase + off, (uint)primSize);
+                                    }
+                                    else if (NeoIsClrObject(mStack, objIdx))
+                                    {
+                                        // 4d: a CLR-object value-type field -- read via
+                                        // the field-hash accessor and flatten into dest.
+                                        object val = NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
+                                        int dstOff = ip->DstOffset;
+                                        ILIntepreter.WriteNeoValueType(val, frameBase + dstOff, primSize);
                                     }
                                     else
                                     {
@@ -3895,12 +4058,65 @@ namespace ILRuntime.Runtime.Intepreter
             if (ins == null)
                 // A CLR object reached an IL-instance field/address path (ldfld/
                 // stfld heap arm, or stind/ldind/stobj/ldobj on an mStack target).
-                // CLR-object field access via field hash is deferred to Step 13b,
-                // so surface it as a Step-tagged NIE rather than a raw cast.
+                // 4d now closes the CLR-object-field case via the field-hash
+                // accessor (NeoReadClrObjectField/NeoWriteClrObjectField), so a
+                // genuine CLR object routes there BEFORE this throw. Reaching here
+                // means a shape the field-hash path does not cover -- keep the
+                // Step-tagged NIE as the defensive guard.
                 throw new NotImplementedException(
                     "Step 17/13b: field/element access on a CLR object via the IL-instance path is deferred (CLR field-hash plumbing lands in Step 13b)");
             return ins;
         }
+
+        // ---- Step 13 Area 4d: CLR-object field access via field identity (the
+        //      field-hash path). A `ref clrObj.field` produced by `ldflda` lands
+        //      as a Ref Slot (clrObjMStackIdx, fieldHash) where fieldHash is the
+        //      CLR FieldInfo's hash (stamped by the JIT's GetFieldOffset for a
+        //      CLR declaring type as type.GetFieldIndex(token)). The stind/ldind/
+        //      stobj/ldobj consumers + the 4c byref marshal call these helpers to
+        //      route through the CLRType's reflection accessor (GetFieldValue /
+        //      SetFieldValue). The hash is resolvable at runtime via the object's
+        //      runtime CLRType -- no JIT stamp change is required (the hash is
+        //      already the offset half). ----
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static object NeoReadClrObjectField(ILRuntime.Runtime.Enviorment.AppDomain appdomain, object target, int fieldHash)
+        {
+            if (target == null)
+                throw new NullReferenceException();
+            var ct = appdomain.GetType(target.GetType()) as CLRType;
+            if (ct == null)
+                throw new NotImplementedException("Step 13 Area 4d: CLR-object field read on a non-CLR-resolvable target. Type: " + target.GetType().FullName);
+            object tmp = target;
+            return ct.GetFieldValue(fieldHash, tmp);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static void NeoWriteClrObjectField(ILRuntime.Runtime.Enviorment.AppDomain appdomain, object target, int fieldHash, object value)
+        {
+            if (target == null)
+                throw new NullReferenceException();
+            var ct = appdomain.GetType(target.GetType()) as CLRType;
+            if (ct == null)
+                throw new NotImplementedException("Step 13 Area 4d: CLR-object field write on a non-CLR-resolvable target. Type: " + target.GetType().FullName);
+            object tmp = target;
+            ct.SetFieldValue(fieldHash, ref tmp, value);
+        }
+
+        // Returns true if `mStack[objIdx]` is a CLR (non-IL, non-Array) object --
+        // the discriminator for the 4d CLR-object-field path. Used by the
+        // stind/ldind consumer arms BEFORE the ILTypeInstance fallback.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static bool NeoIsClrObject(AutoList mStack, int objIdx)
+        {
+            if (objIdx < 0)
+                return false;
+            object o = mStack[objIdx];
+            if (o == null)
+                return false;
+            return !(o is ILTypeInstance) && !(o is Array);
+        }
+
 
         // Step 14: resolve a Throw operand's exception object from its mStack ref
         // slot. A null exception object (ref index -1) is itself a

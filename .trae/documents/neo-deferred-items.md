@@ -66,7 +66,7 @@ Insert these into the roadmap ordering:
 |----|------|-------------|--------|--------------|----------|
 | D-LDELEMA | `ldelema` opcode | Step 16 | **RESOLVED (Step 17 + neo-step17-completion)** | Step 17 Ref-Slot/stind/ldind | fully resolved (IL VT array path Step 17; CLR primitive-array ldelema remainder in neo-step17-completion 2026-07-05) |
 | D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **partial (Step 17 + neo-step17-completion for {a,d,M2})** | Step 17 byref/VT-this-address | {a,d,M2} RESOLVED 2026-07-05 (neo-step17-completion): full constrained.-on-VT dispatch + CLR primitive-array ldelema + F-5 boxed-source NIE-guard. (b) Stobj/Ldobj ref-loop + (c) generic-byref/fixed/interface-on-VT-constrained + IL-VT-with-ref-fields constrained still DEFERRED -> `neo-step17-stobj-refloop` (task #18). area4 M2 obligation CLOSED. |
-| D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **partial (Step 13b + neo-step13-area4)** | Area 5 core done; Area 4b (VT-`this` direct-call) + 4a (Unsafe.Unbox direct-call) done in neo-step13-area4; 4c (CLR ref/out) + 4d (CLR stind/ldind) deferred to follow-up child `neo-step13-area4-refandstind` | roadmap gap |
+| D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **FULLY RESOLVED 2026-07-06 (neo-step13-area4-refandstind, 4c+4d)** | Area 5 core done; Area 4b/4a done in neo-step13-area4; Area 4c (CLR ref/out typed-ref bridge) + 4d (CLR stind/ldind/stobj/ldobj via field identity) done in neo-step13-area4-refandstind — all of Area 4 done | roadmap gap |
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
 | K2-FAM | Move-path scalar->boxed-ref CLR-VT-local (reads int as mStack idx) | Step 13 | **RESOLVED 2026-07-06 (neo-k2fam-bridge, TEST-ONLY — subsumed by opt-harden-2 + review-fix + step13b; 6 regression guards)** | flat-bytes path resolved; boxed-ref bridge subsumed (declare-side flat-bytes + Initobj/Box/Unbox_Any flat-bytes arms + by-value-param flat-bytes read) | pre-existing (closed by recent work; no new engine fix) |
@@ -89,6 +89,7 @@ Insert these into the roadmap ordering:
 | N-TC2 | Step 14 TC2 asserts `e != null` | Step 14 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** (was resolved by Step 15; the test-tighten follow-up is now done) | — | cleanup |
 | F-7 / NEO-DELEGATE-REFOUT | byref-aware arg marshaling in `DelegateAdapter.NeoInvokeSub` (delegate ref/out params) | Step 19 | **future** (route to a byref follow-up child — same family as D-13B area 4c / neo-step17-stobj-refloop) | byref-typed Ref Slot in the delegate Invoke param region | pre-existing (latent; the only reachable shape today is plain primitives via `WriteNeoCallSlot`) |
 | F-8 / NEO-DOUBLE-COMBINE | 2+ `double` locals combined in one boolean expression silently misfire (F-MAJ-1 class; `double`-specific, not all 8-byte primitives) | neo-array-completion review (F-1) | **RESOLVED 2026-07-06 (neo-double-combine-quirk, D4)** | dead `Operand3 = RefOffset` write in `Optimizer.Neo.cs LowerNeoOffsets` immediate-branch case clobbered the high 4 bytes of `OperandDouble`/`OperandLong` (@12-19) via the `[StructLayout(Explicit)]` union; copy-prop folds `Ldc_R8` into `Bnei_Un_R8` (reachable) but keeps `Ldc_I8` register-register (unreachable) -> double-fails/long-works | pre-existing (NOT introduced by D-ARR; upstream of the array work; surfaced when the array probes needed combined `double` assertions) |
+| F-9 / NEO-INLINED-RETURN-MOVE | an int returned from an inlined IL method moved as a reference -> `mStack[intValue]` OOB (return-value classification edge in the trivial inliner) | neo-step13-area4-refandstind review (4d.2 probe-avoidance) | **future** (route to an inliner/optimizer follow-up) | the trivial-inliner mis-classifies an inlined IL-method return value (moves an int as a reference) | pre-existing (latent; surfaced when the 4d.2 `LdindClrIntFieldPeek` probe needed to defeat it via `int v = slot; return v + 0;`) |
 
 ---
 
@@ -212,11 +213,31 @@ follow-up — it also closes K2 and K2-FAM.
   dead-branch mis-copy in `CopyNeoCallArguments`; routed to Step 17). See
   `openspec/changes/archive/2026-07-05-neo-step13-area4/`.
 - **Area 4c (CLR-method `ref`/`out` typed-ref bridge) + Area 4d (CLR-object
-  `stind`/`ldind`/`stobj`/`ldobj` via field hash): REMAIN DEFERRED** to the
-  follow-up child `neo-step13-area4-refandstind` (portfolio task #17). Both
-  are independent plumbing (a typed-ref bridge; a field-hash scheme) that do
-  NOT fall out of {4a, 4b} — bundling them would make the diff unreviewable
-  (the explicit 13b lesson).
+  `stind`/`ldind`/`stobj`/`ldobj` via field hash): DONE
+  (neo-step13-area4-refandstind, 2026-07-06)** — RESOLVED 2026-07-06
+  (neo-step13-area4-refandstind, 4c+4d). 4c: a CLR method with a `ref`/`out`
+  param was SILENT-WRONG on HEAD (read the Ref Slot's `objectIndex` half as the
+  int value, no write-back); the reflection `CLRMethod.Invoke(byte*)` + the
+  autogen `AppendArgumentCodeNeo` now marshal byref params via the area4b
+  deref-at-copy-site mechanism (`CopyNeoCallArguments` derefs byref params;
+  `CopyNeoCallThisBack` propagates) + a write-back gated `!IsIn || IsOut`. The
+  D2 dead-discriminator fix keys on `p.IsByRef`/`ptRaw.IsByRef` (the LIVE one),
+  NOT the dead `pt.IsByRef`. `NeoCallParamMap` gains
+  `PrimitiveByRefWriteBack` + `PrimitiveByRefElemType`. 4d: every width arm +
+  `Stobj`/`Ldobj` gained a `NeoIsClrObject` branch routing to
+  `NeoReadClrObjectField`/`NeoWriteClrObjectField` (CLRType.GetFieldValue/
+  SetFieldValue by the JIT-stamped FieldInfo hash); a shared
+  `NeoMarshalByrefFieldToSlot` covers ILTypeInstance + CLR-object + Array.
+  Verification: NeoStep 175/175 (161 + 14 probes), NeoOptHard 24/24,
+  Legacy-neutral; all 13 functional probes FAIL-on-HEAD -> PASS. Review
+  APPROVED (0 Blocker/Major; M-1 `ref arr[i]` to CLR method NIEs — documented
+  limitation; M-2 ref/out write-back mStack growth — not correctness; T-1/T-2
+  cosmetic). **NEW follow-up F-9 / NEO-INLINED-RETURN-MOVE** (inlined-IL-
+  method-return-move misclassification; pre-existing; surfaced by 4d.2). **F-7
+  (delegate ref/out) still OPEN** (4c is IL->CLR direction; F-7's
+  `DelegateAdapter.NeoInvokeSub` is CLR->IL — different site/direction). All
+  of Area 4 is now done. See
+  `openspec/changes/archive/2026-07-06-neo-step13-area4-refandstind/ship-log.md`.
 
 ### K1 — FCP mis-propagates value-type Moves (Step 12b -> RESOLVED in OPT-HARDEN)
 After `b = a`, FCP rewrote later `b.field` reads to `a.field` even AFTER
@@ -607,6 +628,14 @@ handles a byref `this` for a direct `call`). Recorded so the byref-follow-up
 planner finds it. See
 `openspec/changes/archive/2026-07-06-neo-step19-delegate/ship-log.md`.
 
+**NOTE (2026-07-06, neo-step13-area4-refandstind):** the 4c typed-ref bridge
+that shipped in `neo-step13-area4-refandstind` is the **IL->CLR** direction
+(an IL method passes a byref to a CLR method). F-7
+(`DelegateAdapter.NeoInvokeSub`) is the **CLR->IL** callback direction (a
+delegate Invoke calls back into an IL method that takes a byref param). They
+are DIFFERENT sites with OPPOSITE directions — the 4c helper does NOT apply to
+F-7. F-7 remains OPEN; it is not closed by 4c.
+
 ### F-8 / NEO-DOUBLE-COMBINE — 2+ double locals combined in one boolean expression (RESOLVED 2026-07-06, neo-double-combine-quirk / [OPT-HARDEN-3], D4)
 Surfaced by the neo-array-completion review (Finding F-1, Probe #4). When a
 method reads 2+ `double` values into separate locals and combines them in a
@@ -672,6 +701,31 @@ failing frame layout (the F-MAJ-1 discipline: probe BEFORE designing the fix;
 STOP if the designed fix is wrong). Recorded so the optimizer-hardening
 planner finds it. See
 `openspec/changes/archive/2026-07-06-neo-array-completion/ship-log.md` (F-1).
+
+### F-9 / NEO-INLINED-RETURN-MOVE — inlined IL-method return-value misclassification (-> future inliner/optimizer follow-up)
+Surfaced by the neo-step13-area4-refandstind review (the 4d.2 probe
+`LdindClrIntFieldPeek` had to be deliberately structured to defeat it). When an
+IL method's return value (e.g. an `int`) flows from an INLINED IL method call
+into its caller, the trivial-inliner mis-classifies the return value: an `int`
+returned from an inlined IL method is MOVED AS A REFERENCE, so a subsequent
+read interprets the int value as an mStack index -> `mStack[intValue]` OOB.
+
+**Pre-existing / latent, NOT introduced by neo-step13-area4-refandstind.** The
+4d work only needs to drive the `ldflda clrObj.field; ldind_i4` path; the
+return-move edge is in the inliner's return-value classification, upstream of
+4d. The 4d.2 probe avoids it by structuring the body as
+`int v = slot; return v + 0;` (the `+ 0` defeats the trivial-inliner's
+return-move fold). The reviewer correctly flagged it rather than silently
+dropping it.
+
+**Resolution:** future -- route to an inliner/optimizer follow-up (the
+trivial-inliner's return-value classification in `JITCompiler.cs`). Suspect:
+the inliner's return-move fold does not consult the inlined method's declared
+return type when the call site folds the return into the caller's move. The
+reviewer did NOT ship a failing probe (would regress the smoke for an
+out-of-scope bug); the probe-avoidance in 4d.2 is the load-bearing evidence
+the edge is real. Recorded so a future inliner-hardening change finds it. See
+`openspec/changes/archive/2026-07-06-neo-step13-area4-refandstind/ship-log.md`.
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was

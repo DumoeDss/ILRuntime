@@ -404,10 +404,63 @@ namespace ILRuntime.CLR.Method
                 }
             }
 
+            // Step 13 Area 4c: byref-param write-back tracking. The call-lowering
+            // sizes a byref param's dest slot by the ELEMENT type and
+            // CopyNeoCallArguments derefs the byref into those flat bytes, so the
+            // reader below reads the element value exactly like a by-value param.
+            // After the call, CLR MethodInfo.Invoke mutates the `param[i]` box in
+            // place for a ref/out param; this write-back re-flattens the (possibly-
+            // mutated) `param[i]` into the SAME dest slot, so the post-call reverse
+            // copy (CopyNeoCallThisBack) propagates it to the caller's local/field.
+            // The IsIn/IsOut gate mirrors the optimizer's (D5): ref/out writes back,
+            // in-only does not.
+            int[] byRefSlotOff = paramCount > 0 ? new int[paramCount] : null;
+            bool[] byRefWriteBack = paramCount > 0 ? new bool[paramCount] : null;
+            Type[] byRefElemType = paramCount > 0 ? new Type[paramCount] : null;
             for (int i = 0; i < paramCount; i++)
             {
-                var pt = Parameters[i];
+                byRefSlotOff[i] = -1;
+                byRefWriteBack[i] = false;
+            }
+            ParameterInfo[] pinfos = ParametersCLR;
+
+            for (int i = 0; i < paramCount; i++)
+            {
+                var ptRaw = Parameters[i];
+                // Step 13 Area 4c: a byref param's dest slot is sized by the ELEMENT
+                // type and deref'd by CopyNeoCallArguments, so the reader reads it
+                // exactly like a by-value param of the element type. De-byref `pt`
+                // here so ALL arms below (CLR struct / IL / reference / primitive)
+                // dispatch on the element type. The original byref-ness + the write-
+                // back gate are captured from `ptRaw` / ParameterInfo below.
+                var pt = ptRaw.IsByRef && ptRaw.ElementType != null ? ptRaw.ElementType : ptRaw;
                 Type t = pt.TypeForCLR;
+
+                // Step 13 Area 4c: detect a byref param. Record the slot offset +
+                // element type + write-back gate for the post-call write-back.
+                if (ptRaw.IsByRef)
+                {
+                    byRefSlotOff[i] = curPrim;
+                    byRefElemType[i] = t;
+                    bool isOutOnly = pinfos != null && i < pinfos.Length && pinfos[i].IsOut && !pinfos[i].IsIn;
+                    if (pinfos != null && i < pinfos.Length)
+                        byRefWriteBack[i] = !pinfos[i].IsIn || pinfos[i].IsOut;
+                    else
+                        byRefWriteBack[i] = true; // ref (no IsIn/IsOut metadata): write back
+                    // An `out`-only reference-type param is UNINITIALIZED at the call
+                    // site; reading its dest slot as an mStack index is garbage / OOB.
+                    // Skip the read (param[i] = null); the method overwrites it and the
+                    // write-back stores the assigned reference. Advance the cursor by
+                    // the reference slot width (4) to stay byte-consistent with the
+                    // layout. (Primitive/struct `out` reads harmlessly -- the value is
+                    // overwritten -- so only the reference sub-case skips.)
+                    if (isOutOnly && !(pt is CLRType cct && cct.IsValueType) && !(pt is ILType) && !t.IsPrimitive && !t.IsEnum)
+                    {
+                        param[i] = null;
+                        curPrim += 4;
+                        continue;
+                    }
+                }
 
                 if (pt is CLRType clrType && clrType.IsValueType && !clrType.TypeForCLR.IsPrimitive && !clrType.TypeForCLR.IsEnum)
                 {
@@ -444,7 +497,11 @@ namespace ILRuntime.CLR.Method
                 if (pt is ILType || !t.IsPrimitive && !t.IsEnum)
                 {
                     int idx = *(int*)(targetBase + curPrim);
-                    object pval = mStack[idx];
+                    // A null reference param is encoded as mStack index -1 (the Neo
+                    // null-ref sentinel). mStack[-1] would throw, so materialize
+                    // null directly. (Pre-existing gap surfaced by the Area 4d
+                    // probes that pass a null string to a CLR method.)
+                    object pval = idx < 0 ? null : mStack[idx];
                     // Step 19: a delegate-typed param arrives as an IDelegateAdapter
                     // (the bridge), not a real CLR delegate. Unwrap it so a CLR
                     // method receiving a delegate (e.g. List.ForEach(action))
@@ -515,6 +572,48 @@ namespace ILRuntime.CLR.Method
                 // the `this` slot so the post-call reverse copy propagates them.
                 if (vtThisType != null)
                     ILIntepreter.WriteNeoValueType(instance, targetBase + vtThisSlotOff, vtThisSz);
+            }
+
+            // Step 13 Area 4c: byref-param write-back. CLR MethodInfo.Invoke /
+            // ConstructorInfo.Invoke mutate the `param[i]` box in place for a
+            // ref/out param; re-flatten the (possibly-mutated) value into the dest
+            // slot so CopyNeoCallThisBack propagates it to the caller's local/field.
+            // The element type was captured above (byRefElemType[i]); a primitive/
+            // enum flattens via WriteNeoValueType (a boxed-primitive write); a CLR
+            // struct re-flattens the mutated boxed struct; a reference type stores
+            // its mStack index. The IsIn/IsOut gate (D5) drops an in-only param.
+            if (byRefSlotOff != null)
+            {
+                for (int i = 0; i < paramCount; i++)
+                {
+                    if (!byRefWriteBack[i])
+                        continue;
+                    int slotOff = byRefSlotOff[i];
+                    if (slotOff < 0)
+                        continue;
+                    Type et = byRefElemType[i];
+                    object pv = param[i];
+                    if (et != null && (et.IsPrimitive || et.IsEnum || et.IsValueType))
+                    {
+                        int sz = Optimizer.GetNeoValueTypeManagedSize(et);
+                        if (pv != null)
+                            ILIntepreter.WriteNeoValueType(pv, targetBase + slotOff, sz);
+                    }
+                    else
+                    {
+                        // reference-type element: store the mStack index. The post-
+                        // call reverse copy (CopyNeoCallThisBack -> frame-native)
+                        // copies these 4 bytes to the caller's local ref slot.
+                        if (pv == null)
+                            *(int*)(targetBase + slotOff) = -1;
+                        else
+                        {
+                            int newIdx = mStack.Count;
+                            mStack.Add(pv);
+                            *(int*)(targetBase + slotOff) = newIdx;
+                        }
+                    }
+                }
             }
 
             Array.Clear(invocationParam, 0, invocationParam.Length);

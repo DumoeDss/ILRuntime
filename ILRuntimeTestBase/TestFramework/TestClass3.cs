@@ -217,6 +217,104 @@ namespace ILRuntimeTest.TestFramework
             return sum + (s != null ? s.Length : 0);
         }
 
+        // ---- Step 13 Area 4c helpers (host C#; read by the IL side via the
+        //      reflection fallback CLRMethod.Invoke(byte*) when no autogen
+        //      redirect is registered, OR via the autogen *_Neo redirect when
+        //      a binder is registered). A CLR method with ref/out params --
+        //      the typed-ref bridge. Before 4c the byref param's 8-byte Ref
+        //      Slot was read as the raw value (silent-wrong) and never written
+        //      back. ----
+
+        // 4c: a CLR `ref int` (read + write back). The IL caller passes a
+        // local int by ref; the mutation must propagate to the caller's local.
+        public static void BumpRefInt(ref int v)
+        {
+            v += 10;
+        }
+
+        // 4c: a CLR `out int` (write back only). The IL caller observes the
+        // assigned value.
+        public static void ProduceOutInt(out int r)
+        {
+            r = 4242;
+        }
+
+        // 4c: a CLR `ref` to a pure-primitive CLR struct (TestVector3NoBinding,
+        // 3 floats -- no binder so this routes through the reflection fallback).
+        // Mutates the struct in place; the caller must observe the mutation.
+        public static void BumpRefStruct(ref TestVector3NoBinding v)
+        {
+            v.x += 1f;
+            v.y += 2f;
+            v.z += 3f;
+        }
+
+        // 4c: a CLR `out` reference-type (string). The caller observes the
+        // assigned reference.
+        public static void ProduceOutString(out string s)
+        {
+            s = "from-clr-out";
+        }
+
+        // 4c: multiple byref params in one call (ref int + out int).
+        public static void BumpRefAndProduceOut(ref int a, out int b)
+        {
+            a += 100;
+            b = 999;
+        }
+
+        // 4c: an `in`-only param must NOT be written back (the call observes
+        // the value but the caller's local is unchanged -- the marshal gates
+        // write-back on !IsIn || IsOut). Returns the observed value so the IL
+        // side can assert it read the right input.
+        public static int ObserveInOnly(in int v)
+        {
+            return v + 5;
+        }
+
+        // 4c: non-byref CLR method regression (byte-identical control). A
+        // plain by-value int param + return -- the discriminator must NOT fire
+        // for it.
+        public static int PlainByValue(int v)
+        {
+            return v * 2;
+        }
+
+        // 4c NIE probe: a CLR value type WITH a reference field and NO binder,
+        // passed by ref. The reflection fallback's byref read derefs to flat
+        // bytes; a struct WITH reference fields cannot be materialized from flat
+        // bytes (GC refs unmappable without a binder) -> a clearly-tagged NIE.
+        public static void BumpRefClrStructWithRef(ref TestClrStructWithRef v)
+        {
+            v.n += 1;
+        }
+
+        // ---- Step 13 Area 4c+4d interaction helpers. ----
+
+        // 4d host: a CLR class with primitive + reference-type fields, the
+        // target for ldflda + stind/ldind via field identity.
+        public class Area4dHolder
+        {
+            public int intField;
+            public string refField;
+            public Area4dHolder(int a, string s) { intField = a; refField = s; }
+            public Area4dHolder() { intField = 0; refField = null; }
+        }
+
+        // 4c+4d interaction: a CLR `ref int` that takes the address of a CLR
+        // object's field (the byref PARAM's Ref Slot points at an mStack
+        // object field; the deref must route through the field accessor).
+        public static Area4dHolder MakeArea4dHolder(int a, string s)
+        {
+            return new Area4dHolder(a, s);
+        }
+
+        // 4d read-back helpers (so the IL side can observe a CLR object's
+        // field without itself doing an ldfld on a CLR type -- avoids a
+        // separate Step-6 gap contaminating the 4d probe).
+        public static int ReadArea4dIntField(Area4dHolder h) { return h.intField; }
+        public static string ReadArea4dRefField(Area4dHolder h) { return h.refField; }
+
 #if TEST_MISSING_METHOD
         public int missingField;
         public void MissingMethodGeneric<T>(T obj)
