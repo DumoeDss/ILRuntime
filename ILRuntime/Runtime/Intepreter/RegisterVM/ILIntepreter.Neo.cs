@@ -257,11 +257,16 @@ namespace ILRuntime.Runtime.Intepreter
                     }
                     else
                     {
-                        // Defensive: a boxed-struct `this` (only reachable via
-                        // constrained.callvirt, a Step 17 NIE today). The mStack
-                        // object is the box; copy its flat bytes via the helper.
-                        // (Not exercised in 4b; lands with Step 17 completion.)
-                        Unsafe.CopyBlock(targetBase + map.PrimitiveDst[i], frameBase + offset, map.PrimitiveSize[i]);
+                        // F-5 / NEO-CALLARG-BOXED-SRC closure (Step 17 D-CONSTRAINED):
+                        // a boxed-struct `this` source (objIdx >= 0) is NOT produced by
+                        // the constrained.callvirt box-once (that path bypasses this copy
+                        // and writes the boxed receiver's mStack index directly into the
+                        // callee slot). Should a future caller route a boxed source
+                        // through PrimitiveByRefSrc, `offset` here would be an mStack
+                        // FIELD offset -- NOT a struct address -- so a CopyBlock would
+                        // SILENTLY mis-copy. Guard it explicitly (no silent mis-copy).
+                        throw new NotImplementedException(
+                            "Step 17: a boxed-struct `this` source via PrimitiveByRefSrc is not handled (constrained box-once bypasses this path; the mStack field offset is not a struct address)");
                     }
                 }
                 else
@@ -272,17 +277,18 @@ namespace ILRuntime.Runtime.Intepreter
         }
 
         // Step 13 Area 4b: post-call reverse copy. A CLR value-type instance `this`
-        // call (ctor or mutating instance method) mutates `instance` in the
-        // reflection fallback (CLR MethodInfo.Invoke / ConstructorInfo.Invoke
-        // mutate the boxed struct in place), which writes the mutated flat bytes
-        // back into the callee param region's `this` slot. This reverse copy
-        // propagates those bytes back to the caller's in-frame local (the byref's
-        // target), so `new VT(args)` (initobj;ldloca;call ctor) and `v.Reset()`
-        // land their mutations in the caller's local -- matching CLR `ref this`
-        // struct semantics. (Non-mutating calls copy the same bytes back -- a
-        // harmless no-op. The autogen path does NOT write back into the param
-        // region, so its mutation does not propagate -- the documented byref
-        // limitation; the boxed-`this` re-box is the 4a follow-up.)
+        // MUTATING INSTANCE METHOD call mutates `instance` in the reflection fallback
+        // (CLR MethodInfo.Invoke mutates the boxed struct in place), which writes the
+        // mutated flat bytes back into the callee param region's `this` slot. This
+        // reverse copy propagates those bytes back to the caller's in-frame local
+        // (the byref's target), so `v.Reset()` lands its mutation in the caller's
+        // local -- matching CLR `ref this` struct semantics. (Non-mutating calls copy
+        // the same bytes back -- a harmless no-op. The autogen path does NOT write
+        // back into the param region, so its mutation does not propagate -- the
+        // documented byref limitation; the boxed-`this` re-box is the 4a follow-up.)
+        // NOTE (F-5 / Step 17): this covers MUTATING INSTANCE METHODS, NOT
+        // constructors -- the newobj path (VT-THIS-ADDR) performs its own slot-0 ->
+        // caller-dest copy-back in ExecuteNeo's Ret arm and does NOT invoke this.
         static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase)
         {
             if (map.PrimitiveSize == null || map.PrimitiveByRefSrc == null)
@@ -2818,6 +2824,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     int v = *(int*)(frameBase + ip->SrcOffset);
                                     if (objIdx == -1) *(int*)(frameBase + off) = v;
+                                    else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); Unsafe.WriteUnaligned(ref ins.Primitives[off], v); }
                                 }
                                 break;
@@ -2892,6 +2899,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
                                     if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + off);
+                                    else if (mStack[objIdx] is Array cArr) *(int*)(frameBase + ip->DstOffset) = (int)cArr.GetValue(off);
                                     else { ins = GetNeoILInstance(mStack, objIdx); *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<int>(ref ins.Primitives[off]); }
                                 }
                                 break;
@@ -3052,8 +3060,24 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        throw new NotImplementedException(
-                                            "Step 17: ldelema on a CLR primitive array is deferred (use direct indexing)");
+                                        // Step 17 D-LDELEMA remainder: a CLR primitive / struct
+                                        // array. Encode (arrIdx, elementIdx) where the `off` half
+                                        // IS the element index (NOT a byte offset) -- the
+                                        // consumer (stind/ldind) detects `mStack[arrIdx] is Array`
+                                        // and routes to la.GetValue(elementIdx) / la.SetValue(..).
+                                        // The standard IL-instance Primitives path does NOT apply
+                                        // (a CLR array element lives in the Array's backing
+                                        // storage, not in Primitives). Scoped to the smoke's green
+                                        // target (primitive element read/write via stind_i4/
+                                        // ldind_i4); other element kinds are NIE-tagged in the
+                                        // consumer arm. Validate the element is a value type so
+                                        // the element-index encoding is well-formed.
+                                        Type elemClrType = la.GetType().GetElementType();
+                                        if (elemClrType == null || !elemClrType.IsValueType)
+                                            throw new NotImplementedException(
+                                                "Step 17: ldelema on a CLR array with a reference-type element is deferred (use direct indexing)");
+                                        *(int*)(frameBase + ip->DstOffset + 0) = arrIdx;
+                                        *(int*)(frameBase + ip->DstOffset + 4) = elementIdx;
                                     }
                                 }
                                 break;
@@ -3123,22 +3147,261 @@ namespace ILRuntime.Runtime.Intepreter
                             // Step 14 (rare in C#). Remains a Step-tagged NIE.
                             case OpCodeREnum.Endfilter:
                                 throw new NotImplementedException("Neo: IL filter blocks (endfilter) are not implemented (Step 14, out of scope)");
-                            // Step 17 (D-CONSTRAINED): the JIT moves `Constrained`
-                            // to AFTER the callvirt (which it flags with
-                            // Operand4 == 1) and stamps the constrained type token
-                            // in Operand. Full constrained.-on-value-type dispatch
-                            // requires the callvirt to accept a byref `this` (the
-                            // struct's managed address produced by ldarga/ldloca)
-                            // and dispatch to the constrained type's concrete
-                            // override -- that callvirt-byref-this work is the
-                            // deferred sub-case (Step 13b / follow-up). Until then
-                            // the constrained callvirt NIEs at the call (its byref
-                            // `this` reads as a null object index); this arm throws
-                            // a Step-17-tagged NIE so the case is surfaced rather
-                            // than silently mishandled.
+                            // Step 17 D-CONSTRAINED follow-up (constrained.callvirt on a
+                            // value type). The JIT emits [Push..., Constrained T, Callvirt M]
+                            // (Constrained BEFORE the callvirt); the Constrained arm carries
+                            // the constrained type token (Operand) and OWNS the dispatch
+                            // (box-once for CLR value types / overrides-of-Object; direct-call
+                            // for IL value-type interface impls), then skips the trailing
+                            // callvirt. See the arm body for the full mechanism + the residual
+                            // NIE-guarded sub-cases (IL VT with ref fields; null/ref-type this).
                             case OpCodeREnum.Constrained:
-                                throw new NotImplementedException(
-                                    "Step 17: constrained.callvirt on a value type is deferred (callvirt byref-this dispatch lands in Step 13b / a follow-up)");
+                                {
+                                    // Step 17 D-CONSTRAINED follow-up: constrained.callvirt
+                                    // dispatch on a value type. The JIT emits the sequence
+                                    // [Push..., Constrained T, Callvirt M] -- the Constrained
+                                    // arm runs FIRST (carrying the constrained type token in
+                                    // ip->Operand), and the trailing Callvirt at ip+1 carries
+                                    // the method token (Operand2), the param map (Operand),
+                                    // and the return-slot info. The Constrained arm OWNS the
+                                    // dispatch (box-once on the byref `this`), then advances
+                                    // past the trailing callvirt (ip += 2). REUSES Step 13's
+                                    // Box-arm machinery (ReadNeoValueType / CopyFrameToIL) +
+                                    // the existing Callvirt_IL/Callvirt_CLR resolvers on the
+                                    // boxed receiver. The non-constrained Callvirt paths are
+                                    // byte-identical (this arm only fires for Constrained).
+                                    IType constrainedType = AppDomain.GetType(ip->Operand);
+                                    OpCodeR* cv = ip + 1;
+                                    OpCodeREnum cvCode = cv->Code;
+                                    if (cvCode != OpCodeREnum.Callvirt &&
+                                        cvCode != OpCodeREnum.Callvirt_IL &&
+                                        cvCode != OpCodeREnum.Callvirt_CLR &&
+                                        cvCode != OpCodeREnum.Callvirt_Interface &&
+                                        cvCode != OpCodeREnum.Call_Redirect)
+                                    {
+                                        throw new NotImplementedException(
+                                            "Step 17: Constrained not immediately followed by a callvirt (unexpected JIT shape)");
+                                    }
+                                    IMethod targetMethod = AppDomain.GetMethod(cv->Operand2);
+                                    if (targetMethod == null)
+                                    {
+                                        ip += 2;
+                                        continue;
+                                    }
+                                    int callParamIdx = cv->Operand;
+                                    ref var cmap = ref nf.NeoCallParams[callParamIdx];
+                                    byte* targetBase = newEsp;
+                                    // Copy the NON-`this` args into the callee param region.
+                                    // Slot 0 (the `this`) is handled below (box-once writes
+                                    // the boxed receiver's mStack index into the dest ref
+                                    // slot); CopyNeoCallArguments would mis-copy the 8-byte
+                                    // byref into the 4-byte ref dest, so skip slot 0 here and
+                                    // copy the rest verbatim.
+                                    if (cmap.PrimitiveSize != null)
+                                    {
+                                        for (int i = 1; i < cmap.PrimitiveSize.Length; i++)
+                                        {
+                                            Unsafe.CopyBlock(targetBase + cmap.PrimitiveDst[i],
+                                                frameBase + cmap.PrimitiveSrc[i],
+                                                cmap.PrimitiveSize[i]);
+                                        }
+                                    }
+                                    if (cmap.RefSrc != null)
+                                    {
+                                        // The map's leading ref entries belong to slot 0 (the
+                                        // `this`), whose callee-layout ref count is set by the
+                                        // call-lowering (Object -> RefCount=1 for the constrained
+                                        // callvirt). The box-once / direct-call below owns slot 0's
+                                        // receiver, so SKIP those leading ref entries (the source
+                                        // byref's "ref region" is meaningless and would read a
+                                        // garbage mStack index). Compute slot 0's ref count from
+                                        // the call-site method's declaring type.
+                                        int slot0RefCount = 0;
+                                        if (targetMethod.HasThis)
+                                        {
+                                            IType thisType = targetMethod.DeclearingType;
+                                            if (thisType != null && thisType.IsValueType)
+                                                slot0RefCount = (thisType is ILType sIl && sIl.IsValueType) ? sIl.TotalReferenceCount : 0;
+                                            else
+                                                slot0RefCount = 1; // reference-type / Object `this` -> 1 ref slot
+                                        }
+                                        for (int i = slot0RefCount; i < cmap.RefSrc.Length; i++)
+                                        {
+                                            int rSrcIdx = *(int*)(frameBase + cmap.RefSrc[i]);
+                                            mStack[frameRefBase + cmap.RefDst[i]] = (rSrcIdx >= 0 && rSrcIdx < mStack.Count) ? mStack[rSrcIdx] : null;
+                                            // Note: ref slots beyond `this` are rare for the
+                                            // constrained shape; the common case is a boxed
+                                            // override with primitive params. A ref-typed
+                                            // non-this param inherits the standard copy.
+                                        }
+                                    }
+
+                                    // Resolve the byref `this` source (slot 0): an 8-byte Ref
+                                    // Slot produced by ldloca/ldarga addressing the struct.
+                                    int thisSrcOff = cmap.PrimitiveSrc[0];
+                                    int thisObjIdx = *(int*)(frameBase + thisSrcOff);
+                                    int thisByteOff = *(int*)(frameBase + thisSrcOff + 4);
+
+                                    byte* retDstPtr = cv->Register1 >= 0 ? frameBase + cv->DstOffset : null;
+                                    int targetRetRefBase = cv->Register1 >= 0 ? frameRefBase + cv->Operand3 : -1;
+
+                                    // Resolve the constrained type's concrete override of M (NOT
+                                    // the call-site static method, and NOT the bogus `Operand4`
+                                    // slot which for a constrained callvirt is just the 0x1 flag).
+                                    IMethod actualMethod = null;
+                                    if (constrainedType is ILType ctIl)
+                                        actualMethod = ctIl.GetVirtualMethod(targetMethod);
+                                    if (actualMethod == null)
+                                        actualMethod = targetMethod;
+
+                                    // Dispatch shape keys on the resolved method's kind + the
+                                    // constrained type:
+                                    //  * IL value type -> direct-call (the override is an ILMethod
+                                    //    whose body uses in-frame Ldfld_Inline; pass the struct's
+                                    //    FLAT BYTES into the callee slot-0 frame region, exactly
+                                    //    like `local.VTMethod()` via area4's PrimitiveByRefSrc).
+                                    //    NO box: a Neo IL-struct method body cannot consume a boxed
+                                    //    ILTypeInstance `this`.
+                                    //  * CLR value type (override resolves to a CLRMethod, e.g.
+                                    //    Int32.ToString) -> box-once into a boxed CLR object and
+                                    //    dispatch via the CLR method (reflection/redirect), which
+                                    //    expects a boxed `this`.
+                                    //  * Already-boxed / reference-type `this` (objIdx >= 0) -> the
+                                    //    box-once is a no-op; dispatch on the object.
+                                    if (actualMethod is ILMethod ilmOverride && thisObjIdx < 0 &&
+                                        constrainedType is ILType ilConstrained && ilConstrained.IsValueType)
+                                    {
+                                        // Direct-call path: copy the struct's flat primitive bytes
+                                        // into the callee's slot-0 frame region (the override reads
+                                        // `this` via in-frame Ldfld_Inline from its ParamInfos[0]).
+                                        // The slot-0 ref region was reserved (zeroed) by ExecuteNeo's
+                                        // frame zero-init; an IL VT WITH ref fields would need its
+                                        // ref slots seeded from the caller's struct-local ref region
+                                        // (whose mStack base the byref does not carry) -- defer that
+                                        // sub-case to neo-step17-stobj-refloop with a tagged NIE.
+                                        if (ilConstrained.TotalReferenceCount > 0)
+                                        {
+                                            throw new NotImplementedException(
+                                                "Step 17: constrained.callvirt on an IL value type WITH reference fields is deferred (ref-slot seed; follow-up neo-step17-stobj-refloop)");
+                                        }
+                                        var calleeFrame = ilmOverride.CompiledFrame;
+                                        var thisSlotInfo = calleeFrame.ParamInfos[0];
+                                        if (ilConstrained.TotalPrimitiveSize > 0)
+                                        {
+                                            Unsafe.CopyBlock(targetBase + thisSlotInfo.Offset,
+                                                frameBase + thisByteOff,
+                                                (uint)ilConstrained.TotalPrimitiveSize);
+                                        }
+                                        if (!InvokeNeoCallTarget(ilmOverride, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                            return null;
+                                    }
+                                    else
+                                    {
+                                        // Box-once path (CLR value type, or already-boxed receiver).
+                                        object boxedReceiver = null;
+                                        if (thisObjIdx >= 0)
+                                        {
+                                            boxedReceiver = mStack[thisObjIdx];
+                                        }
+                                        else if (constrainedType is ILType ilBoxType && ilBoxType.IsValueType)
+                                        {
+                                            // Review-loop round 1 (F1 fix): an IL value type whose
+                                            // constrained callvirt resolves to an INHERITED CLRMethod
+                                            // (Object.ToString / ValueType.GetHashCode / Object.Equals
+                                            // -- i.e. NO IL override on the struct). The discriminator's
+                                            // ILMethod-direct-call gate (above) does NOT fire (actualMethod
+                                            // is a CLRMethod, not an ILMethod), so execution lands here.
+                                            // The previous code fell through to the generic
+                                            // `constrainedType.IsValueType && clrT != null` branch below,
+                                            // where `clrT = ilBoxType.TypeForCLR = ILTypeInstance` (a CLASS,
+                                            // not a value type) and `ReadNeoValueType(typeof(ILTypeInstance),
+                                            // frameBase + thisByteOff, ...)` interpreted the struct's FLAT
+                                            // BYTES as an ILTypeInstance shape -> corrupt boxed receiver ->
+                                            // native segfault (ToString) / NRE (GetHashCode). REGRESSION over
+                                            // HEAD's clean Step-17 NIE.
+                                            //
+                                            // Correct fix: box the IL struct into a REAL ILTypeInstance
+                                            // (the IL box representation), reusing Step 13's Box-arm
+                                            // machinery (`ilType.Instantiate(false)` + `CopyFrameToIL`).
+                                            // The inherited CLRMethod (Object.ToString etc.) is then
+                                            // dispatched on the boxed ILTypeInstance via reflection --
+                                            // which, for Object.ToString, calls the host ILTypeInstance
+                                            // override (returns the type's full name when no IL ToString
+                                            // override exists). This makes `anyIlStruct.ToString()` /
+                                            // string interpolation actually WORK (high-value -- debugging,
+                                            // logging) instead of crashing.
+                                            //
+                                            // The byref `this` source does NOT carry the source struct's
+                                            // ref-region mStack base (it only carries the flat-primitive
+                                            // byte offset), so an IL VT WITH reference fields cannot be
+                                            // seeded here -- NIE that sub-case (mirrors the direct-call
+                                            // path's deferral to neo-step17-stobj-refloop). A plain
+                                            // (primitive-only) IL VT boxes cleanly.
+                                            if (ilBoxType.TotalReferenceCount > 0)
+                                            {
+                                                throw new NotImplementedException(
+                                                    "Step 17: constrained.callvirt on an IL value type WITH reference fields resolving to an inherited CLR method is deferred (ref-slot seed; follow-up neo-step17-stobj-refloop)");
+                                            }
+                                            ILTypeInstance ilBox = ilBoxType.Instantiate(false);
+                                            if (ilBoxType.TotalPrimitiveSize > 0)
+                                            {
+                                                CopyFrameToIL(frameBase, thisByteOff, 0 /*refOffset unused: refCount==0 here*/,
+                                                    ilBoxType.TotalPrimitiveSize, 0 /*refCount*/,
+                                                    mStack, frameRefBase, ilBox);
+                                            }
+                                            ilBox.Boxed = true;
+                                            boxedReceiver = ilBox;
+                                        }
+                                        else if (constrainedType != null)
+                                        {
+                                            Type clrT = constrainedType.TypeForCLR;
+                                            if (constrainedType.IsPrimitive)
+                                            {
+                                                int psz = AppDomain.GetPrimitiveSize(constrainedType);
+                                                boxedReceiver = NeoBoxReturnValue(constrainedType, frameBase + thisByteOff, psz);
+                                            }
+                                            else if (constrainedType.IsValueType && clrT != null && !(constrainedType is ILType))
+                                            {
+                                                // A genuine CLR value type (the implementer's tested path:
+                                                // e.g. Int32.ToString, a CLR struct override). Read the flat
+                                                // managed bytes and box them. The `!(constrainedType is ILType)`
+                                                // guard is the F1 fix's blast-radius tightening: an IL value
+                                                // type's `TypeForCLR` is `ILTypeInstance` (a CLASS), which
+                                                // must NOT reach `ReadNeoValueType` (handled in the IL-VT
+                                                // branch above). Without this guard the F1 segfault recurs.
+                                                int managedSz = Optimizer.GetNeoValueTypeManagedSize(clrT);
+                                                int cur = 0;
+                                                boxedReceiver = ReadNeoValueType(clrT, frameBase + thisByteOff, ref cur, managedSz);
+                                            }
+                                        }
+
+                                        if (boxedReceiver == null)
+                                        {
+                                            throw new NotImplementedException(
+                                                "Step 17: constrained.callvirt on a null or unsupported constrained type is not handled (box-once no-op / ref-type this)");
+                                        }
+
+                                        // Park the boxed receiver on mStack and write its index
+                                        // into the callee param region's `this` ref slot (slot 0).
+                                        int boxedIdx = mStack.Count;
+                                        mStack.Add(boxedReceiver);
+                                        *(int*)(targetBase + cmap.PrimitiveDst[0]) = boxedIdx;
+
+                                        if (actualMethod is CLRMethod clrDispatch)
+                                            InvokeNeoClrMethod(clrDispatch, false, targetBase, mStack, retDstPtr, targetRetRefBase);
+                                        else if (actualMethod is ILMethod ilmBox)
+                                        {
+                                            if (!InvokeNeoCallTarget(ilmBox, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                                return null;
+                                        }
+                                        else
+                                            throw new NotImplementedException(
+                                                "Step 17: constrained.callvirt could not resolve a concrete override on the boxed receiver");
+                                    }
+
+                                    ip += 2; // skip Constrained + the trailing callvirt
+                                    continue;
+                                }
                             default:
                                 throw new NotImplementedException(string.Format("Neo: opcode {0} not yet implemented (Step 6)", code));
                         }
