@@ -33,6 +33,16 @@ namespace ILRuntime.CLR.Method
         ILMethod genericDefinition;
         Dictionary<int, int[]> jumptables, jumptablesR;
         bool isDelegateInvoke;
+#if ENABLE_NEO_MODE
+        // Step 22: the generic-method template (cached per open definition). Null
+        // until the first capture-eligible concrete instantiation populates it
+        // (InitCodeBody). The BodyRegister/InitCodeBody getter of a generic-
+        // instance ILMethod routes through CloneAndPatch when this is non-null on
+        // its genericDefinition; the per-occurrence JIT path is the fallback. A
+        // null template (not yet captured / capture deferred for struct-T-first)
+        // also falls through to JIT.
+        Runtime.Intepreter.RegisterVM.GenericMethodTemplate genericMethodTemplate;
+#endif
         bool isEventAdd, isEventRemove;
         int eventFieldIndex;
         bool jitPending;
@@ -692,12 +702,57 @@ namespace ILRuntime.CLR.Method
                 bool hasInstruction = def.Body.Instructions.Count > 0;
                 if (register && hasInstruction)
                 {
+#if ENABLE_NEO_MODE
+                    // Step 22: generic-method template path. For a generic instance:
+                    //   - if the definition already has a cached template -> CloneAndPatch.
+                    //   - else if THIS instantiation is capture-eligible (ref/primitive
+                    //     typeArgs -> front-half is T-invariant) -> per-occurrence JIT
+                    //     WITH the capture hook, then store the template on the def.
+                    //   - else (struct-T first instantiation, or non-generic) -> JIT.
+                    // Non-generic + first-generic-instantiation-via-JIT paths are
+                    // byte-identical to before this change (the template is additive).
+                    bool viaTemplate = false;
+                    Runtime.Intepreter.RegisterVM.JITCompiler.TemplateCapture cap = null;
+                    if (IsGenericInstance && genericDefinition != null)
+                    {
+                        var template = genericDefinition.GenericMethodTemplateCache;
+                        if (template != null)
+                        {
+                            viaTemplate = Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.TryInstantiate(
+                                template, this, appdomain, declaringType, addr, ref compiledFrame);
+                        }
+                        else if (Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.IsCaptureEligible(genericArguments))
+                        {
+                            cap = new Runtime.Intepreter.RegisterVM.JITCompiler.TemplateCapture();
+                        }
+                    }
+                    if (!viaTemplate)
+                    {
+                        JITCompiler jit = new JITCompiler(appdomain, declaringType, this);
+                        if (cap != null) jit.templateCapture = cap;
+                        jit.Compile(addr, ref compiledFrame);
+                        if (cap != null && cap.TemplateBody != null && genericDefinition != null)
+                            genericDefinition.StoreGenericTemplate(cap);
+                        bodyRegister = compiledFrame.CodeBody;
+                        stackRegisterCnt = compiledFrame.StackRegisterCount;
+                        jumptablesR = compiledFrame.SwitchTargets;
+                        registerSymbols = compiledFrame.Symbols;
+                    }
+                    else
+                    {
+                        bodyRegister = compiledFrame.CodeBody;
+                        stackRegisterCnt = compiledFrame.StackRegisterCount;
+                        jumptablesR = compiledFrame.SwitchTargets;
+                        registerSymbols = compiledFrame.Symbols;
+                    }
+#else
                     JITCompiler jit = new JITCompiler(appdomain, declaringType, this);
                     jit.Compile(addr, ref compiledFrame);
                     bodyRegister = compiledFrame.CodeBody;
                     stackRegisterCnt = compiledFrame.StackRegisterCount;
                     jumptablesR = compiledFrame.SwitchTargets;
                     registerSymbols = compiledFrame.Symbols;
+#endif
                 }
                 else
                 {
@@ -1132,6 +1187,31 @@ namespace ILRuntime.CLR.Method
             }
             return m;
         }
+
+#if ENABLE_NEO_MODE
+        // Step 22: the cached template for THIS open generic definition (null until
+        // the first capture-eligible concrete instantiation populates it). Not built
+        // by compiling the open definition (that corrupts shared caches); captured
+        // from a concrete instance's front-half in InitCodeBody.
+        internal Runtime.Intepreter.RegisterVM.GenericMethodTemplate GenericMethodTemplateCache
+        {
+            get { return IsGenericInstance ? null : genericMethodTemplate; }
+        }
+
+        internal void StoreGenericTemplate(Runtime.Intepreter.RegisterVM.JITCompiler.TemplateCapture cap)
+        {
+            if (IsGenericInstance) return;  // only the definition caches
+            if (genericMethodTemplate != null) return;  // already cached
+            try
+            {
+                genericMethodTemplate = Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.StoreFromCapture(this, cap);
+            }
+            catch (Exception)
+            {
+                genericMethodTemplate = null;
+            }
+        }
+#endif
 
         string cachedName;
         public override string ToString()

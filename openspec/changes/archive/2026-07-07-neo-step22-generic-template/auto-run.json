@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "parent": "neo-completion-portfolio",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner" } },
+    "apply": { "status": "done", "worker": { "role": "implementer" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer" }, "verdict": "REQUEST-CHANGES (BLOCKER-1 Constrained-token + MAJOR-2 MethodToken + MINOR-3 coverage hole)" },
+    "review-loop": { "status": "done", "rounds": 1, "note": "round 1: fixer fixed BLOCKER-1 (Constrained token) + MAJOR-2 (MethodToken) + 4th bug (Leave/Leave_S shift) + matrix 25->55; non-author re-review APPROVED all via adversarial probes" },
+    "ship": { "status": "done", "note": "ship-log.md updated to final state (55-cell matrix, round-1 fixes)" },
+    "archive": { "status": "in_progress" }
+  },
+  "rounds": 1,
+  "openFindings": [],
+  "summary": "Step 22. Round 1 fix landed (Constrained-token + MethodToken + Leave/Leave_S shift + matrix 55 cells). Awaiting non-author re-review."
+}

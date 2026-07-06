@@ -45,6 +45,30 @@ namespace ILRuntimeTestCLI
             bool useRegister = args[2].ToLower() == "true";
             string nameFilter = args.Length >= 4 ? args[3] : null;
             session.Load(path, patchPath, useRegister);
+#if ENABLE_NEO_MODE
+            // Step 22 host-side V1 structural-equivalence self-check.
+            if (nameFilter == "NeoStep22SelfCheck")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep22SelfCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep22 V1 self-check: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep22SelfCheck threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
+#endif
             int ignoreCnt = 0;
             int todoCnt = 0;
             List<TestResultInfo> failedTests = new List<TestResultInfo>();

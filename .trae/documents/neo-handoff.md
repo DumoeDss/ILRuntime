@@ -130,7 +130,7 @@ The **portfolio run** then delivered these 15 children (in execution order):
 ### Test smoke progression
 Neo `NeoStep`: 37 (after 12) → 41 → 49 → 58 → 65 → 72 → 81 → 84 → **91** (end of
 prior sessions) → 99 → 100 → 108 → 117 → 130 → 140 → 146 → 154 → 161 → 175 → 181
-→ 186 → **190** → **198** → **204** (HEAD after `neo-step17-generic-byref-etc`, 2026-07-06). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
+→ 186 → **190** → **198** → **204** → **205** (HEAD after `neo-step22-generic-template`, 2026-07-07). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
 Legacy 519 baseline unaffected (still ~518/519; the regression reference).
 
 ### Capability specs (`openspec/specs/`)
@@ -380,7 +380,18 @@ A separate multi-week sub-project; **pure optimization layer, no functional
 impact** (the JIT path already runs everything the smoke covers). The portfolio
 has these as pending children with a dependency chain:
 - **Step 22** `neo-step22-generic-template` — `PatchEntry` + templateBody+patches
-  + `CloneAndPatch` runtime instantiation.
+  + `CloneAndPatch` runtime instantiation. **DONE 2026-07-07**: the generic-method
+  template mechanism shipped (in-memory; additive + Neo-only + Legacy-neutral).
+  `RunNeoBackHalf` factored out of `Compile` (shared, behavior-preserving);
+  `PatchEntry` captures T-identity token sites (incl. `Constrained` type-token +
+  T-qualified method-token, captured from the CIL body); `CloneAndPatch` rebuilds
+  the Initobj prefix + shifts branches/Leave+Leave_S/addr + re-runs the back-half.
+  V1 structural-equivalence self-check **55/55** (11 methods × 5 T); Neo 205/205,
+  NeoOptHard 24/24, NeoStep20 9/9, Legacy-neutral. Review-loop round 1 caught +
+  fixed a Blocker (the `Constrained` token wasn't patched -- green smoke hid it).
+  **Next: Step 23** (`.neo` serializer). Follow-up: struct-T × inliner
+  CloneAndPatch gap (the serializer must not assume the Initobj prefix is the only
+  Initobj site).
 - **Step 23** `neo-step23-neoassembly` — `.neo` binary format (header + tables) +
   serializer/deserializer + roundtrip.
 - **Step 24** `neo-step24-ilrt-neoc` — `ilrt_neoc` standalone precompile CLI.

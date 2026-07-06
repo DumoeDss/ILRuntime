@@ -158,6 +158,48 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         bool hasReturn;
         Dictionary<Instruction, int> entryMapping;
         Dictionary<int, int[]> jumptables;
+#if ENABLE_NEO_MODE
+        // Step 22: template-capture hook. When non-null, Compile writes the T-
+        // invariant front-half artifacts (register-index body after CleanupRegister
+        // + metadata + symbols + addr + the auto-Initobj prefix registers) into
+        // this bag, for GenericMethodTemplateOps.StoreFromCapture (the template is
+        // captured from a concrete instantiation's front-half, NOT from a Compile
+        // of the open definition). The back-half still runs normally afterward
+        // (its output is the instance's own body).
+        internal TemplateCapture templateCapture;
+        internal sealed class TemplateCapture
+        {
+            public OpCodeR[] TemplateBody;
+            public short LocVarRegStart;
+            public int TotalRegCnt;
+            public short NeoCatchExRegFinal;
+            public int StackRegisterCount;
+            public Dictionary<Instruction, int> Addr;
+            public Dictionary<int, RegisterVMSymbol> Symbols;
+            public Dictionary<int, int[]> SwitchTargets;
+            public int[] InitObjPrefixRegisters;  // Register1 of each auto-Initobj prefix op
+            public TypeReference[] VariableTypes;
+            public int VarCnt;
+            // The `constrained. T` Cecil prefix TypeReferences, in CIL order. The
+            // Constrained op's recorded symbol does NOT reliably point at the
+            // `constrained.` Cecil prefix (BLOCKER-1: the JIT emits Constrained+
+            // callvirt as a pair and re-keys the symbol to the trailing callvirt;
+            // CleanupRegister can scramble it further to an unrelated branch/ret).
+            // So the T TypeReference is captured here directly from the CIL body
+            // (CIL order == template-body order: each constrained.+callvirt pair
+            // becomes exactly one Constrained op and is never inlined/reordered).
+            // Consumed in body order by ExtractPatches.
+            public TypeReference[] ConstrainedTypeTokens;
+            // The trailing callvirt's Cecil MethodReference per `constrained.`
+            // prefix, in CIL order (paired 1:1 with ConstrainedTypeTokens). A
+            // T-QUALIFIED callvirt (e.g. IComparable<T>::CompareTo) has a method
+            // token (Operand2) that is concrete-T-dependent; CloneAndPatch must
+            // re-emit it (MAJOR-2) or the runtime Constrained arm calls the
+            // capture-T method on the wrong type. Null entry when the trailing
+            // callvirt carries no method token / is not T-qualified.
+            public MethodReference[] ConstrainedMethodTokens;
+        }
+#endif
 
         public JITCompiler(Enviorment.AppDomain appDomain, ILType declaringType, ILMethod method)
         {
@@ -168,6 +210,9 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             hasReturn = method.ReturnType != appdomain.VoidType;
             entryMapping = null;
             jumptables = null;
+#if ENABLE_NEO_MODE
+            templateCapture = null;
+#endif
         }
 
         bool CheckNeedInitObj(CodeBasicBlock block, short reg, bool hasReturn, HashSet<CodeBasicBlock> visited)
@@ -565,13 +610,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             var totalRegCnt = Optimizer.CleanupRegister(res, locVarRegStart, hasReturn, neoCatchExReg, out short neoCatchExRegFinal);
             frame.StackRegisterCount = Math.Max(totalRegCnt - baseRegStart, 0);
 #if ENABLE_NEO_MODE
-            // Record the catch exception register's post-compaction index;
-            // AllocateLocalStackSpaces resolves its byte/ref offsets from
-            // localInfo at this index and stamps them onto the frame.
-            frame.NeoCatchExceptionRegIndex = neoCatchExRegFinal;
-#endif
-#if ENABLE_NEO_MODE
-            TypeSpecializeNeoOpcodes(res, locVarRegStart, totalRegCnt);
+            // Step 22 template capture point: AFTER CleanupRegister, BEFORE the
+            // T-dependent back-half (TypeSpecialize). The register-index body
+            // here is the T-invariant template artifact. When templateCapture is
+            // set (by InitCodeBody on a capture-eligible generic instance), it is
+            // snapshotted into the bag for GenericMethodTemplateOps.StoreFromCapture.
+            if (templateCapture != null)
+                CaptureTemplate(res, locVarRegStart, totalRegCnt, neoCatchExRegFinal, ref frame, addr, symbols);
+            // Step 22: the Neo T-dependent back-half (TypeSpecialize + Allocate +
+            // Lower) is factored into RunNeoBackHalf so GenericMethodTemplate.
+            // CloneAndPatch can re-run it on a cloned template body with a concrete
+            // generic argument. Compile calls it inline here on its own `res`,
+            // byte-identical to the previous inlined sequence. RunNeoBackHalf sets
+            // frame.CodeBody (after TypeSpecialize mutates `res`), so the Neo arm
+            // does not assign CodeBody here (the Legacy #else arm does).
+            RunNeoBackHalf(ref frame, res, locVarRegStart, totalRegCnt, neoCatchExRegFinal);
+#else
+            frame.CodeBody = res.ToArray();
 #endif
 #if OUTPUT_JIT_RESULT
             Console.WriteLine($"Final Results for {method}:");
@@ -583,16 +638,6 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 
 #endif
             method.Compiling = false;
-            frame.CodeBody = res.ToArray();
-#if ENABLE_NEO_MODE
-            AllocateLocalStackSpaces(ref frame);
-            // Keep frame.CodeBody in register-index form (used by inliner,
-            // debugger, optimization passes when this method is later inlined).
-            // ExecuteNeo runs against a lowered copy where Register1/2/3 hold
-            // byte offsets after LowerNeoOffsets.
-            frame.NeoExecuteBody = (OpCodeR[])frame.CodeBody.Clone();
-            Optimizer.LowerNeoOffsets(ref frame, appdomain);
-#endif
 
 #if DEBUG && !NO_PROFILER
             if (System.Threading.Thread.CurrentThread.ManagedThreadId == method.AppDomain.UnityMainThreadID)
@@ -603,6 +648,93 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 #endif
 #endif
         }
+
+#if ENABLE_NEO_MODE
+        // Step 22: the Neo T-dependent back-half, factored out of Compile so
+        // GenericMethodTemplate.CloneAndPatch can re-run it on a cloned template
+        // body with a concrete generic argument. Compile calls this inline on its
+        // own `res` (byte-identical to the previous inlined sequence).
+        //
+        // Operates on a register-index body (Register1/2/3 are still indices;
+        // LowerNeoOffsets is the last step and overwrites them with byte offsets).
+        // `res` is the body AFTER CleanupRegister -- the T-invariant front-half
+        // output, which is also the template capture point. The caller must have
+        // already set frame.StackRegisterCount / SwitchTargets / Symbols (the
+        // T-invariant front-half artifacts) before calling this.
+        internal void RunNeoBackHalf(ref CompiledFrame frame, List<OpCodeR> res, short locVarRegStart, int totalRegCnt, short neoCatchExRegFinal)
+        {
+            // Record the catch exception register's post-compaction index;
+            // AllocateLocalStackSpaces resolves its byte/ref offsets from the
+            // localInfo at this index and stamps them onto the frame.
+            frame.NeoCatchExceptionRegIndex = neoCatchExRegFinal;
+            TypeSpecializeNeoOpcodes(res, locVarRegStart, totalRegCnt);
+            frame.CodeBody = res.ToArray();
+            AllocateLocalStackSpaces(ref frame);
+            // Keep frame.CodeBody in register-index form (used by inliner,
+            // debugger, optimization passes when this method is later inlined).
+            // ExecuteNeo runs against a lowered copy where Register1/2/3 hold
+            // byte offsets after LowerNeoOffsets.
+            frame.NeoExecuteBody = (OpCodeR[])frame.CodeBody.Clone();
+            Optimizer.LowerNeoOffsets(ref frame, appdomain);
+        }
+
+        // Step 22: snapshot the T-invariant front-half artifacts into the capture
+        // bag (templateCapture). Called at the capture point (after CleanupRegister,
+        // before the back-half) when templateCapture is non-null.
+        void CaptureTemplate(List<OpCodeR> res, short locVarRegStart, int totalRegCnt, short neoCatchExRegFinal, ref CompiledFrame frame, Dictionary<Mono.Cecil.Cil.Instruction, int> addr, Dictionary<int, RegisterVMSymbol> symbols)
+        {
+            var body = res.ToArray();
+            // The auto-Initobj prefix: leading ops with Code==Initobj && Operand2==1
+            // (the front-half's auto-inserted local init -- line ~374 sets Operand2=1;
+            // IL-source Initobj leaves Operand2=0). Contiguous at the start, in local-
+            // register order. For the open definition these are all CheckNeedInitObj-
+            // driven (non-generic) locals -- T-invariant.
+            var prefixRegs = new List<int>();
+            for (int i = 0; i < body.Length; i++)
+            {
+                if (body[i].Code == OpCodeREnum.Initobj && body[i].Operand2 == 1)
+                    prefixRegs.Add(body[i].Register1);
+                else
+                    break;
+            }
+            int varCnt = def.Body.Variables.Count;
+            var varTypes = new TypeReference[varCnt];
+            for (int i = 0; i < varCnt; i++)
+                varTypes[i] = def.Body.Variables[i].VariableType;
+            // Capture the `constrained. T` prefix TypeReferences (BLOCKER-1). See
+            // TemplateCapture.ConstrainedTypeTokens for why the symbol can't be used.
+            // Also capture the trailing callvirt's MethodReference per pair (MAJOR-2:
+            // a T-qualified callvirt method token is concrete-T-dependent).
+            var constrainedTokens = new List<TypeReference>();
+            var constrainedMethods = new List<MethodReference>();
+            foreach (var ins in def.Body.Instructions)
+            {
+                if (ins.OpCode.Code == Code.Constrained)
+                {
+                    var tr = ins.Operand as TypeReference;
+                    constrainedTokens.Add(tr);
+                    var next = ins.Next;
+                    MethodReference mref = null;
+                    if (next != null && (next.OpCode.Code == Code.Callvirt || next.OpCode.Code == Code.Call))
+                        mref = next.Operand as MethodReference;
+                    constrainedMethods.Add(mref);
+                }
+            }
+            templateCapture.TemplateBody = body;
+            templateCapture.LocVarRegStart = locVarRegStart;
+            templateCapture.TotalRegCnt = totalRegCnt;
+            templateCapture.NeoCatchExRegFinal = neoCatchExRegFinal;
+            templateCapture.StackRegisterCount = frame.StackRegisterCount;
+            templateCapture.Addr = addr;
+            templateCapture.Symbols = symbols;
+            templateCapture.SwitchTargets = frame.SwitchTargets;
+            templateCapture.InitObjPrefixRegisters = prefixRegs.ToArray();
+            templateCapture.VariableTypes = varTypes;
+            templateCapture.VarCnt = varCnt;
+            templateCapture.ConstrainedTypeTokens = constrainedTokens.Count == 0 ? null : constrainedTokens.ToArray();
+            templateCapture.ConstrainedMethodTokens = constrainedMethods.Count == 0 ? null : constrainedMethods.ToArray();
+        }
+#endif
 
 #if ENABLE_NEO_MODE
         void TypeSpecializeNeoOpcodes(List<OpCodeR> body, short locVarRegStart, int totalRegCnt)
