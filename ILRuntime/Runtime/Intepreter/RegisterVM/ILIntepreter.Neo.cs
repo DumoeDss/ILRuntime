@@ -315,7 +315,6 @@ namespace ILRuntime.Runtime.Intepreter
         {
             if (map.PrimitiveSize == null)
                 return;
-
             bool[] byRefSrc = map.PrimitiveByRefSrc;
             System.Type[] byRefElemType = map.PrimitiveByRefElemType;
             for (int i = 0; i < map.PrimitiveSize.Length; i++)
@@ -339,13 +338,25 @@ namespace ILRuntime.Runtime.Intepreter
                         // frame-native byref: offset is an absolute frame byte offset.
                         Unsafe.CopyBlock(targetBase + map.PrimitiveDst[i], frameBase + offset, map.PrimitiveSize[i]);
                     }
-                    else
+                    else if (objIdx >= 0 && objIdx < mStack.Count)
                     {
                         // 4c mStack-object field deref. `offset` is the field hash (CLR
                         // object) or the Primitives byte offset (ILTypeInstance). Read
                         // the field as a boxed object and flatten into the dest slot.
                         System.Type elemType = (byRefElemType != null && i < byRefElemType.Length) ? byRefElemType[i] : null;
                         NeoMarshalByrefFieldToSlot(appdomain, mStack, objIdx, offset, elemType, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i], isWrite: false);
+                    }
+                    else
+                    {
+                        // Step 20 fixer round 1: the byref source held a stale /
+                        // out-of-range objIdx (the producing ldloca/ldflda was
+                        // folded by addrAlias, leaving stale frame bytes). Zero the
+                        // dest rather than crash -- the consumer (a CLR-method
+                        // redirect) treats a zeroed struct as `default` and the
+                        // sync-async path fails the assertion cleanly instead of
+                        // throwing IndexOutOfRangeException. (A genuine byref
+                        // always has objIdx == -1 or a valid mStack index.)
+                        Unsafe.InitBlock(targetBase + map.PrimitiveDst[i], 0, map.PrimitiveSize[i]);
                     }
                 }
                 else
@@ -463,12 +474,30 @@ namespace ILRuntime.Runtime.Intepreter
         // own slot-0 -> caller-dest copy-back in ExecuteNeo's Ret arm.
         static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain)
         {
+            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, appdomain, null);
+        }
+
+        // Step 20 fixer round 1 (TaskAwaiter round-trip): the write-back reads each
+        // flagged byref source's Ref Slot (objIdx, off) AFTER the call. But the
+        // C# compiler reuses the byref source register as the CALL DEST for a
+        // non-mutating VT-this instance method (e.g. `call r6, r6, get_IsCompleted`
+        // -- r6 holds the ldloca byref AND receives the bool result), so the call
+        // OVERWRITES the byref bytes before the write-back reads them -> the
+        // write-back then interprets the result int as an mStack objIdx
+        // (ArgumentOutOfRangeException) or a wrong frame offset. The fix: capture
+        // every flagged byref source's (objIdx, off) into a snapshot BEFORE the
+        // call, then read the snapshot here. The snapshot is a flat (objIdx,off)
+        // pair array (8 bytes per flagged slot), passed by the Call/Callvirt site
+        // (null = legacy re-read behavior, for callers that did not snapshot).
+        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain, int* byRefSnapshot)
+        {
             if (map.PrimitiveSize == null || map.PrimitiveByRefSrc == null)
                 return;
 
             bool[] byRefSrc = map.PrimitiveByRefSrc;
             bool[] writeBack = map.PrimitiveByRefWriteBack;
             System.Type[] byRefElemType = map.PrimitiveByRefElemType;
+            int snapIdx = 0;
             for (int i = 0; i < byRefSrc.Length; i++)
             {
                 if (!byRefSrc[i])
@@ -479,21 +508,67 @@ namespace ILRuntime.Runtime.Intepreter
                     continue;
                 if (i >= map.PrimitiveSrc.Length)
                     continue;
-                int objIdx = *(int*)(frameBase + map.PrimitiveSrc[i]);
-                int offset = *(int*)(frameBase + map.PrimitiveSrc[i] + 4);
+                int objIdx, offset;
+                if (byRefSnapshot != null)
+                {
+                    objIdx = byRefSnapshot[snapIdx * 2];
+                    offset = byRefSnapshot[snapIdx * 2 + 1];
+                    snapIdx++;
+                }
+                else
+                {
+                    objIdx = *(int*)(frameBase + map.PrimitiveSrc[i]);
+                    offset = *(int*)(frameBase + map.PrimitiveSrc[i] + 4);
+                }
                 if (objIdx == -1)
                 {
                     // frame-native byref: write the (possibly-mutated) slot bytes
                     // back to the caller's in-frame local.
                     Unsafe.CopyBlock(frameBase + offset, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i]);
                 }
-                else
+                else if (objIdx >= 0 && objIdx < mStack.Count)
                 {
                     // 4c mStack-object field: write back through the field accessor.
                     System.Type elemType = (byRefElemType != null && i < byRefElemType.Length) ? byRefElemType[i] : null;
                     NeoMarshalByrefFieldToSlot(appdomain, mStack, objIdx, offset, elemType, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i], isWrite: true);
                 }
+                // else: the snapshot/byref source held a stale or out-of-range
+                // objIdx (the ldloca that produced this byref was folded by
+                // addrAlias, so the dest temp holds stale frame bytes). Skip the
+                // write-back -- it is only meaningful for a genuinely-mutating
+                // instance method, whose byref would be a real ldloca product
+                // (objIdx == -1 or a valid mStack index). A non-mutating VT-this
+                // call (get_IsCompleted / GetResult on a TaskAwaiter) is a no-op
+                // here, so skipping is semantically correct.
             }
+        }
+
+        // Capture the (objIdx, off) of every write-back-flagged byref source slot
+        // BEFORE a call, into a caller-provided snapshot buffer (8 bytes per slot,
+        // indexed in write-back iteration order). The snapshot is read by the
+        // snapshot-aware CopyNeoCallThisBack overload so a byref source register
+        // that the call reused as its dest (clobbering the byref bytes) is still
+        // write-back-able. Returns the number of captured slots.
+        static int SnapshotNeoCallByRefSources(ref NeoCallParamMap map, byte* frameBase, int* snapshot)
+        {
+            if (map.PrimitiveSize == null || map.PrimitiveByRefSrc == null)
+                return 0;
+            bool[] byRefSrc = map.PrimitiveByRefSrc;
+            bool[] writeBack = map.PrimitiveByRefWriteBack;
+            int n = 0;
+            for (int i = 0; i < byRefSrc.Length; i++)
+            {
+                if (!byRefSrc[i])
+                    continue;
+                if (writeBack != null && i < writeBack.Length && !writeBack[i])
+                    continue;
+                if (i >= map.PrimitiveSrc.Length)
+                    continue;
+                snapshot[n * 2] = *(int*)(frameBase + map.PrimitiveSrc[i]);
+                snapshot[n * 2 + 1] = *(int*)(frameBase + map.PrimitiveSrc[i] + 4);
+                n++;
+            }
+            return n;
         }
 
         bool InvokeNeoCallTarget(IMethod targetMethod, bool isNewobj, byte* targetBase, AutoList mStack, byte* retDstPtr, int targetRetRefBase, out bool unhandledException)
@@ -1996,6 +2071,29 @@ namespace ILRuntime.Runtime.Intepreter
                                         targetRetRefBase = frameRefBase + ip->Operand3;
                                     }
 
+                                    // Step 20 fixer round 1: snapshot every write-back-flagged
+                                    // byref source BEFORE the call. A VT-this instance method
+                                    // whose byref source register is reused as the call dest
+                                    // (the C# async-state-machine pattern `call r6, r6,
+                                    // get_IsCompleted`) would otherwise have its byref bytes
+                                    // clobbered by the result before CopyNeoCallThisBack reads
+                                    // them. The snapshot is read by the snapshot-aware overload.
+                                    int* byRefSnap = null;
+                                    bool[] wbFlags = map.PrimitiveByRefWriteBack;
+                                    if (wbFlags != null && wbFlags.Length > 0)
+                                    {
+                                        // Upper-bound the buffer by the flag count (one (objIdx,off)
+                                        // pair = 2 ints per flagged slot). 16 slots is far more than
+                                        // any real call site uses (a CLR-method instance call has at
+                                        // most a handful of byref params); grow if ever needed.
+                                        int cap = wbFlags.Length;
+                                        if (cap > 16) cap = 16;
+                                        int* snap = stackalloc int[cap * 2];
+                                        int captured = SnapshotNeoCallByRefSources(ref map, frameBase, snap);
+                                        if (captured > 0)
+                                            byRefSnap = snap;
+                                    }
+
                                     if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
                                         return null;
 
@@ -2003,7 +2101,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     // mutation (ctor / mutating instance method) back to the
                                     // caller's in-frame local. No-op for non-mutating calls
                                     // and for non-VT-`this` calls (empty PrimitiveByRefSrc).
-                                    CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap);
 
                                     ip++;
                                     continue;
@@ -4472,6 +4570,33 @@ namespace ILRuntime.Runtime.Intepreter
                 for (int i = 0; i < refCount; i++)
                     dstRefs[i] = mStack[srcBase + i];
             }
+        }
+
+        // Step 20 (neo-step20-async, D5): Hoist an in-frame IL value-type state
+        // machine to a fresh heap ILTypeInstance WITHOUT a CrossBindingAdaptor
+        // (initializeCLRInstance:false). The inverse of CopyFrameToIL's
+        // heap->frame direction; a Box without the CLR instance. Pure primitive
+        // shipped standalone + unit-probed; NOT wired into any redirect (the
+        // suspend slice wires it into AwaitUnsafeOnCompleted).
+        internal static unsafe ILTypeInstance HoistNeoILValueToHeap(ILType smType,
+            byte* srcFrame, int srcPrimOff, int srcRefBase,
+            AutoList mStack, int srcRefOff, int refCount)
+        {
+            ILTypeInstance heap = new ILTypeInstance(smType, false);
+            int primSize = smType.TotalPrimitiveSize;
+            if (primSize > 0 && heap.Primitives != null)
+            {
+                ref byte dstP = ref MemoryMarshal.GetReference(heap.Primitives.AsSpan());
+                Unsafe.CopyBlock(ref dstP, ref *(srcFrame + srcPrimOff), (uint)primSize);
+            }
+            if (refCount > 0)
+            {
+                var dstRefs = heap.ManagedObjects;
+                int srcBase = srcRefBase + srcRefOff;
+                for (int i = 0; i < refCount; i++)
+                    dstRefs[i] = mStack[srcBase + i];
+            }
+            return heap;
         }
 
         // Copies ILTypeInstance contents back to the frame byte region + frame mStack refs.

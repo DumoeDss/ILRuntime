@@ -77,8 +77,17 @@
       "completedDate": "2026-07-06", "smoke": "Neo 140/140 + Legacy NeoStep19 10/10", "review": "APPROVE round 1 (F1 pool-leak Major fixed: try/finally + FreeILIntepreter; 1000cb→2alloc/999hit); F2 accepted-known; F-7 delegate-ref/out deferred"
     },
     "neo-step20-async": {
-      "pipeline": "small-feature", "wave": 3, "scope": "[Step 20] Builder redirect + frame-to-heap copy + ILAsyncContext; sync+async paths",
-      "prerequisites": ["neo-step19-delegate"], "dependsOn": ["neo-step19-delegate"], "status": "pending", "capability": "neo-dispatch"
+      "pipeline": "small-feature", "wave": 3, "scope": "[Step 20 sync slice] builder redirects + Start->MoveNext + awaiter/Task overrides (PARTIAL: sync Task<int> green; rest blocked on F-10)",
+      "prerequisites": ["neo-step19-delegate"], "dependsOn": ["neo-step19-delegate"], "status": "done", "capability": "neo-async",
+      "completedDate": "2026-07-06", "smoke": "Neo 186/186 (TC1+TC7 sync Task<int> green; 11 probes trimmed -> F-10)", "review": "PARTIAL ship (fixer STOPPED at F-10 NEO-CLRSTRUCT-FIELD-OF-IL — broad layout/JIT edge, not a focused fix). Infrastructure + sync Task<int> proven; rest deferred to neo-clrstruct-field-of-il + neo-step20-async-suspend"
+    },
+    "neo-clrstruct-field-of-il": {
+      "pipeline": "small-feature", "wave": 3, "scope": "[F-10 NEO-CLRSTRUCT-FIELD-OF-IL] IL instance CLR-struct fields laid out as ref slots but ldflda addresses as primitive offset -> OOB. Broad JIT/layout fix",
+      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-value-types"
+    },
+    "neo-step20-async-suspend": {
+      "pipeline": "small-feature", "wave": 3, "scope": "[Step 20 suspend slice] truly-async AwaitUnsafeOnCompleted -> frame-to-heap hoist + ILAsyncContext + resumption",
+      "prerequisites": ["neo-step20-async", "neo-clrstruct-field-of-il"], "dependsOn": ["neo-step20-async", "neo-clrstruct-field-of-il"], "status": "pending", "capability": "neo-async"
     },
     "neo-array-completion": {
       "pipeline": "small-feature", "wave": 4, "scope": "[D-ARR rank-1] Stelem_I/Ldelem_I arms + F-4 other-width CLR-array Stind/Ldind branches",

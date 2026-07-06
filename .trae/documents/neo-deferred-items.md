@@ -90,6 +90,8 @@ Insert these into the roadmap ordering:
 | F-7 / NEO-DELEGATE-REFOUT | byref-aware arg marshaling in `DelegateAdapter.NeoInvokeSub` (delegate ref/out params) | Step 19 | **future** (route to a byref follow-up child — same family as D-13B area 4c / neo-step17-stobj-refloop) | byref-typed Ref Slot in the delegate Invoke param region | pre-existing (latent; the only reachable shape today is plain primitives via `WriteNeoCallSlot`) |
 | F-8 / NEO-DOUBLE-COMBINE | 2+ `double` locals combined in one boolean expression silently misfire (F-MAJ-1 class; `double`-specific, not all 8-byte primitives) | neo-array-completion review (F-1) | **RESOLVED 2026-07-06 (neo-double-combine-quirk, D4)** | dead `Operand3 = RefOffset` write in `Optimizer.Neo.cs LowerNeoOffsets` immediate-branch case clobbered the high 4 bytes of `OperandDouble`/`OperandLong` (@12-19) via the `[StructLayout(Explicit)]` union; copy-prop folds `Ldc_R8` into `Bnei_Un_R8` (reachable) but keeps `Ldc_I8` register-register (unreachable) -> double-fails/long-works | pre-existing (NOT introduced by D-ARR; upstream of the array work; surfaced when the array probes needed combined `double` assertions) |
 | F-9 / NEO-INLINED-RETURN-MOVE | an int returned from an inlined IL method moved as a reference -> `mStack[intValue]` OOB (return-value classification edge in the trivial inliner) | neo-step13-area4-refandstind review (4d.2 probe-avoidance) | **future** (route to an inliner/optimizer follow-up) | the trivial-inliner mis-classifies an inlined IL-method return value (moves an int as a reference) | pre-existing (latent; surfaced when the 4d.2 `LdindClrIntFieldPeek` probe needed to defeat it via `int v = slot; return v + 0;`) |
+| F-10 / NEO-CLRSTRUCT-FIELD-OF-IL | a CLR-struct field of an IL instance (e.g. an async SM's `<>t__builder`/`<>u__1`) is laid out as a reference slot (no `primitiveOffset` advance, ILType.cs:2129-2157) but the JIT `ldflda` addresses it as a primitive offset -> byref carries one offset, unrecoverable to the field's ManagedObjects ref slot; `ldflda &SM.<>t__builder` reads Primitives OOB on the non-generic-Task SM, happens to fit on the Task<int> SM | neo-step20-async sync slice (review-loop round 1) | **future** (route to `neo-clrstruct-field-of-il`) | a real fix is broad: either (a) a JIT change so `ldflda` of a CLR-struct-field-of-IL-instance encodes a sentinel objIdx + the field's ReferenceOffset with a runtime branch in NeoMarshalByrefFieldToSlot reading the boxed struct from ManagedObjects; OR (b) a layout change so a CLR-struct field's flat bytes ARE stored in Primitives (advance primitiveOffset by the managed size, mirror in AllocateNeoCallParamSlot + every stfld/ldfld/by-value-param consumer) | **HIGH** (pre-existing; the load-bearing primitive for the rest of Step 20 sync + the suspend slice; same family as F-2 / NEO-BYREF-THIS; TC1/TC7 pass by a layout accident) |
+| STEP-20-PARTIAL | Step 20 async/await — sync Task<int> green; the rest deferred | neo-step20-async (Step 20) | **PARTIAL**: sync Task<int> (TC1) + nested (TC7) SHIPPED; the rest (non-generic Task, ValueTask, multi-await, exception, async void, incomplete-await NIE) deferred to F-10 + `neo-step20-async-suspend` | F-10 (CLR-struct-field-of-IL) for the remaining sync shapes; `neo-step20-async-suspend` for the truly-async suspend/resume | infrastructure shipped (builder redirects + awaiter/Task accessor overrides + Start->MoveNext fresh-interpreter routing + SmTaskMap stash + HoistNeoILValueToHeap + ILAsyncContext skeleton) |
 
 ---
 
@@ -769,6 +771,99 @@ reviewer did NOT ship a failing probe (would regress the smoke for an
 out-of-scope bug); the probe-avoidance in 4d.2 is the load-bearing evidence
 the edge is real. Recorded so a future inliner-hardening change finds it. See
 `openspec/changes/archive/2026-07-06-neo-step13-area4-refandstind/ship-log.md`.
+
+### F-10 / NEO-CLRSTRUCT-FIELD-OF-IL — CLR-struct field of an IL instance (ldflda offset defect; -> future `neo-clrstruct-field-of-il`)
+
+**HIGH severity — the load-bearing primitive for the rest of Step 20 sync + the
+suspend slice.** Surfaced by neo-step20-async sync slice review-loop round 1
+(the dump-gated STOP). The C# async state machine `<Method>d__N` is loaded as a
+HEAP ILTypeInstance (Step 20 OQ2 confirmed; D2's in-frame-VT premise did not
+apply). Its fields include IL-primitive fields (`<>1__state` int) and **CLR-
+struct fields** (`<>t__builder` = `AsyncTaskMethodBuilder`, `<>u__1` =
+`TaskAwaiter` — both CLR structs).
+
+The ILType field-layout pass (`ILType.cs:2129-2157`, the `else` branch at line
+2146) lays out a CLR-struct field by recording its `PrimitiveOffset` (the
+running `primitiveOffset` cursor) AND `ReferenceOffset`, then does
+`referenceOffset++` -- it treats the CLR struct as a REFERENCE slot and does NOT
+advance `primitiveOffset` by the struct's size. So the CLR-struct field's flat
+bytes do NOT live in the ILTypeInstance's `Primitives` array (only IL-primitive
+fields do). But the JIT's `ldflda` of that CLR-struct field emits a byref
+`(smMStackIdx, field.PrimitiveOffset)` (e.g. `(2, 4)` for the builder after the
+4-byte state). At runtime, `CopyNeoCallArguments` -> `NeoMarshalByrefFieldToSlot`
+sees `target is ILTypeInstance` and reads `ili.Primitives[off]` for `sz` bytes
+-- but `Primitives.Length` is only the IL-primitive total.
+
+**Dump proof of the layout accident:**
+- TC1 `<NeoStep20_SyncTaskOfT>d__1`: `smPrimSize=12, smPrimLen=12` -- the
+  builder-byref `(2, 4, sz=8)` reads Primitives[4..12], IN range (the 8 extra
+  bytes happen to be present because the Task<int> SM has more IL-primitive
+  field contribution). **PASSES by luck of layout.**
+- TC2 `<NeoStep20_SyncTask>d__2`: `primLen=4` -- the builder-byref `(2, 4,
+  sz=8)` reads Primitives[4..12], **OOB** -> IndexOutOfRange.
+
+So the SAME `ldflda &SM.<>t__builder` shape OOBs on the non-generic-Task SM and
+happens to fit on the Task<int> SM -- a layout accident, not a designed
+contract. The byref encoding `(objIdx, PrimitiveOffset)` is unrecoverable to
+the field's actual storage (the ManagedObjects ref slot at `ReferenceOffset`)
+because the byref carries only ONE offset.
+
+**Pre-existing -- NOT introduced by neo-step20-async.** Same family as F-2 /
+NEO-BYREF-THIS (the CLRMethod.Invoke reflection-fallback byref-`this` shape) and
+F-3 / NEO-BYREF-THIS. A narrow fix does NOT exist: the byref encoding is
+ambiguous (one offset, two possible storage regions). Forcing a narrow fix
+(zeroing the OOB dest) yields silent wrong results (default builder -> the
+SM-keyed SmTaskMap never gets a real Task) -- the silent-corruption class the
+OPT-HARDEN review-fix M1 lesson forbids. This is the stacked-pre-existing-edges
+STOP case.
+
+**Resolution:** future -- dedicated child `neo-clrstruct-field-of-il`. A real
+fix is broad (touches the field-layout pass + every struct-field consumer):
+- (a) a JIT change so `ldflda` of a CLR-struct-field-of-IL-instance produces a
+  recoverable encoding (e.g. a sentinel objIdx + the field's ReferenceOffset,
+  with a runtime branch in NeoMarshalByrefFieldToSlot that reads the boxed
+  struct from ManagedObjects[ReferenceOffset]); OR
+- (b) a layout change so a CLR-struct field's flat bytes ARE stored in
+  Primitives (advance primitiveOffset by the struct's managed size, mirror in
+  AllocateNeoCallParamSlot + every stfld/ldfld/by-value-param consumer).
+
+The fix site: the field-layout pass (`ILType.cs:2129-2157`) + the `ldflda` JIT
+lowering + the NeoMarshalByrefFieldToSlot ILTypeInstance branch + the
+stfld/ldfld consumers of CLR-struct fields on IL instances. Unblocks the rest
+of Step 20 sync (non-generic Task, ValueTask, multi-await, exception, async
+void) AND the suspend slice (the awaiter field `<>u__1` is the same shape).
+Recorded so the `neo-clrstruct-field-of-il` planner finds it. See
+`openspec/changes/archive/2026-07-06-neo-step20-async/ship-log.md`.
+
+### STEP-20-PARTIAL — Step 20 async/await (sync Task<int> green; the rest deferred)
+
+Step 20 is the largest runtime step in the Neo roadmap (async/await).
+neo-step20-async delivered the SYNC-completing slice proven end-to-end:
+- **SHIPPED (green):** TC1 (sync `Task<int>`) + TC7 (nested sync `Task<int>`)
+  -- the full sync path (Start -> DriveMoveNext via a fresh pooled interpreter
+  -> GetAwaiter redirect -> get_IsCompleted redirect -> GetResult -> SetResult
+  -> get_Task) proves the builder-redirect surface, the Start->MoveNext
+  fresh-interpreter routing, the awaiter/Task accessor overrides, and the
+  SmTaskMap stash all work end-to-end for the generic Task<int> single-await +
+  nested shapes.
+- **Infrastructure shipped (foundation, NOT exercised by a green test):**
+  builder redirects (Create/Start/SetResult/SetException/get_Task/
+  SetStateMachine) registered in the AppDomain ctor (FIRST-registered-wins over
+  the autogen non-functional stubs); awaiter/Task accessor overrides;
+  `HoistNeoILValueToHeap` (the D5 frame-to-heap hoist helper, standalone, not
+  wired); `ILAsyncContext<T>` skeleton (IValueTaskSource<T> surface live;
+  MoveNext throws the tagged NIE).
+- **DEFERRED:** the remaining sync shapes (non-generic Task, ValueTask,
+  multi-await, exception, async void) -- blocked by F-10
+  (NEO-CLRSTRUCT-FIELD-OF-IL). The truly-async suspend/resume path -- deferred
+  to `neo-step20-async-suspend` (AwaitUnsafeOnRegistered NIE + frame-to-heap +
+  ILAsyncContext resumption). The 11 trimmed probes (TC2-TC6, TC8) -- re-add
+  when F-10 lands. The `Callvirt_CLR` generic-type-instance bug -- noted, does
+  not block any green-target probe.
+
+**Resolution:** F-10 (the load-bearing primitive) unblocks the rest of sync;
+`neo-step20-async-suspend` owns the suspend/resume. See
+`openspec/changes/archive/2026-07-06-neo-step20-async/ship-log.md`.
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was

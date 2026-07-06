@@ -243,6 +243,16 @@ namespace ILRuntime.Runtime.Enviorment
             // real Exception the Throw opcode can unwrap. Engine-agnostic.
             RegisterCrossBindingAdaptor(new Adapters.ExceptionAdaptor());
 
+#if ENABLE_NEO_MODE
+            // Step 20 (neo-step20-async): register custom Neo async builder
+            // redirects BEFORE the test-harness CLRBindings.Initialize runs. The
+            // redirect map is first-registered-wins, so these custom redirects
+            // WIN and the autogen non-functional *Neo builder stubs are skipped.
+            // Sync-completing slice only; AwaitUnsafeOnCompleted/AwaitOnCompleted
+            // throw a tagged NIE (the suspend slice -- neo-step20-async-suspend).
+            CLRRedirectionsAsyncNeo.Register(this);
+#endif
+
             debugService = new Debugger.DebugService(this);
 
 #if ENABLE_NEO_MODE
