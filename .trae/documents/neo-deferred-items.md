@@ -90,7 +90,8 @@ Insert these into the roadmap ordering:
 | F-7 / NEO-DELEGATE-REFOUT | byref-aware arg marshaling in `DelegateAdapter.NeoInvokeSub` (delegate ref/out params) | Step 19 | **future** (route to a byref follow-up child — same family as D-13B area 4c / neo-step17-stobj-refloop) | byref-typed Ref Slot in the delegate Invoke param region | pre-existing (latent; the only reachable shape today is plain primitives via `WriteNeoCallSlot`) |
 | F-8 / NEO-DOUBLE-COMBINE | 2+ `double` locals combined in one boolean expression silently misfire (F-MAJ-1 class; `double`-specific, not all 8-byte primitives) | neo-array-completion review (F-1) | **RESOLVED 2026-07-06 (neo-double-combine-quirk, D4)** | dead `Operand3 = RefOffset` write in `Optimizer.Neo.cs LowerNeoOffsets` immediate-branch case clobbered the high 4 bytes of `OperandDouble`/`OperandLong` (@12-19) via the `[StructLayout(Explicit)]` union; copy-prop folds `Ldc_R8` into `Bnei_Un_R8` (reachable) but keeps `Ldc_I8` register-register (unreachable) -> double-fails/long-works | pre-existing (NOT introduced by D-ARR; upstream of the array work; surfaced when the array probes needed combined `double` assertions) |
 | F-9 / NEO-INLINED-RETURN-MOVE | an int returned from an inlined IL method moved as a reference -> `mStack[intValue]` OOB (return-value classification edge in the trivial inliner) | neo-step13-area4-refandstind review (4d.2 probe-avoidance) | **future** (route to an inliner/optimizer follow-up) | the trivial-inliner mis-classifies an inlined IL-method return value (moves an int as a reference) | pre-existing (latent; surfaced when the 4d.2 `LdindClrIntFieldPeek` probe needed to defeat it via `int v = slot; return v + 0;`) |
-| F-10 / NEO-CLRSTRUCT-FIELD-OF-IL | a CLR-struct field of an IL instance (e.g. an async SM's `<>t__builder`/`<>u__1`) is laid out as a reference slot (no `primitiveOffset` advance, ILType.cs:2129-2157) but the JIT `ldflda` addresses it as a primitive offset -> byref carries one offset, unrecoverable to the field's ManagedObjects ref slot; `ldflda &SM.<>t__builder` reads Primitives OOB on the non-generic-Task SM, happens to fit on the Task<int> SM | neo-step20-async sync slice (review-loop round 1) | **future** (route to `neo-clrstruct-field-of-il`) | a real fix is broad: either (a) a JIT change so `ldflda` of a CLR-struct-field-of-IL-instance encodes a sentinel objIdx + the field's ReferenceOffset with a runtime branch in NeoMarshalByrefFieldToSlot reading the boxed struct from ManagedObjects; OR (b) a layout change so a CLR-struct field's flat bytes ARE stored in Primitives (advance primitiveOffset by the managed size, mirror in AllocateNeoCallParamSlot + every stfld/ldfld/by-value-param consumer) | **HIGH** (pre-existing; the load-bearing primitive for the rest of Step 20 sync + the suspend slice; same family as F-2 / NEO-BYREF-THIS; TC1/TC7 pass by a layout accident) |
+| F-10 / NEO-CLRSTRUCT-FIELD-OF-IL | **RESOLVED 2026-07-06 (neo-clrstruct-field-of-il)** a CLR-struct field of an IL instance (e.g. an async SM's `<>t__builder`/`<>u__1`) is laid out as a reference slot (no `primitiveOffset` advance, ILType.cs:2129-2157) but the JIT `ldflda` addressed it as a primitive offset -> byref carried one offset, unrecoverable to the field's ManagedObjects ref slot; `ldflda &SM.<>t__builder` read Primitives OOB on the non-generic-Task SM, happened to fit on the Task<int> SM | neo-step20-async sync slice (review-loop round 1) | **RESOLVED (neo-clrstruct-field-of-il)** | encoding-only fix (Option A, NO layout change, NO ILType.cs/Optimizer.Neo.cs edit): β offset-discriminator — `NeoLdfldaClrStructFieldMarker = 0x2` (Operand4 bit 0x2; `Stfld_Ref`/`Ldfld_Ref` discriminator `Operand4 != 0`, stamps `fieldType.GetHashCode()`) + runtime flag `NeoF10ByrefOffsetFlag = 0x40000000` (bit 30 of the offset half). All THREE arms (Stfld_Ref, Ldfld_Ref, Ldflda) made consistent — box/unbox/flatten the CLR struct at `ManagedObjects[ReferenceOffset]` via `ReadNeoValueType`/`WriteNeoValueType`. Blast radius CONFIRMED SAFE (5 field shapes; existing paths byte-identical when `Operand4 == 0`). Neo-only, Legacy-neutral | **was HIGH** (pre-existing; the load-bearing primitive for the rest of Step 20 sync + the suspend slice; same family as F-2 / NEO-BYREF-THIS; TC1/TC7 passed by a layout accident) — now resolved |
+| F-10-R1 / NEO-CLRSTRUCT-FIELD-OF-IL-R1 | the F-6/F-10 markers are NOT mutually-exclusive at the JIT discriminator: an IL **value type** `struct V { TestVector3NoBinding f; }` taking `ref this.f` via `ldflda` inside a VT method gets BOTH stamped (`Operand4 = 0x3`); the runtime checks F-10 (`objIdx >= 0`) before F-6, predicting a mis-dispatch that reads flat bytes as an mStack index | neo-clrstruct-field-of-il review round 1 (Major-latent) | **accepted-known-deferred** (route to the constrained-VT follow-up `neo-step17-generic-byref-etc` or a Step 13 Area 3 follow-up) | the correct future fix is the **JIT-discriminator gate** (only stamp F-10 when the source is NOT an in-frame VT, making the two markers genuinely mutually-exclusive at the producer), NOT a runtime reorder — the reviewer's recommended runtime F-6-before-F-10 reorder was DISPROVEN by the fixer (broke 6 NeoStep17 F-6-only probes, 190→184; F-6 shape 3 vs shape 1/2 produce different byrefs). The defect is fully latent: the feared F-10-first mis-dispatch requires `objIdx >= 0` with flat bytes, gated behind the DEFERRED `constrained.callvirt`-on-VT; for all reachable VT shapes `objIdx == -1` → HEAD order routes correctly to F-6 shape 1/2. Probe 4.8 (`NeoClrStructField_IlVtMethodLdfldaThisClrStructField`) is a green regression guard for the both-stamp shape's `objIdx == -1` routing | latent (Major; gated behind constrained-VT; not reachable today) |
 | STEP-20-PARTIAL | Step 20 async/await — sync Task<int> green; the rest deferred | neo-step20-async (Step 20) | **PARTIAL**: sync Task<int> (TC1) + nested (TC7) SHIPPED; the rest (non-generic Task, ValueTask, multi-await, exception, async void, incomplete-await NIE) deferred to F-10 + `neo-step20-async-suspend` | F-10 (CLR-struct-field-of-IL) for the remaining sync shapes; `neo-step20-async-suspend` for the truly-async suspend/resume | infrastructure shipped (builder redirects + awaiter/Task accessor overrides + Start->MoveNext fresh-interpreter routing + SmTaskMap stash + HoistNeoILValueToHeap + ILAsyncContext skeleton) |
 
 ---
@@ -774,6 +775,62 @@ the edge is real. Recorded so a future inliner-hardening change finds it. See
 
 ### F-10 / NEO-CLRSTRUCT-FIELD-OF-IL — CLR-struct field of an IL instance (ldflda offset defect; -> future `neo-clrstruct-field-of-il`)
 
+**RESOLVED 2026-07-06 (neo-clrstruct-field-of-il).** Fixed via an encoding-only
+fix (Option A; NO layout change; NO `ILType.cs`/`Optimizer.Neo.cs` edit). The
+β offset-discriminator: F-10 marker `NeoLdfldaClrStructFieldMarker = 0x2`
+(standalone `Operand4` bit `0x2`; OR-stamped alongside F-6's bit `0x1`) + the
+runtime flag `NeoF10ByrefOffsetFlag = 0x40000000` (bit 30 of the offset half;
+real `ReferenceOffset` values are tiny ref-slot indices so bit 30 is unreachable;
+avoids the sign bit). The `Stfld_Ref`/`Ldfld_Ref` discriminator is
+`ip->Operand4 != 0` (F-10 stamps `Operand4 = fieldType.GetHashCode()`); at HEAD
+these arms never read `Operand4`, so the change is additive and byte-identical
+when `Operand4 == 0`.
+
+**The design premise was DISPROVEN by the Block-0 dump** ("only `ldflda`
+broken; `Stfld_Ref`/`Ldfld_Ref` already correct"): `Stfld_Ref` of a CLR-struct
+field from a flat-bytes source read the source's first 4 bytes as a ref-slot
+mStack index (dump: `srcIdx=1092616192` = `10.0f` reinterpreted) ->
+`mStack[garbage]` OOR; `Ldfld_Ref` wrote an mStack index into a flat-bytes dest.
+**All THREE heap field-access arms were broken, not just `ldflda`.** The fix
+makes all three consistent: the F-10 shape boxes/unboxes/flattens the CLR struct
+at `ManagedObjects[ReferenceOffset]` via `ReadNeoValueType`/`WriteNeoValueType`
+(the Step-13b/area4 machinery). Consumers shipped: `NeoMarshalByrefFieldToSlot`
+(the Step-20 builder-byref hot path + an elemType-recovery fallback that FAILS
+LOUD with a tagged NIE on null/uninit, never silent corruption) +
+`Ldobj`/`Stobj` ILTypeInstance branches. Fixed-width `stind_*`/`ldind_*`
+through an F-10 byref is unreached in smoke/probes -> accepted-known (loud OOR).
+
+**Blast radius CONFIRMED SAFE** (review probe 1, load-bearing): 5 field shapes
+swept — IL-instance ref-type, CLR-ref, CLR-object (all `Stfld_Ref`/`Ldfld_Ref`
+with `Operand4 == 0` -> existing path byte-identical); IL-VT field (selects
+`Stfld_Value`/`Ldfld_Value`, not Ref -> not reached); IL-primitive field
+(`Stfld_I4`/etc, not Ref -> not reached). The F-10 discriminator fires ONLY for
+the F-10 CLR-struct-field-of-IL-instance shape. The hash-zero edge case is
+astronomically rare and falls back to the existing path — accepted-known
+(design.md OQ2).
+
+**Verification:** 7 F-10 probes FAIL-on-HEAD -> PASS (stash-toggle
+`IsClrStructFieldOfIL -> false`: `Ran 7, 6 failed`). **Step 20 sync 2 -> 4
+green** (TC4 `AsyncVoidSync` + TC6 `AsyncExceptionFaultsTask` newly unblocked —
+both FAIL-on-HEAD with `IndexOutOfRangeException` at
+`ILIntepreter.Neo.cs:2119` = the F-10 OOB; TC1/TC7 stay green as the layout-
+accident guards). NeoStep 190/190, NeoStep20 9/9, ClrStructField 8/8. Legacy
+`Debug` 0 errors. Neo-only, Legacy-neutral by construction.
+
+**F-10-R1 (Major, latent) reclassified accepted-known-deferred** — see its own
+§3 entry below. The reviewer's recommended runtime F-6-before-F-10 reorder was
+DISPROVEN (broke 6 NeoStep17 F-6-only probes, 190→184); the correct future fix
+is the JIT-discriminator gate, deferred to the constrained-VT follow-up.
+
+**Step 20 redirect-coverage follow-ups (TC2/TC3/TC5):** these pass F-10 but hit
+DISTINCT Step-20 redirect edges (non-generic Task `Start` redirect null-SM;
+ValueTask builder NRE; multi-await `Task<int>.get_Result` redirect) — NOT F-10;
+re-trimmed green, documented as Step-20 follow-ups in
+`TestCases/NeoStep20Test.cs` and the STEP-20-PARTIAL entry. See
+`openspec/changes/archive/2026-07-06-neo-clrstruct-field-of-il/ship-log.md`.
+
+---
+
 **HIGH severity — the load-bearing primitive for the rest of Step 20 sync + the
 suspend slice.** Surfaced by neo-step20-async sync slice review-loop round 1
 (the dump-gated STOP). The C# async state machine `<Method>d__N` is loaded as a
@@ -835,6 +892,49 @@ void) AND the suspend slice (the awaiter field `<>u__1` is the same shape).
 Recorded so the `neo-clrstruct-field-of-il` planner finds it. See
 `openspec/changes/archive/2026-07-06-neo-step20-async/ship-log.md`.
 
+### F-10-R1 / NEO-CLRSTRUCT-FIELD-OF-IL-R1 — F-6/F-10 marker not mutually-exclusive at the JIT discriminator (-> accepted-known-deferred, constrained-VT follow-up)
+
+**Reclassified accepted-known-deferred 2026-07-06 (neo-clrstruct-field-of-il
+review round 1).** The reviewer flagged that the F-6 marker (`Operand4` bit
+`0x1`, stamped when the source is an in-frame IL VT) and the F-10 marker
+(`Operand4` bit `0x2`, stamped when the field is a CLR-struct field of an IL
+instance) are NOT mutually-exclusive at the JIT discriminator: an IL **value
+type** `struct V { TestVector3NoBinding f; }` taking `ref this.f` via `ldflda`
+inside a VT method gets BOTH stamped (`Operand4 = 0x3`). The runtime `Ldflda`
+arm checks F-10 (`clrStructFieldMarker && objIdx >= 0`) BEFORE F-6
+(`inlineMarker`), predicting a mis-dispatch that reads the in-frame VT's flat
+bytes as an mStack index.
+
+**The reviewer's recommended fix (1-line runtime F-6-before-F-10 reorder) was
+DISPROVEN by the fixer.** The reorder broke **6 NeoStep17 F-6-only probes
+(190/190 -> 184/190)**. Root cause: F-6 shape 3 (`operandSlotOff +
+fieldPrimOff`) and shape 1/2 frame-native (`vtBase + fieldPrimOff`) produce
+DIFFERENT byrefs; every reachable VT `this`/arg today arrives as a managed
+pointer (`objIdx == -1`), so HEAD order routes them to shape 1/2 (correct),
+while the reorder routes them to F-6 shape 3 (wrong).
+
+**The defect is fully latent.** The feared F-10-first mis-dispatch requires
+`objIdx >= 0` with flat bytes (the constrained-boxed-VT sub-case), which is
+gated behind the DEFERRED `constrained.callvirt`-on-VT (Step 13 Area 3 / Step
+17 follow-up). For all reachable VT source shapes, `objIdx == -1` -> HEAD order
+routes correctly to F-6 shape 1/2. The shipped F-10 case (heap IL ref source,
+F-10-only) is unaffected.
+
+**No runtime change applied** (the recommended fix regresses 6 tests; the
+shipped F-10-first order is correct for every reachable shape). New latent-shape
+probe `NeoClrStructField_IlVtMethodLdfldaThisClrStructField` (+ host helper
+`SetTestVector3NoBindingByRef`) added as a regression guard for the both-stamp
+shape's `objIdx == -1` -> shape 1/2 routing. The probe does NOT FAIL-on-HEAD
+(cannot, given current Neo); it is a shape guard for when constrained-VT lands.
+
+**Resolution:** route to the constrained-VT follow-up (`neo-step17-generic-byref-etc`
+or a Step 13 Area 3 follow-up). **The correct future fix is the JIT-discriminator
+gate** (only stamp F-10 when the source is NOT an in-frame VT — mirror the F-6
+source check in the type-spec pass, so the two markers are genuinely mutually-
+exclusive at the producer), NOT a runtime reorder. Recorded so the constrained-
+VT planner finds it. See
+`openspec/changes/archive/2026-07-06-neo-clrstruct-field-of-il/ship-log.md`.
+
 ### STEP-20-PARTIAL — Step 20 async/await (sync Task<int> green; the rest deferred)
 
 Step 20 is the largest runtime step in the Neo roadmap (async/await).
@@ -864,6 +964,18 @@ neo-step20-async delivered the SYNC-completing slice proven end-to-end:
 **Resolution:** F-10 (the load-bearing primitive) unblocks the rest of sync;
 `neo-step20-async-suspend` owns the suspend/resume. See
 `openspec/changes/archive/2026-07-06-neo-step20-async/ship-log.md`.
+
+**UPDATE 2026-07-06 (neo-clrstruct-field-of-il landed):** F-10 is RESOLVED. The
+sync slice is now **2 -> 4 green** (TC4 `AsyncVoidSync` + TC6
+`AsyncExceptionFaultsTask` newly unblocked; TC1 + TC7 stay green). The remaining
+sync shapes (TC2 SyncTask non-generic, TC3 SyncValueTaskOfT, TC5 MultipleAwaits)
+pass F-10 but hit DISTINCT Step-20 **redirect-coverage** edges (non-generic
+`Task`'s `Start` redirect null-`stateMachine`; ValueTask builder NRE; multi-await
+`Task<int>.get_Result` redirect "Method 'Task.Result' not found") — these are
+Step-20 follow-ups, NOT F-10; re-trimmed green, documented in
+`TestCases/NeoStep20Test.cs`. `neo-step20-async` resume (or
+`neo-step20-async-suspend`) owns these redirect edges. The truly-async
+suspend/resume path is still `neo-step20-async-suspend`.
 
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
@@ -1029,6 +1141,32 @@ assert the exception type/identity; opportunistic cleanup.
 ---
 
 ## 4. Resolved
+- **F-10 / NEO-CLRSTRUCT-FIELD-OF-IL** — a CLR-struct field of an IL instance
+  (async SM `<>t__builder`/`<>u__1`, or any IL class with a CLR-struct field)
+  was laid out as a reference slot (`ManagedObjects[ReferenceOffset]`) but the
+  JIT `ldflda` addressed it as a primitive offset -> Primitives OOB on the
+  non-generic-Task SM (happened to fit on Task<int> by layout accident). The
+  design premise ("only `ldflda` broken; `Stfld_Ref`/`Ldfld_Ref` already
+  correct") was DISPROVEN by the Block-0 dump (Stfld_Ref read flat bytes as a
+  ref index; Ldfld_Ref wrote a ref index into flat bytes). RESOLVED 2026-07-06
+  (neo-clrstruct-field-of-il): encoding-only fix (Option A; NO layout change,
+  NO `ILType.cs`/`Optimizer.Neo.cs` edit). β offset-discriminator —
+  `NeoLdfldaClrStructFieldMarker = 0x2` (Operand4 bit 0x2; `Stfld_Ref`/
+  `Ldfld_Ref` discriminator `Operand4 != 0`, stamps `fieldType.GetHashCode()`)
+  + runtime flag `NeoF10ByrefOffsetFlag = 0x40000000` (bit 30 of the offset
+  half). All THREE arms (Stfld_Ref, Ldfld_Ref, Ldflda) made consistent —
+  box/unbox/flatten the CLR struct at `ManagedObjects[ReferenceOffset]` via
+  `ReadNeoValueType`/`WriteNeoValueType`. `NeoMarshalByrefFieldToSlot`'s
+  elemType-recovery fallback FAILS LOUD (tagged NIE) on null/uninit. Blast
+  radius CONFIRMED SAFE (5 field shapes; existing paths byte-identical when
+  `Operand4 == 0`). Neo-only, Legacy-neutral. Verification: 7 F-10 probes
+  FAIL-on-HEAD -> PASS; Step 20 sync 2 -> 4 green (TC4 + TC6 unblocked, TC1/TC7
+  stay green); NeoStep 190/190, NeoStep20 9/9, ClrStructField 8/8. New
+  accepted-known-deferred edge F-10-R1 (the F-6/F-10 both-stamp shape; latent,
+  gated behind constrained-VT; the reviewer's runtime-reorder fix was
+  DISPROVEN, the JIT-discriminator gate is the tracked resolution). Step 20
+  redirect edges (TC2/TC3/TC5) are Step-20 follow-ups, NOT F-10. See §3 F-10 +
+  F-10-R1.
 - **F-8 / NEO-DOUBLE-COMBINE** — 2+ `double` locals combined in one boolean
   expression silently misfire. RESOLVED 2026-07-06 (neo-double-combine-quirk,
   [OPT-HARDEN-3], D4): dump-confirmed the propose-time D2 type-spec candidate

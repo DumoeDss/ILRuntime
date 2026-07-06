@@ -82,8 +82,9 @@
       "completedDate": "2026-07-06", "smoke": "Neo 186/186 (TC1+TC7 sync Task<int> green; 11 probes trimmed -> F-10)", "review": "PARTIAL ship (fixer STOPPED at F-10 NEO-CLRSTRUCT-FIELD-OF-IL — broad layout/JIT edge, not a focused fix). Infrastructure + sync Task<int> proven; rest deferred to neo-clrstruct-field-of-il + neo-step20-async-suspend"
     },
     "neo-clrstruct-field-of-il": {
-      "pipeline": "small-feature", "wave": 3, "scope": "[F-10 NEO-CLRSTRUCT-FIELD-OF-IL] IL instance CLR-struct fields laid out as ref slots but ldflda addresses as primitive offset -> OOB. Broad JIT/layout fix",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-value-types"
+      "pipeline": "small-feature", "wave": 3, "scope": "[F-10 NEO-CLRSTRUCT-FIELD-OF-IL] IL instance CLR-struct field ldflda offset (option A JIT-byref-encoding; all-three-arms Stfld_Ref/Ldfld_Ref/Ldflda fixed)",
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-value-types",
+      "completedDate": "2026-07-06", "smoke": "Neo 190/190 + NeoStep20 9/9 + ClrStructField 8/8", "review": "APPROVE (Stfld_Ref/Ldfld_Ref blast-radius SAFE; F-10-R1 latent both-stamp shape reclassified accepted-known-deferred -> constrained-VT JIT gate; reviewer's reorder DISPROVEN by fixer). Step 20 sync 2->4 green (TC4/TC6 unblocked)."
     },
     "neo-step20-async-suspend": {
       "pipeline": "small-feature", "wave": 3, "scope": "[Step 20 suspend slice] truly-async AwaitUnsafeOnCompleted -> frame-to-heap hoist + ILAsyncContext + resumption",

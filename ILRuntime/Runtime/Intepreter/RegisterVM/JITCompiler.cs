@@ -117,6 +117,40 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // `case Ldflda`. Standalone Operand4 (offset 20); collision-free (no other
         // Ldflda path writes Operand4).
         public const int NeoLdfldaInlineMarker = 0x1;
+
+        // F-10 / NEO-CLRSTRUCT-FIELD-OF-IL: a CLR-struct field of an IL instance
+        // is laid out by the ILType field-layout pass as a REFERENCE slot (the
+        // boxed struct lives at ManagedObjects[ReferenceOffset]; its flat bytes
+        // do NOT live in Primitives). But the heap field-access opcodes
+        // (Stfld_Ref / Ldfld_Ref / Ldflda) selected for a non-primitive field
+        // unconditionally treat the offset as a Primitives byte offset (and the
+        // stfld source as a ref-slot mStack index) -- wrong for a CLR-struct
+        // field. The F-10 discriminator: when the declaring type is an ILType
+        // AND the field's type is a CLR value type (not an ILType, IsValueType),
+        // stamp the field's type hash into the opcode's standalone Operand4
+        // (offset 20). At runtime:
+        //   * Stfld_Ref / Ldfld_Ref: Operand4 != 0 -> F-10. Resolve the field's
+        //     CLR type via AppDomain.GetType(Operand4), and box/unbox the struct
+        //     between the flat-bytes source/dest and ManagedObjects[ReferenceOffset]
+        //     via ReadNeoValueType / WriteNeoValueType.
+        //   * Ldflda: the type-spec `case Ldflda` OR-stamps bit 0x2 (the F-10
+        //     marker) alongside F-6's 0x1 (mutually exclusive shapes); the
+        //     runtime Ldflda arm produces a byref carrying the ReferenceOffset
+        //     + a high-bit flag so the byref consumers (Ldobj/Stobj/stind/ldind)
+        //     route to ManagedObjects[refOff] (see ILIntepreter.Neo.cs).
+        // Collision-free: Stfld_Ref/Ldfld_Ref never write Operand4 elsewhere;
+        // Ldflda's F-6 marker is bit 0x1 (F-10 is bit 0x2; the shapes are
+        // mutually exclusive -- F-6 source is an in-frame VT, F-10 source is a
+        // heap IL ref). A field-type hash of exactly 0 is the only ambiguous
+        // case (astronomically rare; falls back to the pre-F-10 path, does not
+        // corrupt other fields).
+        public const int NeoLdfldaClrStructFieldMarker = 0x2;
+        // The runtime byref offset-half flag for an F-10 byref (set by the
+        // Ldflda arm): the offset half carries (ReferenceOffset | this flag) so
+        // the consumer arms can distinguish "this offset is a ManagedObjects
+        // ref-slot index" from a Primitives byte offset. Bit 30 (avoids the sign
+        // bit so the offset stays a positive int); ReferenceOffsets are tiny.
+        public const int NeoF10ByrefOffsetFlag = unchecked((int)0x40000000);
         Enviorment.AppDomain appdomain;
         ILType declaringType;
         ILMethod method;
@@ -2362,6 +2396,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.Operand = type.GetHashCode();
                             op.Operand2 = offset.PrimitiveOffset;
                             op.Operand3 = offset.ReferenceOffset;
+                            // F-10: a CLR-struct field of an IL instance is a
+                            // reference slot holding the boxed struct. Stamp the
+                            // field's type hash into Operand4 so the runtime
+                            // Ldfld_Ref arm flattens the boxed struct into the
+                            // dest flat-bytes region (instead of materializing a
+                            // ref). No-op for non-F-10 fields (Operand4 stays 0).
+                            if (IsClrStructFieldOfIL(type, fieldType))
+                                op.Operand4 = fieldType.GetHashCode();
                         }
                         else
                             op.OperandLong = ((long)type.GetHashCode() << 32) | (uint)offset.PrimitiveOffset;
@@ -2382,6 +2424,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         op.Operand = type.GetHashCode();
                         op.Operand2 = offset.PrimitiveOffset;
                         op.Operand3 = offset.ReferenceOffset;
+                        // F-10: stamp the CLR-struct-field-of-IL marker (bit 0x2,
+                        // mutually exclusive with F-6's in-frame-VT marker 0x1).
+                        // The runtime Ldflda arm produces a byref carrying the
+                        // field's ReferenceOffset (NOT the stale PrimitiveOffset)
+                        // + a high-bit flag so the byref consumers route to
+                        // ManagedObjects[refOff].
+                        if (IsClrStructFieldOfIL(type, fieldType))
+                            op.Operand4 |= NeoLdfldaClrStructFieldMarker;
                     }
 #else
                     op.OperandLong = appdomain.GetStaticFieldIndex(token, declaringType, method);
@@ -2399,6 +2449,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.Operand = type.GetHashCode();
                             op.Operand2 = offset.PrimitiveOffset;
                             op.Operand3 = offset.ReferenceOffset;
+                            // F-10: stamp the field's type hash into Operand4 so
+                            // the runtime Stfld_Ref arm boxes the source flat
+                            // bytes into the field's CLR type and stores the
+                            // boxed struct at ManagedObjects[ReferenceOffset]
+                            // (instead of reading the source's first 4 bytes as a
+                            // ref-slot mStack index). No-op for non-F-10 fields.
+                            if (IsClrStructFieldOfIL(type, fieldType))
+                                op.Operand4 = fieldType.GetHashCode();
                         }
                         else
                             op.OperandLong = ((long)type.GetHashCode() << 32) | (uint)offset.PrimitiveOffset;
@@ -2543,6 +2601,20 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     res = OpCodeREnum.Ldfld_Ref;
             }
             return res;
+        }
+        // F-10 / NEO-CLRSTRUCT-FIELD-OF-IL: returns true when `declaringType`
+        // is an ILType AND `fieldType` is a CLR value type (the field is laid
+        // out as a reference slot holding the boxed struct). The caller stamps
+        // the field's type hash into the opcode's Operand4 so the runtime heap
+        // field-access arms can box/unbox the struct between flat bytes and
+        // ManagedObjects[ReferenceOffset]. Excludes ILType fields (the IL-VT
+        // field path, Stfld_Value) and reference types (genuine ref slots).
+        bool IsClrStructFieldOfIL(IType declaringType, IType fieldType)
+        {
+            return declaringType is ILType
+                && !(fieldType is ILType)
+                && fieldType.IsValueType
+                && !fieldType.IsPrimitive;
         }
         OpCodeREnum GetStfldCodeForType(IType fieldType)
         {

@@ -378,6 +378,49 @@ namespace ILRuntime.Runtime.Intepreter
             object target = mStack[objIdx];
             if (target is ILTypeInstance ili)
             {
+                // F-10: a byref produced by `ldflda &instance.<clrStructField>` carries
+                // (objIdx, ReferenceOffset | NeoF10ByrefOffsetFlag). The field's storage
+                // is the BOXED CLR struct at ManagedObjects[ReferenceOffset], NOT a
+                // Primitives byte region. Marshal between the boxed struct and the dest
+                // slot via ReadNeoValueType / WriteNeoValueType (the Step-13b/area4
+                // boxed-ref-vs-flat-bytes bridge).
+                if ((off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+                {
+                    int refOff = off & ~JITCompiler.NeoF10ByrefOffsetFlag;
+                    if (isWrite)
+                    {
+                        // Box the slot's flat bytes into the field's element type and
+                        // store at ManagedObjects[refOff]. The elemType comes from the
+                        // call signature; when the caller did not propagate it (the
+                        // Step-20 builder-byref write-back path), recover the type
+                        // from the boxed struct already at ManagedObjects[refOff] (a
+                        // write-back updates an existing boxed struct).
+                        Type boxType = elemType;
+                        if (boxType == null)
+                        {
+                            object existing = ili.ManagedObjects[refOff];
+                            if (existing != null)
+                                boxType = existing.GetType();
+                        }
+                        if (boxType != null)
+                        {
+                            int cur = 0;
+                            object boxed = ILIntepreter.ReadNeoValueType(boxType, slot, ref cur, sz);
+                            ili.ManagedObjects[refOff] = boxed;
+                        }
+                        else
+                            throw new NotImplementedException("neo-clrstruct-field-of-il: NeoMarshalByrefFieldToSlot write with a null elemType and no existing boxed struct to recover the type from (cannot box the CLR struct)");
+                    }
+                    else
+                    {
+                        object boxed = ili.ManagedObjects[refOff];
+                        if (boxed != null)
+                            ILIntepreter.WriteNeoValueType(boxed, slot, sz);
+                        else
+                            Unsafe.InitBlock(slot, 0, (uint)sz);
+                    }
+                    return;
+                }
                 // IL heap field: flat-bytes region at Primitives[off].
                 if (isWrite)
                     Unsafe.CopyBlock(ref ili.Primitives[off], ref *slot, (uint)sz);
@@ -1052,8 +1095,24 @@ namespace ILRuntime.Runtime.Intepreter
                                     int operandSlotOff = ip->SrcOffset;
                                     int fieldPrimOff = ip->Operand2;
                                     bool inlineMarker = (ip->Operand4 & JITCompiler.NeoLdfldaInlineMarker) != 0;
+                                    bool clrStructFieldMarker = (ip->Operand4 & JITCompiler.NeoLdfldaClrStructFieldMarker) != 0;
                                     int objIdx = *(int*)(frameBase + operandSlotOff + 0);
-                                    if (objIdx == -1)
+                                    if (clrStructFieldMarker && objIdx >= 0)
+                                    {
+                                        // F-10 / NEO-CLRSTRUCT-FIELD-OF-IL (shape 4): the
+                                        // operand is a HEAP IL reference instance and the
+                                        // addressed field is a CLR-struct field laid out as
+                                        // a reference slot (the boxed struct lives at
+                                        // ManagedObjects[ReferenceOffset]). Produce a byref
+                                        // (objIdx, ReferenceOffset | flag) so the consumers
+                                        // (Ldobj/Stobj/stind/ldind/CopyNeoCallArguments) route
+                                        // to ManagedObjects[refOff]. objIdx is the IL
+                                        // instance's mStack index (>= 0); the flag in the
+                                        // offset half discriminates from a Primitives offset.
+                                        *(int*)(frameBase + dst + 0) = objIdx;
+                                        *(int*)(frameBase + dst + 4) = ip->Operand3 | JITCompiler.NeoF10ByrefOffsetFlag;
+                                    }
+                                    else if (objIdx == -1)
                                     {
                                         // Shape 1/2 (marker or not): operand slot
                                         // holds a frame-native Ref Slot produced by
@@ -2715,10 +2774,32 @@ namespace ILRuntime.Runtime.Intepreter
                                 break;
                             case OpCodeREnum.Ldfld_Ref:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                obj = ins.ManagedObjects[ip->Operand3];
-                                dstIdx = frameRefBase + ip->Operand;
-                                mStack[dstIdx] = obj;
-                                *(int*)(frameBase + ip->DstOffset) = obj != null ? dstIdx : -1;
+                                if (ip->Operand4 != 0)
+                                {
+                                    // F-10: the field is a CLR-struct field of an IL
+                                    // instance. The dest register is a flat-bytes local
+                                    // (a CLR value-type local under the Neo model); flatten
+                                    // the boxed struct at ManagedObjects[ReferenceOffset]
+                                    // into the dest flat-bytes region (instead of
+                                    // materializing a ref-slot mStack index).
+                                    var ft5 = AppDomain.GetType(ip->Operand4);
+                                    if (ft5 == null)
+                                        throw new NotImplementedException("neo-clrstruct-field-of-il: Ldfld_Ref F-10 branch could not resolve the field type token (Operand4=" + ip->Operand4 + ")");
+                                    Type ftClr5 = ft5.TypeForCLR;
+                                    int sz5 = Optimizer.GetNeoValueTypeManagedSize(ftClr5);
+                                    obj = ins.ManagedObjects[ip->Operand3];
+                                    if (obj != null)
+                                        ILIntepreter.WriteNeoValueType(obj, frameBase + ip->DstOffset, sz5);
+                                    else
+                                        Unsafe.InitBlock(frameBase + ip->DstOffset, 0, (uint)sz5);
+                                }
+                                else
+                                {
+                                    obj = ins.ManagedObjects[ip->Operand3];
+                                    dstIdx = frameRefBase + ip->Operand;
+                                    mStack[dstIdx] = obj;
+                                    *(int*)(frameBase + ip->DstOffset) = obj != null ? dstIdx : -1;
+                                }
                                 break;
                             case OpCodeREnum.Stfld_I1:
                             case OpCodeREnum.Stfld_U1:
@@ -2759,8 +2840,28 @@ namespace ILRuntime.Runtime.Intepreter
                                 break;
                             case OpCodeREnum.Stfld_Ref:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->DstOffset));
-                                srcIdx = *(int*)(frameBase + ip->SrcOffset);
-                                ins.ManagedObjects[ip->Operand3] = srcIdx >= 0 ? mStack[srcIdx] : null;
+                                if (ip->Operand4 != 0)
+                                {
+                                    // F-10: the field is a CLR-struct field of an IL
+                                    // instance (a reference slot holding the boxed struct).
+                                    // The source register holds the value's FLAT BYTES (e.g.
+                                    // a CLR-method return), NOT a ref-slot mStack index.
+                                    // Box the source flat bytes into the field's CLR type and
+                                    // store the boxed struct at ManagedObjects[ReferenceOffset].
+                                    var ft4 = AppDomain.GetType(ip->Operand4);
+                                    if (ft4 == null)
+                                        throw new NotImplementedException("neo-clrstruct-field-of-il: Stfld_Ref F-10 branch could not resolve the field type token (Operand4=" + ip->Operand4 + ")");
+                                    Type ftClr4 = ft4.TypeForCLR;
+                                    int sz4 = Optimizer.GetNeoValueTypeManagedSize(ftClr4);
+                                    int cur4 = ip->SrcOffset;
+                                    object boxed4 = ILIntepreter.ReadNeoValueType(ftClr4, frameBase, ref cur4, sz4);
+                                    ins.ManagedObjects[ip->Operand3] = boxed4;
+                                }
+                                else
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    ins.ManagedObjects[ip->Operand3] = srcIdx >= 0 ? mStack[srcIdx] : null;
+                                }
                                 break;
                             // ---- Step 12: in-frame value-type inline field access ----
                             // These index the frame byte region directly. Encoding:
@@ -3683,9 +3784,21 @@ namespace ILRuntime.Runtime.Intepreter
                                     else
                                     {
                                         ins = GetNeoILInstance(mStack, objIdx);
-                                        // IL value-type field: copy primitives into
-                                        // Primitives and ref slots into ManagedObjects.
-                                        ref byte dstP = ref ins.Primitives[off];
+                                        // F-10: a byref produced by `ldflda &instance.<clrStructField>`
+                                        // carries (objIdx, ReferenceOffset | flag). The field's storage
+                                        // is the boxed CLR struct at ManagedObjects[ReferenceOffset].
+                                        if ((off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+                                        {
+                                            int f10RefOff = off & ~JITCompiler.NeoF10ByrefOffsetFlag;
+                                            int f10Cur = ip->SrcOffset;
+                                            object f10Boxed = ILIntepreter.ReadNeoValueType(t.TypeForCLR, frameBase, ref f10Cur, primSize);
+                                            ins.ManagedObjects[f10RefOff] = f10Boxed;
+                                        }
+                                        else
+                                        {
+                                            // IL value-type field: copy primitives into
+                                            // Primitives and ref slots into ManagedObjects.
+                                            ref byte dstP = ref ins.Primitives[off];
                                         Unsafe.CopyBlock(ref dstP, ref *(frameBase + ip->SrcOffset), (uint)primSize);
                                         if (refCount > 0)
                                         {
@@ -3717,6 +3830,7 @@ namespace ILRuntime.Runtime.Intepreter
                                             for (int i = 0; i < refCount; i++)
                                                 dstRefs[i] = mStack[srcBase + i];
                                         }
+                                        } // end F-10 else (existing IL-VT-field Primitives path)
                                     }
                                 }
                                 break;
@@ -3768,10 +3882,25 @@ namespace ILRuntime.Runtime.Intepreter
                                     else
                                     {
                                         ins = GetNeoILInstance(mStack, objIdx);
-                                        ref byte srcP = ref ins.Primitives[off];
-                                        Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)primSize);
-                                        if (refCount > 0)
+                                        // F-10: a byref produced by `ldflda &instance.<clrStructField>`
+                                        // carries (objIdx, ReferenceOffset | flag). Read the boxed CLR
+                                        // struct at ManagedObjects[ReferenceOffset] and flatten it into
+                                        // the dest (the value-type-sized copy target is the boxed struct).
+                                        if ((off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
                                         {
+                                            int f10RefOff = off & ~JITCompiler.NeoF10ByrefOffsetFlag;
+                                            object f10Boxed = ins.ManagedObjects[f10RefOff];
+                                            if (f10Boxed != null)
+                                                ILIntepreter.WriteNeoValueType(f10Boxed, frameBase + ip->DstOffset, primSize);
+                                            else
+                                                Unsafe.InitBlock(frameBase + ip->DstOffset, 0, (uint)primSize);
+                                        }
+                                        else
+                                        {
+                                            ref byte srcP = ref ins.Primitives[off];
+                                            Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)primSize);
+                                            if (refCount > 0)
+                                            {
                                             // Step 17 (b): the IL-instance byref's ref region IS
                                             // ins.ManagedObjects. Read the ref slots out into the
                                             // dest value local's frame ref region.
@@ -3797,6 +3926,7 @@ namespace ILRuntime.Runtime.Intepreter
                                             for (int i = 0; i < refCount; i++)
                                                 mStack[dstBase + i] = srcRefs[i];
                                         }
+                                        } // end F-10 else (existing IL-VT-field Primitives path)
                                     }
                                 }
                                 break;

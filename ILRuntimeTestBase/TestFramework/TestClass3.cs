@@ -133,6 +133,59 @@ namespace ILRuntimeTest.TestFramework
             return new TestVector3NoBinding(x, y, z);
         }
 
+        // ---- F-10 / NEO-CLRSTRUCT-FIELD-OF-IL host helpers. These are CLR
+        //      methods (host assembly) so ILRuntime's trivial inliner CANNOT
+        //      fold them -- the `ref c.field` lowering reaches a REAL `call`
+        //      with the ldflda-produced byref, exercising CopyNeoCallArguments
+        //      -> NeoMarshalByrefFieldToSlot (the Step-20 builder-byref hot
+        //      path). Field reads happen on the HOST side (no IL-side `ldfld` on
+        //      a CLR struct field -- the separate Step-6 gap, avoided). ----
+
+        // F-10: sum a CLR struct passed BY REF. The IL caller lowers
+        // `SumTestVector3NoBindingByRef(ref c.field)` to `ldflda c.field; call`.
+        public static int SumTestVector3NoBindingByRef(ref TestVector3NoBinding v)
+        {
+            return (int)(v.x + v.y + v.z);
+        }
+
+        // F-10: a MUTATING byref helper (the Area-4a write-back shape). The
+        // mutation must propagate through the F-10 byref write-back to the IL
+        // instance's ManagedObjects slot.
+        public static void MutateTestVector3NoBindingByRef(ref TestVector3NoBinding v, float dx)
+        {
+            v.x += dx; v.y += dx; v.z += dx;
+        }
+
+        // F-10-R1: a byref SETTER (seeds the field THROUGH the ldflda-produced
+        // byref). Used by the IL-VT-with-CLR-struct-field latent probe to
+        // initialize the field via the byref write-back path (the F-10-R1 shape)
+        // rather than via `stfld` (a separate Step-6 gap for IL-VT stfld).
+        public static void SetTestVector3NoBindingByRef(ref TestVector3NoBinding v, float x, float y, float z)
+        {
+            v.x = x; v.y = y; v.z = z;
+        }
+
+        // F-10: a CLR struct WITH a reference-type field (the TaskAwaiter shape),
+        // passed BY REF. Verifies the boxed struct's reference field survives the
+        // F-10 byref round-trip.
+        public static int SumTestClrStructWithRefByRef(ref TestClrStructWithRef v)
+        {
+            return v.n + (v.s != null ? v.s.Length : 0);
+        }
+        public static TestClrStructWithRef MakeTestClrStructWithRef(int n, string s)
+        {
+            return new TestClrStructWithRef(n, s);
+        }
+
+        // ---- Step 20 async-void side-effect box: a host-side int cell the IL
+        //      async-void method writes (avoids the IL-side `stsfld` Step-6 gap;
+        //      the cell is held on the host so no IL static-field store is
+        //      needed). ----
+        private static int s_asyncVoidCell;
+        public static void SetAsyncVoidCell(int v) { s_asyncVoidCell = v; }
+        public static int GetAsyncVoidCell() { return s_asyncVoidCell; }
+
+
         public void LoadAsset<T>(string name, T obj)
         {
 
