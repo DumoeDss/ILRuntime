@@ -3,9 +3,11 @@
 > **Read this FIRST when continuing the ILRuntime Neo work.**
 > Companion to `neo-implementation-steps.md` (the 26-step roadmap) and
 > `neo-deferred-items.md` (the deferred-items resolution map).
-> Last updated: 2026-07-05. Branch: `features/object-model-overhaul`.
+> Last updated: 2026-07-06. Branch: `features/object-model-overhaul`. HEAD `0aafdb34`.
 > Authoritative current state lives in this file + `neo-deferred-items.md` +
-> the `openspec/specs/` capability specs + `openspec/changes/archive/`.
+> the `openspec/specs/` capability specs + `openspec/changes/archive/`, and the
+> portfolio run state in
+> `openspec/changes/neo-completion-portfolio/{planning-context.md,portfolio-run.json}`.
 
 This doc captures everything a fresh session needs to pick up the Neo overhaul:
 the environment, what's done, the workflow that's been working, the non-obvious
@@ -56,10 +58,11 @@ dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- \
   normal; filter stdout for the pass/fail summary line.
 - A test taking **>10 s** usually means an interpreter infinite loop — kill + investigate.
 - **Baselines (re-verify if the DLL/patch change):**
-  - **Neo** (`Debug_Neo` + `useRegister=true`, filter `NeoStep`): **91/91 green**
-    as of HEAD `180d73a0`. (Full Neo run is ~430/519 failing on purpose — unimplemented
-    ops; only the `NeoStep` smoke matters day-to-day. `NeoOptHardening` tests run
-    under a separate filter.)
+  - **Neo** (`Debug_Neo` + `useRegister=true`, filter `NeoStep`): **190/190 green**
+    as of HEAD `0aafdb34` (2026-07-06), after the 15-child portfolio run. Related
+    filters: **NeoOptHardening 24/24**, **NeoStep20 9/9**. (Full Neo run still has
+    failures — all unimplemented ops, e.g. rank-2+ arrays, truly-async suspend,
+    AOT; only the `NeoStep` smoke matters day-to-day.)
   - **Legacy/register** (plain `Debug` + `useRegister=true`): the 519-test green
     baseline is ~518/519 (1 long-unlocated fail). This is the **regression
     reference** for shared-engine/shared-pass changes — confirm Legacy-neutral.
@@ -74,38 +77,74 @@ dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- \
 
 ---
 
-## 2. Current state (as of 2026-07-05, HEAD `180d73a0`)
+## 2. Current state (as of 2026-07-06, HEAD `0aafdb34`)
 
 ### Completed Neo steps (JIT path)
-Steps **1-18** of the 26-step roadmap, plus derived follow-ups:
-- 1-10 (macros, object model, static fields, Neo frame, arithmetic, managed stack,
-  CLR interop, call, VTable+callvirt) — done before this session series.
-- **11** interface dispatch · **12** in-frame value types + inline field access ·
-  **12b** `Move_Vt` + `LowerMove` (VT copy) · **13** Box/Unbox (areas 1-2) ·
-  **14** exception handling (try/catch/finally) · **15** isinst/castclass ·
-  **16** array element access (rank-1) · **17** ref/out + Ref Slot + ldelema ·
-  **18** CLR type newobj (+ `throw new ClrException`).
-- Derived: **[OPT-HARDEN]** K1 FCP fix · **13b** unified CLRMethod param layout
-  (closes K2) · **[CATCH-COMPLETE]** `CheckExceptionType` IL branch.
+Steps **1-20** of the 26-step roadmap, plus all derived follow-ups and the
+**15-child completion-portfolio run** (2026-07-05 → 2026-07-06). Foundation
+Steps 1-18 + the early derived steps landed in prior sessions (1-10 macros /
+object model / static fields / Neo frame / arithmetic / managed stack / CLR
+interop / call / VTable+callvirt; **11** interface dispatch · **12** in-frame
+value types + inline field access · **12b** `Move_Vt`/`LowerMove` · **13**
+Box/Unbox · **14** exception handling · **15** isinst/castclass · **16** rank-1
+arrays · **17** ref/out + Ref Slot + ldelema · **18** CLR newobj; derived
+**[OPT-HARDEN]** K1, **13b** unified CLRMethod param layout, **[CATCH-COMPLETE]**
+CheckExceptionType IL branch).
+
+The **portfolio run** then delivered these 15 children (in execution order):
+1. **neo-vt-this-addr** [Q-VT-NEWOBJ] — IL value-type `newobj` + `call VT ctor`
+   via ldloca; D2 in-frame VT-this/newobj-dest field-access lowering (smoke 91→99).
+2. **neo-opt-harden-2** [F-MAJ-1] — `AllocateLocalStackSpaces` declares a CLR-VT
+   LOCAL as flat bytes (representation-sizing fix; 99→100, +NeoOptHard 16/16).
+3. **neo-il-exception-throw** [D-IL-EXCEPTION-THROW] — built-in `ExceptionAdaptor`
+   + `Throw` IL-instance unwrap on BOTH engines (100→108; D-CHECKEX fully reachable).
+4. **neo-step13-area4** [D-13B 4a+4b] — CLR binding value-type-`this` direct-call
+   + `Unsafe.Unbox<T>` boxed direct-call (closes F-3 direct-`call`) (108→117).
+5. **neo-step17-completion** [D-CONSTRAINED a/d/M2] — `constrained.`-on-VT full
+   dispatch (runtime Constrained arm owns dispatch) + CLR-array ldelema + F-5
+   NIE-guard (117→130).
+6. **neo-step19-delegate** [Step 19] — `ldftn`/`ldvirtftn` + delegate newobj +
+   `InvokeILMethod` Neo (fresh pooled interpreter) + multicast + Combine/Remove
+   redirects (130→140).
+7. **neo-k2fam-bridge** [K2-FAM] — TEST-ONLY (subsumed by opt-harden-2 + review-fix
+   + 13b); 6 regression guards (140→146).
+8. **neo-vt-ldflda-inline** [F-6] — `ldflda` on in-frame VT (marker stamp +
+   3-way runtime dispatch) (146→154).
+9. **neo-opportunistic-cleanup** [N-CGTUN + N-TC2] — Cgt_Un comment +
+   Step 14 TC2 tighten (154).
+10. **neo-array-completion** [D-ARR rank-1] — `Stelem_I`/`Ldelem_I` + F-4
+    width matrix for CLR-array Stind/Ldind (154→161).
+11. **neo-double-combine-quirk** [F-8 / OPT-HARDEN-3] — dead `Operand3` write
+    clobbers 8-byte immediate via the `OpCodeR` union (161, +NeoOptHard 24/24).
+12. **neo-step13-area4-refandstind** [D-13B 4c+4d] — CLR-method ref/out typed-ref
+    bridge + CLR-object stind/ldind/stobj/ldobj via field identity (161→175).
+13. **neo-step17-stobj-refloop** [D-CONSTRAINED b] — Stobj/Ldobj ref-region copy +
+    IL-VT-with-ref-fields constrained (175→181).
+14. **neo-step20-async** [Step 20 sync slice] — builder redirects + Start→MoveNext
+    + awaiter/Task overrides (**PARTIAL**: sync `Task<int>`/void/exception green;
+    rest were blocked on F-10) (181→186).
+15. **neo-clrstruct-field-of-il** [F-10] — IL-instance CLR-struct field `ldflda`
+    offset (all-three-arms Stfld_Ref/Ldfld_Ref/Ldflda); unblocked Step 20 sync
+    void+exception (186→190).
 
 ### Test smoke progression
-Neo `NeoStep`: 37 (after 12) → 41 (12b) → 49 (13) → 58 (14) → 65 (15) → 72 (16)
-→ 81 (17) → 84 (13b) → **91 (18)**. (`NeoOptHardening` K1 tests run separately;
-CATCH-COMPLETE added no new test.) Legacy 519 baseline unaffected.
+Neo `NeoStep`: 37 (after 12) → 41 → 49 → 58 → 65 → 72 → 81 → 84 → **91** (end of
+prior sessions) → 99 → 100 → 108 → 117 → 130 → 140 → 146 → 154 → 161 → 175 → 181
+→ 186 → **190** (HEAD `0aafdb34`). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
+Legacy 519 baseline unaffected (still ~518/519; the regression reference).
 
-### openspec capabilities (`openspec/specs/`)
-`neo-dispatch`, `neo-value-types`, `neo-boxing`, `neo-exceptions`, `neo-type-checks`,
-`neo-arrays`, `neo-byref`, `neo-optimizer`, `neo-newobj`. (9 total.) These are the
-durable canonical specs; per-step deltas are merged in at archive time.
+### Capability specs (`openspec/specs/`)
+10 total — the original 9 + **`neo-async`** [NEW from Step 20]:
+`neo-dispatch`, `neo-value-types`, `neo-boxing`, `neo-exceptions`,
+`neo-type-checks`, `neo-arrays`, `neo-byref`, `neo-optimizer`, `neo-newobj`,
+`neo-async`. These are the durable canonical specs; per-child deltas are merged
+in at archive time.
 
 ### Git
-Branch `features/object-model-overhaul`, in sync with `origin` (GitHub,
-`DumoeDss/ILRuntime.git`). Recent commits (newest first):
-`180d73a0` docs(neo) roadmap refresh · `83584d47` catch-complete · `57e0af54` step 18 ·
-`06abf866` step 13b · `21b68d92` step 17 · `e3fa8ef2` opt-hardening ·
-`0a6bd46a` deferred-items doc · `d7519950` step 16 · `cf4a0331` step 15 ·
-`d7350b3a` step 14 · `9e71caf2` step 13 · `6a8d1d2c` step 12b · `424b9730` step 12 ·
-`d24e4415` step 11.
+Branch `features/object-model-overhaul`, pushed to `origin` (GitHub,
+`DumoeDss/ILRuntime.git`). HEAD `0aafdb34`. The 15 portfolio children are each
+their own commit + archived change under
+`openspec/changes/archive/2026-07-0X-neo-*`.
 
 ---
 
@@ -160,6 +199,26 @@ after each step's review is clean**. Each run = a full pipeline:
   the implementer STOPPED rather than ship a broken fix; re-attempt with the
   corrected `ldloca-kill` succeeded. Lesson: **probe the IR dump before designing
   an optimizer fix; STOP if the fix doesn't work, don't force it.**
+
+### Earned lessons reaffirmed by the 15-child portfolio run (2026-07-05 → 07-06)
+- **Probe before fixing — the JIT/runtime dump is the arbiter, not the propose-time
+  hypothesis.** K1 / Q-NEWOBJ / Q-STRUCT / K2-FAM were all subsumed or
+  mis-attributed; the dump-gate (Block-0 reproducer) is what separates a real root
+  cause from a plausible one. Q-VT-NEWOBJ's propose-time hypothesis was only
+  PARTLY right — the dump found the load-bearing bug (inline-stfld owner-type
+  clobber) the planner missed.
+- **The propose-time blast-radius sweep is NOT authoritative.** F-10's design
+  premise ("only `ldflda` broken; `Stfld_Ref`/`Ldfld_Ref` already correct") was
+  DISPROVEN by the Block-0 dump — all THREE heap field-access arms were broken.
+  Trust the reproducer dump over the design's "this path is safe" claim.
+- **A green smoke does NOT prove an optimizer/lowering gate.** F-1 / F-8 / F-10
+  were all silent-corruption or OOB that the smoke passed (TC1/TC7 passed by a
+  layout accident). Construct the adversarial probe; stash-toggle FAIL-on-HEAD
+  is the proof.
+- **Don't ship a fix that doesn't work — STOP.** The F-10-R1 runtime reorder was
+  DISPROVEN by the fixer (regressed 6 F-6-only probes, 190→184); the Step 20 sync
+  slice was STOPPED at F-10 (the stacked-pre-existing-edges case) and split into
+  its own child. A green smoke is not worth a silent-wrong-result fix.
 
 ### Commit + push convention
 - Stage **precisely**: the step's source files + test + `openspec/` artifacts +
@@ -231,67 +290,107 @@ step. Keep the doc from drifting — it's the authoritative current-state tracke
 
 ## 5. Deferred items — current state (authoritative: `neo-deferred-items.md`)
 
-### Resolved (don't re-litigate)
-- **K1** — FCP value-type-move mis-propagation (copy-then-mutate silent bug). Fixed
-  via the `ldloca-kill` (Neo-only, Legacy-neutral) in [OPT-HARDEN].
-- **K2** — Step 8 VT-by-value param copy (reads primitive as mStack index). Fixed
-  in Step 13b (unified CLRMethod param layout + `ReadNeoValueType`).
-- **D-LDELEMA** — `ldelema` opcode. Fixed in Step 17 (IL VT array path; CLR
-  primitive-array ldelema still NIE).
-- **Q-NEWOBJ / Q-STRUCT / Q-LONG** — NOT reproducible on HEAD (probes pass;
-  distinct frame regions per register). Closed as non-reproducible.
+Most items surfaced during Steps 11-20 are now **resolved** (the 15-child
+portfolio run closed the bulk). The full per-item detail + resolution evidence is
+in `neo-deferred-items.md` (§2 master table, §3 per-item, §4 resolved) — that file
+is the source of truth; this section is a quick orientation.
 
-### Open follow-ups (the next high-value work)
-- **[VT-THIS-ADDR]** (highest value) — IL value-type `newobj` (Q-VT-NEWOBJ). Blocked
-  on VT field-access lowering consistency: a VT ctor's `this` is laid out as
-  in-frame bytes, so `this.field=` lowers to in-frame `_Inline` writes, but
-  `addrAlias` only tracks `ldloca`/`ldflda` addresses → caller (index/Ref-Slot)
-  and callee (in-frame bytes) representations can't agree. A heap-instance-`this`
-  fallback fails for the same reason (it IS the broad D2 change, which would break
-  the existing in-frame VT tests). The `newobj`-instruction path surfaces a loud
-  Step-18 NIE; the LOCAL form (`VT x = new VT()`) compiles to `ldloca;call ctor`
-  and crashes opaquely (pre-existing). **Touches Step 12 + every VT instance method.**
-- **[OPT-HARDEN-2]** — F-MAJ-1: `AllocateLocalStackSpaces` slot-reuse/liveness bug
-  with 2+ simultaneous CLR struct locals → silent wrong result (one struct's slot
-  corrupted while another is live). Pre-existing (stash-proven); Step 13b made it
-  reachable. The Step 13b tests work around it (single CLR struct local at a time).
-- **D-IL-EXCEPTION-THROW** — end-to-end IL-exception catch needs (a) a registered
-  `System.Exception` `CrossBindingAdaptor` (`ILType.cs:1418` TypeLoadException
-  without it) + (b) Throw handling for IL instances (both engines do
-  `mStack[idx] as Exception` → a plain IL class NREs). The `CheckExceptionType` IL
-  branch (CATCH-COMPLETE) is necessary-but-not-sufficient. Positive IL-catch test
-  reserved for this pass.
+### Resolved by the portfolio run (don't re-litigate)
+- **K1** (FCP VT-move mis-propagation) → [OPT-HARDEN] `ldloca-kill`.
+- **K2** (Step 8 VT-by-value param copy) → Step 13b.
+- **K2-FAM** (boxed-ref CLR-VT-local bridge) → `neo-k2fam-bridge` (TEST-ONLY;
+  subsumed by opt-harden-2 + review-fix + 13b).
+- **Q-VT-NEWOBJ / [VT-THIS-ADDR]** (IL value-type `newobj`) → `neo-vt-this-addr`.
+- **Q-NEWOBJ / Q-STRUCT / Q-LONG** — non-reproducible on HEAD (closed).
+- **F-MAJ-1** (CLR-VT local representation) → `neo-opt-harden-2`.
+- **F-3 / NEO-BYREF-THIS** (CLR struct instance method byref-`this`) — direct-`call`
+  shape → `neo-step13-area4`; `callvirt`/`constrained.callvirt` → `neo-step17-completion`.
+- **D-CHECKEX** (CheckExceptionType NIE) → [CATCH-COMPLETE] + `neo-il-exception-throw`.
+- **D-IL-EXCEPTION-THROW** (end-to-end IL exception catch) → `neo-il-exception-throw`.
+- **D-CONSTRAINED** (a/b/d + M2) → `neo-step17-completion` ({a,d,M2}) +
+  `neo-step17-stobj-refloop` (b). **(c) edges remain** (see Open below).
+- **D-LDELEMA** (fully) — Step 17 IL-VT-array path + `neo-step17-completion` CLR-array
+  remainder + `neo-array-completion` F-4 width matrix.
+- **F-5 / NEO-CALLARG-BOXED-SRC** → `neo-step17-completion` (NIE-guard; branch
+  unreachable).
+- **F-6 / NEO-VT-FLDADDR** (ldflda on in-frame VT) → `neo-vt-ldflda-inline`.
+- **D-13B** (fully, Areas 4a/4b/4c/4d + Area 5) → Step 13b + `neo-step13-area4` +
+  `neo-step13-area4-refandstind`.
+- **N-CGTUN** + **N-TC2** → `neo-opportunistic-cleanup`.
+- **D-ARR** (rank-1) → `neo-array-completion`. **Multi-dim remains** (see Open).
+- **F-8 / NEO-DOUBLE-COMBINE** → `neo-double-combine-quirk` (OpCodeR-union
+  `Operand3` high-4-byte clobber — the 3rd concrete instance of the §4 gotcha).
+- **F-10 / NEO-CLRSTRUCT-FIELD-OF-IL** → `neo-clrstruct-field-of-il`.
 
-### Partial closes (the boxed/follow-up halves)
-- **K2-FAM** boxed-ref bridge (CLR VT local sourced from Box/Initobj, passed by
-  value) — deferred; the flat-bytes / return-sourced path works (Step 13b).
-- **Step 13 areas 4** — CLR binding `Unsafe.Unbox<T>` direct-call + value-type-`this`
-  (WriteBackInstance elimination is a no-op for Neo); **CLR-method ref/out** (typed-
-  ref bridge); **CLR-object stind/ldind via field hash**. All → a future step
-  (13b was Neo-only-codegen; Legacy untouched).
-- **Step 17** — `constrained.`-on-VT full dispatch (callvirt needs byref `this`);
-  `Stobj`/`Ldobj` ref-slot loop (primitives only now); generic-byref / `fixed` /
-  interface-on-VT-constrained.
-- **Opportunistic** — peephole + `PatchKind.IsinstResult` (no patch-infra exists);
-  array-completion variants (`Stelem_I`, generic-token `Ldelem`/`Stelem`, native
-  `Ldelem_I`/`U8`, multi-dim); `cgt-un` comment-nit; catch-wrapper (matches Legacy,
-  accept).
+### Open follow-ups (the remaining portfolio children + accepted-known edges)
+- **AOT toolchain (Steps 22-26)** — the next big focus; see §6.
+- **neo-step20-async-suspend** — the truly-async suspend/resume slice
+  (`AwaitUnsafeOnCompleted` → frame-to-heap hoist + `ILAsyncContext` resumption).
+  The sync-slice infrastructure (builder redirects, `HoistNeoILValueToHeap`,
+  `ILAsyncContext` skeleton) is shipped as the foundation. F-10 (the prerequisite)
+  is now resolved.
+- **Step 20 redirect-coverage edges (TC2/TC3/TC5)** — non-generic Task `Start`
+  redirect null-SM; ValueTask builder NRE; multi-await `Task<int>.get_Result`
+  redirect. Fold into a `neo-step20-async` round 2 / async-suspend.
+- **neo-array-multidim** — multi-dimensional arrays (rank-2+).
+- **neo-step17-generic-byref-etc** — generic-byref (`ref T`/`out T` with `T`
+  generic), `fixed` unmanaged-pinning, interface-on-VT-constrained (the Step 17 (c)
+  edges). Also owns **F-10-R1** (the F-6/F-10 both-stamp shape for an IL VT with a
+  CLR-struct field — latent, gated behind `constrained.callvirt`-on-VT; the correct
+  fix is the JIT-discriminator gate, NOT the runtime reorder the reviewer proposed —
+  that was disproven).
+- **peephole-isinst [D-PEEP]** — `box T; isinst U` fusion + `PatchKind.IsinstResult`
+  (needs a patch-infra that doesn't exist yet).
+- **Smaller accepted-known / latent upstream gaps:** **F-4** (Stind/Ldind CLR-array
+  I4-only is mostly resolved; UIntPtr-primitive + ref-array upstream gaps remain
+  unreachable), **F-9** (inlined-IL-method return-move mis-classification),
+  **F-7** (delegate ref/out marshaling in `DelegateAdapter.NeoInvokeSub` — CLR→IL
+  direction, distinct from the 4c IL→CLR bridge), **F-2** (inliner ref-only-VT
+  ref-fold), the cross-frame byref parameter limitation, and the nested-VT-field-byref
+  upstream gap.
 
 ---
 
 ## 6. What's next on the roadmap
 
-The Neo JIT path covers Steps 1-18 (+ derived). Remaining roadmap:
-- **Step 19** — Delegates (`ldftn`/`ldvirtftn` + DelegateAdapter; CLR→IL call
-  convention for `InvokeILMethod`). Dep: Steps 8/9/10.
-- **Step 20** — Async/Await (Builder redirect + ILAsyncContext). Large.
-- **Steps 21-26** — debugger integration + Neo AOT (`ilrt_neoc` precompiles `.neo`;
-  pure optimization layer — Step 22-26).
+The Neo JIT path now covers **Steps 1-20** (sync) + all derived follow-ups. The
+remaining work falls into three buckets:
 
-**Recommended next:** either **Step 19 (delegates)** (continues the roadmap) or
-**[VT-THIS-ADDR]** (the highest-value fix — unlocks full value-type construction;
-it's a prerequisite for several partial closes). The user's standing pattern:
-drive via the autopilot, commit + push per phase.
+### A. AOT toolchain (Steps 22-26) — the next BIG focus
+A separate multi-week sub-project; **pure optimization layer, no functional
+impact** (the JIT path already runs everything the smoke covers). The portfolio
+has these as pending children with a dependency chain:
+- **Step 22** `neo-step22-generic-template` — `PatchEntry` + templateBody+patches
+  + `CloneAndPatch` runtime instantiation.
+- **Step 23** `neo-step23-neoassembly` — `.neo` binary format (header + tables) +
+  serializer/deserializer + roundtrip.
+- **Step 24** `neo-step24-ilrt-neoc` — `ilrt_neoc` standalone precompile CLI.
+- **Step 25** `neo-step25-runtime-loader` — `.neo` runtime loader + ILType/ILMethod
+  Cecil-decoupling dual-path.
+- **Step 26** `neo-step26-perf-validation` — benchmarks + reflection/thread-safety
+  edges + debugger adaptation.
+
+### B. The async finish (Step 20 remainder)
+- **`neo-step20-async-suspend`** — the truly-async suspend/resume slice
+  (`AwaitUnsafeOnCompleted` → frame-to-heap hoist + `ILAsyncContext` resumption).
+  Infrastructure is shipped; F-10 (the prerequisite) is resolved.
+- **Step 20 redirect-coverage edges (TC2/TC3/TC5)** — fold into a Step 20 round 2.
+
+### C. Smaller completions (independent, pick up between A/B)
+- **`neo-array-multidim`** — multi-dimensional arrays (rank-2+).
+- **`neo-step17-generic-byref-etc`** — generic-byref / `fixed` / interface-on-VT-
+  constrained (Step 17 (c) edges) + the F-10-R1 JIT-discriminator gate.
+- **`neo-peephole-isinst`** — `box T; isinst U` fusion (needs patch-infra).
+
+### Workflow
+The user drives via the **autopilot portfolio** (`/openspec-opsx-auto
+auto-decompose ...`), **one child per run, commit + push after each clean child**
+(see §3). The portfolio state (executionOrder, completedChildren, runnableFrontier,
+each child's status/smoke/review) lives in
+`openspec/changes/neo-completion-portfolio/portfolio-run.json`; the per-child
+scope/findings/follow-ups live in the companion `planning-context.md`. **Pick the
+next child from the runnable frontier** (deps satisfied) — typically the next AOT
+step (Step 22), or async-suspend, or a smaller completion.
 
 ---
 
@@ -304,11 +403,22 @@ drive via the autopilot, commit + push per phase.
   - `neo-handoff.md` — THIS FILE.
   - `object-model-design.md` / `object-model-neo-design.md` — the object-model +
     Neo-interpreter design (Call convention, VTable, exception, Box, async, etc.).
-- **`openspec/specs/<capability>/spec.md`** — the 9 durable canonical capability
-  specs (deltas merged in at archive time).
-- **`openspec/changes/archive/2026-07-04-implement-neo-step*/`** — per-step
-  proposal.md / design.md / tasks.md / review-report.md / ship-log.md /
-  planning-context.md (the detailed history; mine these for prior-art decisions).
+- **`openspec/specs/<capability>/spec.md`** — the **10** durable canonical
+  capability specs: `neo-dispatch`, `neo-value-types`, `neo-boxing`,
+  `neo-exceptions`, `neo-type-checks`, `neo-arrays`, `neo-byref`, `neo-optimizer`,
+  `neo-newobj`, **`neo-async`** (NEW from Step 20). Deltas merge in at archive time.
+- **`openspec/changes/neo-completion-portfolio/`** — the **durable portfolio
+  state**: `portfolio-run.json` (the 15 done + the pending children, the dependency
+  DAG, executionOrder, runnableFrontier, each child's status/smoke/review) +
+  `planning-context.md` (the full portfolio plan + every child's `## Findings`
+  outcome + `## Follow-ups discovered` F-1..F-10). This is the portfolio
+  source-of-truth; read it before picking the next child.
+- **`openspec/changes/archive/`** — per-child history: the Steps 1-18 era is
+  `2026-07-04-implement-neo-step*/` (and the derived `opt-hardening` /
+  `catch-complete`); the **15 portfolio children** are `2026-07-0X-neo-*`
+  (e.g. `2026-07-05-neo-vt-this-addr/`, `2026-07-06-neo-clrstruct-field-of-il/`).
+  Each holds proposal.md / design.md / tasks.md / review-report.md / ship-log.md /
+  planning-context.md — mine these for prior-art decisions and probe methodology.
 - **`TestCases/NeoStep<N Test.cs`** + `NeoOptHardeningTest.cs` — the tests.
 - **Core code (`ILRuntime/`):**
   - `Runtime/Intepreter/ILIntepreter.cs` — shared engine (`HandleException`,
@@ -337,12 +447,17 @@ drive via the autopilot, commit + push per phase.
 
 1. `git log --oneline -5` + `git status -sb` — confirm you're on
    `features/object-model-overhaul`, in sync with origin, clean (modulo .pdb noise).
-2. Read this file + `neo-deferred-items.md` (the §1 sequencing + the open follow-ups).
-3. Decide the next unit of work (Step 19, or [VT-THIS-ADDR], or another follow-up).
+2. Read this file + `neo-deferred-items.md` (the open follow-ups) + the portfolio
+   docs (`openspec/changes/neo-completion-portfolio/{portfolio-run.json,
+   planning-context.md}` — the runnableFrontier + each child's status).
+3. Decide the next unit of work: an **AOT step** (22→…→26, the big focus),
+   **`neo-step20-async-suspend`** (the async finish), or a smaller completion
+   (`neo-array-multidim` / `neo-step17-generic-byref-etc` / `neo-peephole-isinst`).
 4. Build the CLI (`dotnet build ILRuntimeTestCLI/ILRuntimeTestCLI.csproj -c Debug_Neo`)
    + TestCases (`dotnet build TestCases/TestCases.csproj -c Debug`) — confirm 0 errors.
-5. Run the `NeoStep` smoke — confirm 91/91 (the environment-healthy baseline).
-6. Drive the step via `/openspec-opsx-auto auto-decompose <description>` (or the
-   per-stage worker pattern in §3). Commit + push after review is clean.
-7. Update `neo-deferred-items.md` (and this file's §2/§5) if the step resolves or
-   surfaces an item.
+5. Run the `NeoStep` smoke — confirm **190/190** (NeoStep), **24/24** (NeoOptHard),
+   **9/9** (NeoStep20) — the environment-healthy baseline.
+6. Drive the child via `/openspec-opsx-auto auto-decompose <description>` (or the
+   per-stage worker pattern in §3). **Commit + push after each clean child.**
+7. Update `neo-deferred-items.md` (and this file's §2/§5) + the portfolio
+   `portfolio-run.json` if the child resolves or surfaces an item.

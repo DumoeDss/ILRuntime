@@ -134,8 +134,8 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-step13-area4", "neo-step19-delegate", "neo-array-completion", "neo-peephole-isinst", "neo-opportunistic-cleanup", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind"],
+  "runnableFrontier": ["neo-step20-async-suspend", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-peephole-isinst", "neo-step22-generic-template"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."
