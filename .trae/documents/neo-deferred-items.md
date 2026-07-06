@@ -1068,6 +1068,32 @@ children:** (1) `neo-async-controlflow-iscompleted` — the `brtrue`-after-
 remain tagged NIEs; the foundation is unchanged + proven. See
 `openspec/changes/archive/2026-07-06-neo-step20-async-suspend/ship-log.md`.
 
+**UPDATE 2026-07-07 (neo-async-controlflow-iscompleted — DISPROVEN, closed as
+no-op):** the "control-flow blocker #1" reported by the suspend slice
+(`brtrue`-after-`get_IsCompleted` always takes the completion path) is NOT a bug
+on HEAD. A dump-gate of a `Task.Delay` await proved: when the awaited task is
+genuinely incomplete at first poll, `get_IsCompleted` returns `False`, `Brtrue`
+reads the SAME frame offset the redirect wrote (`readAddr == retDst`), reads
+`int=0`, and CORRECTLY does NOT branch -> falls through to `AwaitUnsafeOnCompleted`
+(the call IS reached, `hasRedirect=True`). The suspend-slice report was an
+artifact of the PRE-Phase-1 state: before the `Task.Delay` redirect shipped, the
+probe's task was sync-completing -> `isCompleted=True` -> `brtrue` CORRECTLY took
+the completion path (misread as a control-flow bug). **CAVEAT (probe-design
+lesson):** `Task.Delay(N)` is RACY with the JIT/setup overhead -- sometimes
+complete at poll (sync path, probe passes), sometimes not (suspend path reached,
+probe fails in the `AwaitUnsafeOnCompleted_Neo` stub NIE). A deterministic
+suspend probe needs a `TaskCompletionSource`-style awaitable that is incomplete
+at first poll regardless of timing. The actual remaining async blocker is NOT
+control-flow but: (a) confirming whether the `AwaitUnsafeOnCompleted[TaskAwaiter,
+IAsyncStateMachineAdaptor]` redirect DISPATCHES to `AwaitUnsafeOnCompleted_Neo`
+(the `hasRedirect=True` contradicts the B1 finding; needs a deterministic-probe
+dump), and (b) B1 (the 2-generic-arg redirect resolution). Both fold into
+`neo-generic-redirect-resolution` (B1). No code/test shipped for the control-flow
+child (no fix exists; the racy probe can't be a regression guard).
+`neo-async-controlflow-iscompleted` is REMOVED from the portfolio (disproven
+premise); `neo-generic-redirect-resolution` (B1) absorbs the remaining
+async-blocker investigation with a deterministic-probe requirement.
+
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
 suspected to hit an optimizer temp-renumber quirk (BCP/copy-prop). **OPT-HARDEN
