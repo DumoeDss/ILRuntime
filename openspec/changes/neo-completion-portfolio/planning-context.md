@@ -931,6 +931,65 @@ New + noted follow-ups recorded in `.trae/documents/neo-deferred-items.md`:
   per call). GC-collected; matches the existing reference-param pattern. Not a
   correctness issue. Flag for a future de-dup pass.
 
+### Follow-ups from neo-step17-stobj-refloop (2026-07-06, Step 17 (b) + IL-VT-with-ref-fields constrained)
+
+D-CONSTRAINED is now FULLY RESOLVED for (a)/(b)/(d)/(M2) — only the (c) edges
+remain. The Stobj/Ldobj ref-region copy (gated on `TotalReferenceCount > 0`,
+primitive-only VTs byte-identical) + the IL-VT-with-ref-fields constrained sub-
+case shipped. Verification: NeoStep 181/181 (175 + 6 probes), NeoStep17 Legacy-
+neutral 41/41; all probes FAIL-on-HEAD -> PASS. Review round 0 APPROVED; round 1
+fixed M1 (IL-instance branches now throw a tagged NIE on a `localInfos` scan-miss
+— loud, not silent corruption) + M2 (dropped the dead
+`constrainedSlot0SeedRefBase` param). LEAD non-author diff-read confirmed. See
+`openspec/changes/archive/2026-07-06-neo-step17-stobj-refloop/ship-log.md`.
+
+Follow-ups + lessons recorded in `.trae/documents/neo-deferred-items.md`:
+
+- **(c) generic-byref / `fixed` / interface-on-VT-constrained -> `neo-step17-
+  generic-byref-etc` (task #22, separate child).** These remain Step-17-tagged
+  NIEs (or accept-known for `fixed` if a probe shows the address works without GC
+  pinning). They are independent plumbing (a generic-param type-token
+  discriminator; a pinned-local flag; an interface-dispatch branch) that does NOT
+  fall out of (b) and is not exercised by the smoke. The explicit Step-13b/area4
+  lesson re-affirmed: do NOT mix unrelated byref correctness surfaces.
+- **Cross-frame byref parameter (R2 earned constraint) -> follow-up.** R2 (the
+  runtime `localInfos` scan that recovers the byref source's ref-region mStack
+  base) resolves the byref to a direct local ONLY in the same frame. A byref
+  PARAMETER (a `ref` param to a non-inlined helper) points at the CALLER's frame;
+  the helper's `localInfos` scan cannot recover that ref base. The probe set
+  stays within the same-frame shape (the C# trivial inliner folds the small byref
+  helpers into the caller where R2 resolves). A genuine cross-frame byref-of-VT-
+  with-refs stays deferred; it fails clean (the `dstRefBase < 0` / `srcRefBase <
+  0` NIE), not silent corruption.
+- **Nested-VT-field-byref -> follow-up (blocked upstream).** A `ldflda` of a
+  nested struct field where the leaf is a VT with reference fields does NOT
+  resolve to a direct local -> tagged NIE. Blocked UPSTREAM by the pre-existing
+  Step-6 `Ldfld_Value` NIE and the F-6 `Ldflda_Inline` paths — the genuine nested-
+  field-byref shape never reaches the Stobj/Ldobj arm. Out of scope (independent
+  pre-existing items, not introduced by this change).
+- **Lesson (M1): silent-skip-as-silent-corruption.** The round-0 IL-instance
+  branches guarded the ref copy with `if (srcRefBase >= 0) { ... }` and SILENTLY
+  SKIPPED on a `localInfos` scan-miss — leaving the ILTypeInstance's
+  `ManagedObjects` with stale/null ref slots. The frame-native branches threw a
+  tagged NIE on the same miss. The asymmetry was a consistency/correctness-polish
+  gap (the scan-miss case is exotic — the green-target probes all resolve), but
+  it was the silent-corruption class the change otherwise avoids. Round-1 fix:
+  mirror the frame-native NIE throw on the IL-instance scan-miss. Durable rule:
+  when an arm has a "recovery miss" path, ALL operand shapes (frame-native AND
+  IL-instance AND CLR) must fail the SAME way (loud NIE), never silent-skip —
+  silent-skip is silent-corruption.
+- **Gotcha (mStack-reservation-clobber seed placement).** The Constrained IL-VT-
+  direct-call seed (the callee slot-0 ref region) MUST run AFTER the callee's
+  `mStack.Add(null)` reservation (which zeroes slots) and BEFORE the body
+  dispatch. A pre-call mStack write to `mStack[Count + ...]` would be zeroed by
+  the reservation. Fix: defer the seed to INSIDE `ExecuteNeo`, right after the
+  mStack reservation (post-reservation, pre-body), via a new
+  `constrainedSlot0Seed*` hook — mirrors the VT-THIS-ADDR copy-back precedent
+  (which likewise runs in the Ret arm before the mStack pop, because
+  ExecuteNeo's `RemoveRange` destroys the data). Durable: any caller that wants
+  to pre-seed the callee's mStack region must do so via an ExecuteNeo-internal
+  hook placed after the reservation, NOT via a pre-call mStack write.
+
 ## Findings -- neo-il-exception-throw (2026-07-05, propose)
 
 Closes **D-IL-EXCEPTION-THROW** (the second half of the exception follow-up
@@ -3005,3 +3064,291 @@ from the dump -- the process worked exactly as designed.
 **Spec deltas (the shipper syncs at archive).** The `neo-byref` MODIFIED
 deltas: 4c (CLR-method ref/out call-ABI bridge) + 4d (CLR-object stind/ldind/
 stobj/ldobj via field identity) delivered. F-7 (delegate ref/out) stays OPEN.
+
+## Findings -- neo-step17-stobj-refloop (2026-07-06, propose)
+
+**Scope decision: (b) Stobj/Ldobj ref-loop + the IL-VT-with-ref-fields constrained
+sub-case IN; (c) generic-byref / fixed / interface-on-VT-constrained DEFERRED
+(parked as NIE-tagged edges; none exercised by smoke, none reachable from the
+common C# shape).** This matches the scoping recommendation. The two (b)
+sub-cases share a SINGLE root mechanism (the byref source must carry the struct's
+ref-region mStack base, OR the runtime must recover it from the source local's
+frame layout), so bundling them is one correctness surface -- splitting would
+force two passes over the same operand-stamping/Ref-Slot-extension. The (c)
+edges are independent (a generic-param type-token discriminator; a pinned-byref
+flag; an interface-dispatch branch) that do NOT fall out of (b) and would, if
+bundled, mix unrelated surfaces into one diff (the explicit Step-13b/area4
+lesson).
+
+**(b) Current-state assessment (code-grounded at HEAD).** The Stobj/Ldobj
+arms (ILIntepreter.Neo.cs:3514-3570) copy ONLY primSize bytes
+(Unsafe.CopyBlock of TotalPrimitiveSize); the TotalReferenceCount
+ref-region half is NOT copied. So a stobj/ldobj of a VT WITH reference
+fields SILENTLY TRUNCATES the ref half (a struct {int x; string s;} copied
+via stobj loses s; a ldobj reads the dest's stale/null ref slot). The
+IL-VT-with-ref-fields constrained sub-case throws the tagged NIE at :3818
+(direct-call path) and :3876 (inherited-CLRMethod box path) -- both gated on
+ilConstrained.TotalReferenceCount > 0. No green NeoStep case exercises either
+today (zero regression). Both are pre-existing deferrals from neo-step17-
+completion, NOT regressions.
+
+**The shared root challenge (load-bearing).** A frame-native byref Ref Slot is
+(-1, thisByteOff) -- it carries the struct's PRIMITIVE byte offset but NOT the
+struct's ref-region mStack base (the source local's RefOffset). To copy/seed
+the ref region (Stobj dest ref slots, Ldobj src ref slots, constrained slot-0
+ref slots) the runtime needs that ref base. Two recovery options:
+
+- **Option R1 (JIT-stamp): extend the Ref Slot encoding OR stamp the source
+  local's RefOffset into an operand field at the producer.** The ldloca/
+  ldflda producers run BEFORE LowerNeoOffsets (register indices available),
+  so the source local's localInfos[srcReg].RefOffset is stampable. BUT the
+  8-byte Ref Slot is a wire format consumed by stind/ldind/stobj/ldobj/ref-param
+  across call boundaries -- extending it to 12 bytes ripples through every
+  consumer + the call-region copy (CopyNeoCallArguments 8-byte entry). A
+  standalone operand stamp (like NeoLdfldaInlineMarker in Operand4) is
+  cleaner but only works for the OP that owns the slot (stobj/ldobj read a
+  generic Ref Slot produced upstream; the constrained callvirt reads a Ref Slot
+  from ldloca upstream). **R1 is the higher-risk path** (touches the Ref Slot
+  contract shared with stind/ldind/ref-params).
+
+- **Option R2 (runtime-recover): scan localInfos for the local whose
+  Offset == thisByteOff and read its RefOffset.** Works ONLY for frame-
+  native byrefs that point at a DIRECT local (objectIndex == -1 and the offset
+  matches a local's primitive base). FAILS for ldflda-of-a-struct-field
+  (nested struct -- the field's offset is NOT a local base) and for an mStack-
+  object byref (objectIndex >= 0, where the ref region is the object's
+  ManagedObjects -- already accessible via GetNeoILInstance). **R2 is the
+  lower-risk path** for the direct-local shape (the common case: ldloca V;
+  stobj / constrained.callvirt V.M where V is a local); the nested-field
+  shape is the rare edge.
+
+**Design LOCKED (provisional, dump-gated at apply):** the Stobj/Ldobj ref-loop
++ the IL-VT-with-ref-fields constrained sub-case use a HYBRID:
+
+1. **For a frame-native byref of a DIRECT local** (the green target): recover
+   the ref base by scanning localInfos for Offset == thisByteOff (R2). The
+   Stobj/Ldobj arm then mirrors Move_Vt: byte CopyBlock of primSize + an
+   mStack-to-mStack copy of TotalReferenceCount ref slots
+   (mStack[frameRefBase + dstRefBase + i]). For the constrained sub-case,
+   seed the callee slot-0 ref slots from the recovered ref base (analogous to
+   how the newobj VT-THIS-ADDR Ret-arm copy-back seeds slot-0 refs).
+2. **For an mStack-object byref (objectIndex >= 0)**: the ILTypeInstance's
+   ManagedObjects is the ref region -- CopyFrameToIL/CopyILToFrame
+   already handle it (the existing Stobj/Ldobj IL-instance branch is the
+   primitive half; extend it with the ref half via the existing helpers). This
+   is the area4 4d shape (NeoReadClrObjectField/NeoWriteClrObjectField for
+   the CLR-object sub-case stays unchanged).
+3. **For a frame-native byref NOT matching a direct local (nested-field via
+   ldflda): tagged NIE** -- the rare edge; defer to a follow-up IF a smoke
+   case exercises it.
+
+**Apply-phase dump gates (MANDATORY, before fixing):**
+- Confirm localInfos is accessible from the Stobj/Ldobj/Constrained arms at
+  runtime (it is a local var in ExecuteNeo -- confirm scope).
+- Confirm the source-local shape for the green-target probes (ldloca V of a
+  top-level local, not a nested field) actually resolves Offset == thisByteOff
+  (a stale-DLL false-failure is the earned gotcha; use --no-incremental).
+- For the constrained direct-call IL-VT-with-ref-fields: dump the callee frame's
+  ParamInfos[0] ref region to confirm the seed target offsets.
+
+**The (c) edges -- assessed as DEFERRED (NIE-tagged, no smoke coverage):**
+- **generic-byref (ref T/out T, T generic-param):** the JIT Stobj/
+  Ldobj stamp only the type token (op.Operand = method.GetTypeTokenHash-
+  (token)); a generic-param type token resolves to the runtime substitution
+  but the ref-loop would need the SUBSTITUTED type's TotalReferenceCount.
+  The Operand2/Operand3/Operand4 fields are free at runtime (Stobj/Ldobj
+  use only DstOffset/SrcOffset/Operand). Likely a JIT side-stamp of the
+  substituted type at type-specialization time. RARE in C# (a generic method
+  taking ref T where T is a VT-with-refs called on a struct). DEFER.
+- **fixed (pinned byref):** the C# fixed statement lowers to a pinned
+  local + a byref; the Neo frame model has NO pinned-local flag. The byref
+  itself works (frame-native Ref Slot); the pinning semantics (GC) are a
+  separate concern. Likely "works for the address, no GC pin" -- acceptable-
+  known IF reachable. No smoke case. DEFER (or accept-known if a probe shows
+  it just works without pinning for the common fixed over a primitive array).
+- **interface-on-VT-constrained beyond the common shape:** the Constrained arm
+  already handles IEquatable<T>/IComparable<T> (the box-once / direct-call
+  paths). The "beyond" edges are untyped-shape interface dispatch; no concrete
+  reproducer. DEFER.
+
+**Files the implementer will touch (all Neo-only; Legacy is the REFERENCE):**
+- ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs:
+  - case OpCodeREnum.Stobj: (:3514) + case OpCodeREnum.Ldobj: (:3544)
+    -- add the ref-region copy loop (R2 for frame-native-direct-local; the
+    ILTypeInstance ManagedObjects half for mStack-object; NIE for nested-
+    field).
+  - case OpCodeREnum.Constrained: IL-VT-direct-call (:3818) + IL-VT-
+    inherited-CLRMethod (:3876) -- remove the TotalReferenceCount > 0
+    NIE; seed the callee slot-0 ref region from the recovered source local
+    ref base (R2) / CopyFrameToIL with the real refCount (the inherited-
+    CLRMethod box path already calls CopyFrameToIL -- extend it to pass the
+    real ref base + refCount).
+- NO JIT change for the green target (R2 is runtime-only). A JIT side-stamp
+  is the apply-phase fallback IF R2's localInfos scan proves insufficient
+  (e.g. the source is a temp, not a local).
+- TestCases/NeoStep17Test.cs (extend) -- NeoStep17_* adversarial probes:
+  (b) Stobj of a VT-with-ref-field; Ldobj of same; a nested VT-with-ref-field;
+  the IL-VT-with-ref-fields constrained (direct-call override); the IL-VT-with-
+  ref-fields constrained (inherited CLRMethod box). Regression: the primitives-
+  only Stobj/Ldobj still works + the step17-completion paths + full smoke.
+
+**Regression risk: MEDIUM.** The Stobj/Ldobj arms are shared by every byref-of-
+VT consumer; the constrained sub-case is gated on TotalReferenceCount > 0
+(byte-identical for primitive-only VTs, the existing green paths). The R2
+localInfos scan is a runtime lookup on the byref path (not a hot-path
+concern -- byref-of-VT-with-refs is rare). Gate: full NeoStep smoke (175/175
+baseline) + the step17-completion probes still green + Legacy-neutral (all
+changes Neo-only). Adversarial probes MANDATORY (Step 17 B1 / OPT-HARDEN K1 /
+F-MAJ-1 lessons: a green smoke does NOT prove a ref-region copy correct --
+construct a probe where the dest's stale ref slot is non-null and the copy
+MUST overwrite it).
+
+**Side-benefit watch.** The IL-VT-with-ref-fields constrained sub-case is the
+majority shape for real-world IL structs (most have a string/object field +
+an override or a default ToString). Closing it unblocks realistic struct
+usage in the smoke.
+
+**Capability spec delta (1 MODIFIED requirement, narrowed):**
+- neo-byref: the "Deferred byref sub-cases throw tagged NIE" requirement --
+  flip (a) the stobj/ldobj ref-slot portion from DEFERRED to DELIVERED (a
+  VT WITH reference fields is correctly copied through stobj/ldobj for the
+  direct-local + IL-instance shapes; the nested-field-via-ldflda shape stays
+  NIE-tagged); flip (h) the IL-value-type-with-reference-fields constrained
+  sub-case from DEFERRED to DELIVERED (the slot-0 ref-region seed). The
+  "stind/ldind/stobj/ldobj dispatch" requirement's "TotalReferenceCount
+  ref-slot portion is PARTIAL" note is removed. (c) generic-byref / fixed /
+  interface-on-VT-constrained stay DEFERRED (still tagged NIE).
+
+## Findings -- neo-step17-stobj-refloop (apply, 2026-07-06)
+
+**RESOLVED.** Step 17 (b) Stobj/Ldobj ref-region copy loop + the IL-VT-with-
+ref-fields constrained sub-case delivered. NeoStep smoke 181/181 (175 baseline +
+6 new probes). Legacy-neutral (all 41 `NeoStep17_` tests pass on plain `Debug` +
+`useRegister=true`). Stash-toggle: probes 1/2/3/4/5 FAIL-on-HEAD (runtime
+reverted via `git stash push -- ILIntepreter.Neo.cs`), PASS-after; probe 6
+(primitives-only regression guard) correctly PASS on both (byte-identical).
+`openspec validate --strict` clean.
+
+**R1-vs-R2 RESOLVED: R2 (runtime localInfos scan), runtime-only, NO JIT change.**
+In-arm `Console.WriteLine` dumps inside the Stobj/Ldobj arms confirmed the
+green-target byref resolves to a DIRECT LOCAL via the scan (probe 1: byref
+`off=0` == `localInfos[0].Offset`, RefOffset=0; src value `SrcOffset=32` ==
+`localInfos[7].Offset`, RefOffset=3). R1 (JIT side-stamp) was NOT needed -- the
+8-byte Ref Slot wire format stays 8 bytes.
+
+**Operand mapping CONFIRMED.** Stobj: `DstOffset` = byref address (8-byte Ref
+Slot), `SrcOffset` = value local. Ldobj: the REVERSE (`SrcOffset` = byref,
+`DstOffset` = dest). Matches JIT Register1=address/Register2=value ->
+LowerNeoOffsets DstOffset/SrcOffset.
+
+**EARNED CONSTRAINT (load-bearing for any future byref work): R2 resolves the
+byref to a direct local ONLY WHEN the byref is produced AND consumed in the SAME
+frame.** A byref PARAMETER (a `ref` param passed to a helper) points at the
+CALLER's frame; the helper's own localInfos scan cannot recover that ref base.
+The green target is therefore the SAME-FRAME shape: the C# compiler's trivial
+inliner folds a small byref helper (`static void M(ref S dst, S src) { dst = src;
+}`) into the caller, where source + dest are caller locals and R2 resolves. A
+helper that is NOT inlined (e.g. one returning a struct) hits the separate F-9 /
+NEO-INLINED-RETURN-MOVE defect on its return value, not the stobj/ldobj arm.
+Probe 2 was restructured from a returning helper to an `out`-param helper that
+inlines cleanly. **Implication: the genuine cross-frame byref-of-VT-with-refs
+shape (a non-inlined helper taking `ref S` and copying it) is NOT covered by R2
+and stays deferred** (would need R1 -- a JIT side-stamp of the source local's
+RefOffset that survives the call-boundary copy, or a frame-relative ref-base
+encoding in the Ref Slot).
+
+**Constrained direct-call slot-0 seed -- the mStack-reservation clobber gotcha
+(loads the VT-THIS-ADDR precedent).** The seed CANNOT be a pre-call write to
+`mStack[mStack.Count + slot0.RefOffset]`: the callee's ExecuteNeo reserves its
+frameRefBase via `mStack.Add(null)` which ZEROES the slots, clobbering any
+pre-call seed. Fix mirrors VT-THIS-ADDR's copy-back: 4 new optional hook params
+on `ExecuteNeo` (`constrainedSlot0SeedRefOffset/SrcRefBase/RefCount` + an unused
+base), seeded INSIDE ExecuteNeo right AFTER its mStack reservation, BEFORE the
+body. The direct-call path calls `ExecuteNeo` directly (not `InvokeNeoCallTarget`)
+to pass the hook. `constrainedSlot0SeedSrcRefBase = callerFrameRefBase +
+srcLocalRefOffset` (R2). All defaults inert when RefCount==0 (existing callers
+unaffected). The dump showed `slot0.RefOffset=0`, `mStack.Count=5`,
+`callerFrameRefBase=0`, confirming the callee frameRefBase (= mStack.Count at
+entry) is DISTINCT from the caller's and the seed must target the callee's
+region post-reservation.
+
+**Constrained inherited-CLRMethod box path -- simpler.** `CopyFrameToIL` already
+iterates `ManagedObjects`; recover `boxSrcRefOffset` via the same R2 scan and
+pass the real `refOffset + refCount` (was `refOffset=0, refCount=0`).
+
+**OQ3 RESOLVED: the genuine nested-VT-field-byref stobj/ldobj shape is BLOCKED
+by pre-existing Step-6 `Ldfld_Value` + F-6 gaps** (constructing `ref outer.inner`
+hits those BEFORE reaching the stobj/ldobj arm) -- independent pre-existing
+gaps, NOT this change's ref-loop. Probe 3 was repurposed to a VT with TWO ref
+fields (`{int n; string a; string b;}`) exercising the MULTI-SLOT ref-region
+copy loop (refCount==2, the off-by-one guard). The nested-field-byref shape
+stays a tagged NIE inside the arm (`dstRefBase < 0` / `srcRefBase < 0` throw).
+
+**Accepted-known edges (documented, NOT fixed):**
+- **Nested-VT-field-byref stobj/ldobj** -- blocked upstream by Step-6
+  `Ldfld_Value` + F-6; the arm's tagged NIE fires only if a byref reaches it
+  that doesn't resolve via the scan. No smoke reproducer can reach it today.
+- **Cross-frame byref-of-VT-with-refs (a non-inlined `ref S` helper copying the
+  struct)** -- R2 cannot recover the caller's ref base from the helper frame;
+  stays deferred (would need R1).
+- **CLR VT with reference fields via stobj/ldobj without a ValueTypeBinder** --
+  the area4 accepted-known (GC refs not materializable without a binder).
+
+**Files edited (all Neo-only; Legacy byte-identical):**
+- `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs` -- ExecuteNeo
+  signature + body (slot-0 seed hook), Stobj arm, Ldobj arm, Constrained arm
+  direct-call path, Constrained arm inherited-CLRMethod box path.
+- `TestCases/NeoStep17Test.cs` -- 6 new `NeoStep17_*` probes + 2 new struct
+  types (`NeoStep17VtWithRef`, `NeoStep17VtWithRefOverride`,
+  `NeoStep17VtWithTwoRefs`).
+
+**Did NOT git commit/push** (per process discipline; LEAD commits after review).
+Did NOT update `neo-deferred-items.md` (the shipper does at archive).
+
+## Findings -- neo-step17-stobj-refloop (review-fix)
+
+
+**Round 1 (2026-07-06): reviewer APPROVED with 2 Minors (no Blocker/Major); both fixed + re-verified.**
+
+**M1 -- Stobj/Ldobj IL-instance branch silent-skip -> loud NIE.** The
+IL-instance branches (byref target is an IL ILTypeInstance, value operand is a
+frame-local register) of the Step-17(b) ref-region copy guarded the copy with
+'if (srcRefBase >= 0) {}' and silently SKIPPED on a localInfos scan-miss,
+leaving stale/null ref slots in the instance's ManagedObjects (silent
+corruption). The frame-native branches already threw a tagged NIE on the same
+miss. **Fix: mirrored the frame-native branch -- the IL-instance branches now
+throw a tagged NIE on a scan-miss too.** Exotic unresolved-byref shape now
+fails LOUD. Green-target probes (which all resolve) unaffected. Edit sites:
+ILIntepreter.Neo.cs Stobj IL-instance branch (~3603) + Ldobj IL-instance branch
+(~3676).
+
+**DURABLE LESSON (the silent-skip-as-silent-corruption class):** when a ref/
+gc-region copy arm has a 'resolve the source/dest region' scan that can miss,
+the miss MUST fail loud (tagged NIE), NEVER silently skip -- a silent skip
+leaves the destination region with stale data, which is strictly worse than a
+crash (the bug propagates). This applies to any future arm that recovers a ref
+base via a runtime scan (the R2 pattern). The frame-native branch had this
+right; the IL-instance branch was an asymmetry introduced in the same diff.
+Audit future R2-style arms for the symmetric 'throw on miss' discipline.
+
+**M2 -- dead 'constrainedSlot0SeedRefBase' ExecuteNeo hook param DROPPED.** The
+Step-17(b) constrained slot-0 ref-seed hook on ExecuteNeo had 4 params; one
+('constrainedSlot0SeedRefBase') was dead -- the sole caller passed 0, and the
+seed loop read the callee's OWN frameRefBase (= mStack.Count at ExecuteNeo
+entry), never the passed base. **Fix: dropped the param entirely (signature +
+guard + call site).** The hook is now 3 load-bearing params. All 5 ExecuteNeo
+callers verified (4 pass the 5-arg form with hook defaults inert; 1 constrained
+direct-call site passes 3 named hook params). Seed loop still correct (probe 4
+PASS).
+
+**DURABLE LESSON (dead hook params):** when adding an optional hook to a
+function called from many sites, every hook param must be load-bearing or have
+an explicit 'why it exists' comment. A param that is always passed the same
+default and never read by the callee body is dead weight that misleads future
+readers (they assume the caller controls that value). Prefer dropping over
+documenting when the drop is clean (named args at the call site make it so).
+
+**Re-verify:** CLI Debug_Neo --no-incremental 0 errors; TestCases Debug
+--no-incremental 0 errors; plain Debug CLI 0 errors (Legacy untouched --
+ILIntepreter.Neo.cs is Neo-only). NeoStep smoke 181/181 (0 failed); NeoStep17
+filter 41/41 (0 failed). Working tree UNCOMMITTED.

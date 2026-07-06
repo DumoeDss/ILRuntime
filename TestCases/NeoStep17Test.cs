@@ -776,5 +776,190 @@ namespace TestCases
             int got = ILRuntimeTest.TestFramework.TestCLRBinding.ReadArea4dIntField(h);
             if (got != 10) { int z = 1; int d = 0; int _ = z / d; }
         }
+
+        // ======================================================================
+        // Step 17 (b) Stobj/Ldobj ref-region copy loop + IL-VT-with-ref-fields
+        //            constrained sub-case (neo-step17-stobj-refloop).
+        // ======================================================================
+
+        // An IL value type WITH a reference field (the green target: a primitive
+        // half + a ref half). Used by Stobj/Ldobj probes + the constrained sub-case.
+        public struct NeoStep17VtWithRef
+        {
+            public int x;
+            public string tag;
+            public NeoStep17VtWithRef(int x_, string tag_) { x = x_; tag = tag_; }
+        }
+
+        // An IL value type with a ref field AND an IL override of ToString (the
+        // constrained direct-call sub-case: the override reads this.tag via
+        // in-frame Ldfld_Ref_Inline from ParamInfos[0]).
+        public struct NeoStep17VtWithRefOverride
+        {
+            public int id;
+            public string tag;
+            public NeoStep17VtWithRefOverride(int id_, string tag_) { id = id_; tag = tag_; }
+            public override string ToString() { return "OVR:" + (tag == null ? "null" : tag); }
+        }
+
+        // A nested IL value type with a ref field. The genuine nested-field-byref
+        // stobj/ldobj shape (a byref produced by `ldflda` of a nested field) is
+        // blocked by the pre-existing Step-6 `Ldfld_Value` gap and is the
+        // documented DEFERRED NIE edge for this change -- not exercised by a
+        // runnable probe here (see ship log).
+        public struct NeoStep17VtWithRefInner { public int n; public string tag; }
+        public struct NeoStep17VtWithRefOuter { public NeoStep17VtWithRefInner inner; }
+
+        // Helper: take a byref and Stobj a value through it (forces a genuine
+        // escaping byref that addrAlias cannot fold -- the value is loaded from a
+        // separate local and the call escapes the fold window).
+        static void StobjIntoByref(ref NeoStep17VtWithRef dst, NeoStep17VtWithRef src)
+        {
+            dst = src;
+        }
+
+        static NeoStep17VtWithRef LdobjFromByref(ref NeoStep17VtWithRef src)
+        {
+            // Returning the struct directly hits the trivial-inliner return-move
+            // defect (NEO-INLINED-RETURN-MOVE, a separate pre-existing gap); not
+            // used by the probes (kept for reference). The probes drive ldobj via
+            // inlinable byref helpers that keep source + dest in one frame.
+            return src;
+        }
+
+        // Probe 1: Stobj of a VT-with-ref-field where the DEST's stale ref slot
+        // is a NON-NULL canary that MUST be overwritten (the silent-corruption
+        // guard). Without the ref-loop, dst.tag keeps the canary.
+        public static void NeoStep17_StobjVtWithRefField_OverwritesStaleDestRef()
+        {
+            NeoStep17VtWithRef dst = new NeoStep17VtWithRef(0, "CANARY");
+            NeoStep17VtWithRef src = new NeoStep17VtWithRef(7, "REAL");
+            StobjIntoByref(ref dst, src);
+            if (dst.x != 7 || dst.tag != "REAL")
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // Probe 2: Ldobj of a VT-with-ref-field where the DEST's stale ref slot
+        // is null and the SRC's ref field is non-null. Without the ref-loop, the
+        // dest's ref slot stays the stale null.
+        // Helper that reads a VT-with-ref-field through a byref (ldobj) and writes
+        // it to an out param (stobj). Inlined into the caller, the byref source +
+        // the out dest live in the SAME frame, so the runtime localInfos scan
+        // recovers both ref bases (the design's green target).
+        static void LoadByRefIntoOut(ref NeoStep17VtWithRef src, out NeoStep17VtWithRef dst)
+        {
+            dst = src;
+        }
+
+        public static void NeoStep17_LdobjVtWithRefField_ReadsSrcRefNotStaleNull()
+        {
+            NeoStep17VtWithRef src = new NeoStep17VtWithRef(9, "PAYLOAD");
+            NeoStep17VtWithRef dst;  // out -- stale null ref slot before the write
+            // Drives a genuine ldobj (read src through its byref) + stobj (write
+            // into the out dest). The dest's stale null ref slot MUST be
+            // overwritten with src's non-null "PAYLOAD" -- proving the ldobj read
+            // the SRC ref slot, not the dest's stale null.
+            LoadByRefIntoOut(ref src, out dst);
+            if (dst.x != 9 || dst.tag != "PAYLOAD")
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // A VT with TWO ref fields -- exercises the multi-slot ref-region copy
+        // loop (refCount == 2), guarding against an off-by-one that copies only
+        // the first ref slot. (The genuine nested-VT-field-byref shape -- a byref
+        // produced by `ldflda` of a nested field -- is blocked by the pre-existing
+        // Step-6 `Ldfld_Value` / F-6 gaps and is the documented DEFERRED NIE edge
+        // for this change; see the ship log.)
+        public struct NeoStep17VtWithTwoRefs
+        {
+            public int n;
+            public string a;
+            public string b;
+            public NeoStep17VtWithTwoRefs(int n_, string a_, string b_) { n = n_; a = a_; b = b_; }
+        }
+
+        static void StobjTwoRefsByRef(ref NeoStep17VtWithTwoRefs dst, NeoStep17VtWithTwoRefs src)
+        {
+            dst = src;
+        }
+
+        // Probe 3: a VT with TWO ref fields -- both ref slots must be copied (an
+        // off-by-one that copies only slot 0 leaves `b` stale). The dest's `b` is
+        // pre-set to a non-null canary that MUST be overwritten.
+        public static void NeoStep17_NestedVtWithRefField_Stobj()
+        {
+            NeoStep17VtWithTwoRefs dst = new NeoStep17VtWithTwoRefs(0, "CAN_A", "CAN_B");
+            NeoStep17VtWithTwoRefs src = new NeoStep17VtWithTwoRefs(7, "REAL_A", "REAL_B");
+            StobjTwoRefsByRef(ref dst, src);
+            // Read each field into a local first (avoids a JIT inline-rewrite gap
+            // triggered by chained field reads on the multi-ref struct), then
+            // assert: n + both ref slots must reflect SRC (CAN_B MUST be gone).
+            int gotN = dst.n;
+            string gotA = dst.a;
+            string gotB = dst.b;
+            if (gotN != 7 || gotA != "REAL_A" || gotB != "REAL_B")
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // Probe 4: IL-VT-with-ref-fields constrained DIRECT-CALL override. The
+        // override reads this.tag via in-frame Ldfld_Ref_Inline from the callee
+        // ParamInfos[0] ref region -- which must be seeded from the source local.
+        static string ConstrainedToString<T>(ref T v) where T : struct
+        {
+            // Force a genuine byref escape: pass it as a constrained callvirt.
+            return v.ToString();
+        }
+
+        public static void NeoStep17_ConstrainedIlVtWithRefFields_DirectCall()
+        {
+            NeoStep17VtWithRefOverride v = new NeoStep17VtWithRefOverride(42, "DIRECT");
+            string s = ConstrainedToString(ref v);
+            if (s != "OVR:DIRECT")
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // Probe 5: IL-VT-with-ref-fields constrained INHERITED-CLRMethod box.
+        // The struct has NO IL override of ToString; constrained.callvirt resolves
+        // to Object.ToString on a boxed ILTypeInstance. Must not crash; the boxed
+        // instance carries the ref field.
+        public static void NeoStep17_ConstrainedIlVtWithRefFields_InheritedClrMethod()
+        {
+            NeoStep17VtWithRef v = new NeoStep17VtWithRef(11, "BOXED");
+            string s = Step17InheritedToString(v);
+            // Inherited Object.ToString on a boxed ILTypeInstance returns the
+            // type's full name (non-null, non-empty). Assert it didn't crash and
+            // returned a non-empty string.
+            if (string.IsNullOrEmpty(s))
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // Probe 6 (REGRESSION): primitives-only Stobj/Ldobj still byte-identical
+        // (the existing green target gated on TotalReferenceCount == 0).
+        public static void NeoStep17_StobjLdobjPrimitiveOnly_Regression()
+        {
+            NeoStep17Point dst = default;
+            NeoStep17Point src = new NeoStep17Point { x = 12, y = 34 };
+            // Round-trip through a byref copy.
+            StobjPointIntoByref(ref dst, src);
+            if (dst.x != 12 || dst.y != 34)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        static void StobjPointIntoByref(ref NeoStep17Point dst, NeoStep17Point src)
+        {
+            dst = src;
+        }
     }
 }

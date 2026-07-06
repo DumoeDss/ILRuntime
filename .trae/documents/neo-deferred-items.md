@@ -65,7 +65,7 @@ Insert these into the roadmap ordering:
 | ID | Item | Surfaced by | Target | Unblocked by | Severity |
 |----|------|-------------|--------|--------------|----------|
 | D-LDELEMA | `ldelema` opcode | Step 16 | **RESOLVED (Step 17 + neo-step17-completion)** | Step 17 Ref-Slot/stind/ldind | fully resolved (IL VT array path Step 17; CLR primitive-array ldelema remainder in neo-step17-completion 2026-07-05) |
-| D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **partial (Step 17 + neo-step17-completion for {a,d,M2})** | Step 17 byref/VT-this-address | {a,d,M2} RESOLVED 2026-07-05 (neo-step17-completion): full constrained.-on-VT dispatch + CLR primitive-array ldelema + F-5 boxed-source NIE-guard. (b) Stobj/Ldobj ref-loop + (c) generic-byref/fixed/interface-on-VT-constrained + IL-VT-with-ref-fields constrained still DEFERRED -> `neo-step17-stobj-refloop` (task #18). area4 M2 obligation CLOSED. |
+| D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **FULLY RESOLVED for (a)/(b)/(d)/(M2); (c) edges remain -> `neo-step17-generic-byref-etc`** | Step 17 byref/VT-this-address | {a,d,M2} RESOLVED 2026-07-05 (neo-step17-completion): full constrained.-on-VT dispatch + CLR primitive-array ldelema + F-5 boxed-source NIE-guard. **(b) Stobj/Ldobj ref-region copy + IL-VT-with-ref-fields constrained RESOLVED 2026-07-06 (neo-step17-stobj-refloop):** ref-region copy gated on `TotalReferenceCount > 0` (primitive-only VTs byte-identical); byref source ref-base recovered via runtime `localInfos` scan (R2, no JIT change); Constrained IL-VT-direct-call + inherited-CLRMethod box paths seed the callee slot-0 ref region via the VT-THIS-ADDR copy-back mechanism (new `ExecuteNeo` hook, seeded post-mStack-reservation). (c) generic-byref/fixed/interface-on-VT-constrained STILL DEFERRED -> `neo-step17-generic-byref-etc` (task #22). area4 M2 obligation CLOSED. |
 | D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **FULLY RESOLVED 2026-07-06 (neo-step13-area4-refandstind, 4c+4d)** | Area 5 core done; Area 4b/4a done in neo-step13-area4; Area 4c (CLR ref/out typed-ref bridge) + 4d (CLR stind/ldind/stobj/ldobj via field identity) done in neo-step13-area4-refandstind — all of Area 4 done | roadmap gap |
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
@@ -133,7 +133,48 @@ when the dest's address escapes the folding window AND the dest register is not
 reused for any surviving foldable (`_Inline`/`Initobj`) consumer -- purely
 additive, so Steps 12-16 are untouched (72/0 preserved).
 
-### D-CONSTRAINED — `constrained.`-on-value-type (Step 13 area 3 -> Step 17 -> PARTIAL {a,d,M2} RESOLVED)
+### D-CONSTRAINED — `constrained.`-on-value-type (Step 13 area 3 -> Step 17 -> {a,b,d,M2} RESOLVED; (c) edges remain)
+**RESOLVED 2026-07-06 (neo-step17-stobj-refloop) for the (b) + IL-VT-with-ref-fields
+constrained scope.** The Stobj/Ldobj ref-region copy and the IL-VT-with-ref-fields
+constrained sub-case are now delivered (closes the remaining (b) + IL-VT-with-refs
+deferral). The arms gate the ref-region copy on `ilType.TotalReferenceCount > 0`
+(primitive-only VTs are byte-identical). The byref source/dest ref-region mStack
+base is recovered via **R2 (runtime `localInfos` scan)** — dump-confirmed, NO JIT
+change (the scan locates the local whose frame byte `Offset == thisByteOff`; the
+byref carries the primitive byte offset but NOT the ref base). Stobj:
+`DstOffset`=byref address, `SrcOffset`=value local; Ldobj is the mirror.
+Frame-native-direct-local = a byte `CopyBlock` of `primSize` PLUS an mStack-to-
+mStack copy of `TotalReferenceCount` ref slots (mirrors `Move_Vt`); IL-instance
+(`objectIndex >= 0`) routes the ref half through `ManagedObjects` via
+`CopyFrameToIL`/`CopyILToFrame`; a nested-field-byref (scan miss) throws a
+Step-17-tagged NIE. The Constrained IL-VT-direct-call path + the inherited-
+CLRMethod box path removed their `TotalReferenceCount > 0` NIEs and now seed the
+callee slot-0 ref region via the **VT-THIS-ADDR copy-back mechanism** — a new
+`ExecuteNeo` hook (`constrainedSlot0SeedRefOffset/SrcRefBase/RefCount`), seeded
+INSIDE `ExecuteNeo` right after the mStack reservation (the
+mStack-reservation-clobber gotcha — a pre-call mStack write would be zeroed by the
+reservation's `Add(null)`). The M1 round-1 fix made the IL-instance branches throw
+a tagged NIE on a scan-miss (loud, not silent corruption); the M2 fix dropped the
+dead `constrainedSlot0SeedRefBase` param (3 hooks suffice — the seed uses the
+callee's own `frameRefBase` captured inside `ExecuteNeo`). **Earned constraint:**
+R2 resolves the byref to a direct local ONLY in the same frame — a byref PARAMETER
+(cross-frame) cannot be recovered -> deferred to a follow-up (fails clean, the
+`dstRefBase < 0` / `srcRefBase < 0` NIE). Verification: NeoStep 181/181
+(175 + 6 probes), NeoStep17 Legacy-neutral 41/41; all probes FAIL-on-HEAD -> PASS.
+Review round 0 APPROVED; round 1 fixed M1 + M2; LEAD non-author diff-read
+confirmed. See
+`openspec/changes/archive/2026-07-06-neo-step17-stobj-refloop/ship-log.md`.
+
+**STILL DEFERRED -> `neo-step17-generic-byref-etc` (task #22):** (c) generic-byref
+(`ref T`/`out T` with `T` generic), `fixed` unmanaged-pinning, interface-on-VT-
+constrained beyond the common shape -- remain Step-17-tagged NIEs (or accept-known
+for `fixed` if a probe shows the address works without GC pinning). They are
+independent plumbing (a generic-param type-token discriminator; a pinned-local
+flag; an interface-dispatch branch) that does NOT fall out of (b) and is not
+exercised by the smoke.
+
+---
+
 **RESOLVED 2026-07-05 (neo-step17-completion) for the {a,d,M2} scope.** Full
 `constrained.callvirt T.M` dispatch on a value-type `T` is delivered. The
 apply-phase JIT dump DISPROVED the design's Option F fusion premise: the JIT
@@ -155,14 +196,16 @@ tightened (mutating INSTANCE METHODS, not ctors). NeoStep 130/130, NeoOptHard
 16/16, Legacy-neutral. **(d) CLR primitive-array ldelema also shipped in this
 cohort** (see D-LDELEMA -- now fully resolved).
 
-**STILL DEFERRED (-> `neo-step17-stobj-refloop`, task #18):** (b) `Stobj`/
-`Ldobj` ref-slot loop (VT-with-ref-fields copy through stobj/ldobj; primitive-
-field VTs are fully supported); (c) generic-byref (`ref T`/`out T` with `T`
-generic), `fixed` unmanaged-pinning, interface-on-VT-constrained beyond the
-common shape -- remain Step-17-tagged NIEs. **IL-VT-with-ref-fields constrained
-sub-case NIE-defers to the same follow-up** (the byref source does not carry
-the struct's ref-region mStack base). See
-`openspec/changes/archive/2026-07-05-neo-step17-completion/ship-log.md`.
+**STILL DEFERRED -> `neo-step17-generic-byref-etc` (task #22):** (c) generic-byref
+(`ref T`/`out T` with `T` generic), `fixed` unmanaged-pinning, interface-on-VT-
+constrained beyond the common shape -- remain Step-17-tagged NIEs. [(b) Stobj/
+Ldobj ref-region copy + IL-VT-with-ref-fields constrained were RESOLVED
+2026-07-06 by `neo-step17-stobj-refloop` — see the RESOLVED-(b) prepend at the
+top of this §3 entry.] See
+`openspec/changes/archive/2026-07-05-neo-step17-completion/ship-log.md` for the
+{a,d,M2} cohort and
+`openspec/changes/archive/2026-07-06-neo-step17-stobj-refloop/ship-log.md` for
+the (b) closure.
 
 Step 13 deferred `constrained.` callvirt specialization on a value-type `this`
 (`T.ToString()` where T:struct). Three blockers, all Step 17 territory: (1)

@@ -682,7 +682,8 @@ namespace ILRuntime.Runtime.Intepreter
         }
 
         internal unsafe byte* ExecuteNeo(ILMethod method, byte* esp, byte* retDst, int retRefBase, out bool unhandledException,
-            byte* vtNewobjCallerDst = null, int vtNewobjCallerDstRefBase = -1, int vtNewobjCallerPrimSize = 0, int vtNewobjCallerRefCount = 0)
+            byte* vtNewobjCallerDst = null, int vtNewobjCallerDstRefBase = -1, int vtNewobjCallerPrimSize = 0, int vtNewobjCallerRefCount = 0,
+            int constrainedSlot0SeedRefOffset = -1, int constrainedSlot0SeedSrcRefBase = -1, int constrainedSlot0SeedRefCount = 0)
         {
 #if DEBUG
             if (method == null)
@@ -732,6 +733,26 @@ namespace ILRuntime.Runtime.Intepreter
             int frameRefBase = mStack.Count;
             for (int i = 0; i < totalRefSize; i++)
                 mStack.Add(null);
+
+            // Step 17 (b) (neo-step17-stobj-refloop): seed the callee slot-0 ref
+            // region for a constrained.callvirt DIRECT-CALL on an IL value type
+            // WITH reference fields. The seed must run AFTER the reservation above
+            // (which zeroes the slots) and BEFORE the body. The caller recovered
+            // the source local's ref base (R2) and passes it via these params.
+            // `constrainedSlot0SeedRefOffset` is slot-0's RefOffset within THIS
+            // frame (calleeFrame.ParamInfos[0].RefOffset); the source ref region
+            // is at mStack[constrainedSlot0SeedSrcRefBase + 0..].
+            // (M2, review-loop): there is intentionally NO `constrainedSlot0Seed-
+            // RefBase` param -- the seed TARGET is always the callee's own
+            // `frameRefBase` (= mStack.Count at entry, captured above), never a
+            // caller-supplied base. Only RefOffset/SrcRefBase/RefCount are needed.
+            if (constrainedSlot0SeedRefCount > 0
+                && constrainedSlot0SeedSrcRefBase >= 0 && constrainedSlot0SeedRefOffset >= 0)
+            {
+                for (int i = 0; i < constrainedSlot0SeedRefCount; i++)
+                    mStack[frameRefBase + constrainedSlot0SeedRefOffset + i] =
+                        mStack[constrainedSlot0SeedSrcRefBase + i];
+            }
 
             // Frames stack placeholder: keep existing StackFrame plumbing alive.
             // BasePointer is interpreted as byte* via reinterpret cast; full debugger
@@ -3518,9 +3539,39 @@ namespace ILRuntime.Runtime.Intepreter
                                     t = AppDomain.GetType(ip->Operand);
                                     ilType = t as ILType;
                                     int primSize = ilType != null ? ilType.TotalPrimitiveSize : AppDomain.GetPrimitiveSize(t);
+                                    int refCount = ilType != null ? ilType.TotalReferenceCount : 0;
                                     if (objIdx == -1)
                                     {
                                         Unsafe.CopyBlock(frameBase + off, frameBase + ip->SrcOffset, (uint)primSize);
+                                        // Step 17 (b) (neo-step17-stobj-refloop): a value type
+                                        // WITH reference fields copied through a frame-native
+                                        // byref needs its ref-region half copied too (the
+                                        // primitive CopyBlock above only covers TotalPrimitiveSize).
+                                        // The byref carries the dest local's primitive byte offset
+                                        // (`off`) but NOT its ref-region mStack base. Recover the
+                                        // dest + source ref bases via the localInfos scan (R2:
+                                        // the byref resolves to a direct local -- dump-confirmed).
+                                        // Mirrors Move_Vt's mStack-to-mStack ref copy.
+                                        if (refCount > 0)
+                                        {
+                                            int dstRefBase = -1, srcRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                {
+                                                    var sl = localInfos[li];
+                                                    if (sl.Offset == off) dstRefBase = sl.RefOffset;
+                                                    if (sl.Offset == ip->SrcOffset) srcRefBase = sl.RefOffset;
+                                                }
+                                            }
+                                            if (dstRefBase < 0 || srcRefBase < 0)
+                                            {
+                                                throw new NotImplementedException(
+                                                    "Step 17: stobj of an IL value type WITH reference fields through a non-direct-local byref (nested-field via ldflda) is deferred (ref-region base recovery; follow-up)");
+                                            }
+                                            for (int i = 0; i < refCount; i++)
+                                                mStack[frameRefBase + dstRefBase + i] = mStack[frameRefBase + srcRefBase + i];
+                                        }
                                     }
                                     else if (NeoIsClrObject(mStack, objIdx))
                                     {
@@ -3538,6 +3589,36 @@ namespace ILRuntime.Runtime.Intepreter
                                         // Primitives and ref slots into ManagedObjects.
                                         ref byte dstP = ref ins.Primitives[off];
                                         Unsafe.CopyBlock(ref dstP, ref *(frameBase + ip->SrcOffset), (uint)primSize);
+                                        if (refCount > 0)
+                                        {
+                                            // Step 17 (b): the IL-instance byref's ref region
+                                            // IS ins.ManagedObjects. The src value is a frame-
+                                            // native local (the byref target is the IL instance;
+                                            // the src value lives in the frame). Recover the src
+                                            // ref base via the localInfos scan and copy the ref
+                                            // slots into the instance's ManagedObjects.
+                                            int srcRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                    if (localInfos[li].Offset == ip->SrcOffset)
+                                                    { srcRefBase = localInfos[li].RefOffset; break; }
+                                            }
+                                            // Step 17 (b) (M1, review-loop): mirror the frame-native
+                                            // branch -- a scan-miss is an exotic byref shape we do NOT
+                                            // resolve. Fail LOUD (tagged NIE) instead of silently
+                                            // skipping the ref copy and leaving stale/null ref slots
+                                            // in the instance's ManagedObjects (silent corruption).
+                                            if (srcRefBase < 0)
+                                            {
+                                                throw new NotImplementedException(
+                                                    "Step 17: stobj of an IL-instance VT field WITH reference fields from a non-direct-local value (nested-field/temp) is deferred (ref-region base recovery; follow-up)");
+                                            }
+                                            var dstRefs = ins.ManagedObjects;
+                                            int srcBase = frameRefBase + srcRefBase;
+                                            for (int i = 0; i < refCount; i++)
+                                                dstRefs[i] = mStack[srcBase + i];
+                                        }
                                     }
                                 }
                                 break;
@@ -3548,9 +3629,35 @@ namespace ILRuntime.Runtime.Intepreter
                                     t = AppDomain.GetType(ip->Operand);
                                     ilType = t as ILType;
                                     int primSize = ilType != null ? ilType.TotalPrimitiveSize : AppDomain.GetPrimitiveSize(t);
+                                    int refCount = ilType != null ? ilType.TotalReferenceCount : 0;
                                     if (objIdx == -1)
                                     {
                                         Unsafe.CopyBlock(frameBase + ip->DstOffset, frameBase + off, (uint)primSize);
+                                        // Step 17 (b) (neo-step17-stobj-refloop): mirror of the
+                                        // Stobj arm's ref-region copy. The byref (SrcOffset) carries
+                                        // the SOURCE local's primitive byte offset (`off`) but NOT
+                                        // its ref-region mStack base; recover the src + dst ref bases
+                                        // via the localInfos scan (R2; dump-confirmed direct-local).
+                                        if (refCount > 0)
+                                        {
+                                            int srcRefBase = -1, dstRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                {
+                                                    var sl = localInfos[li];
+                                                    if (sl.Offset == off) srcRefBase = sl.RefOffset;
+                                                    if (sl.Offset == ip->DstOffset) dstRefBase = sl.RefOffset;
+                                                }
+                                            }
+                                            if (srcRefBase < 0 || dstRefBase < 0)
+                                            {
+                                                throw new NotImplementedException(
+                                                    "Step 17: ldobj of an IL value type WITH reference fields through a non-direct-local byref (nested-field via ldflda) is deferred (ref-region base recovery; follow-up)");
+                                            }
+                                            for (int i = 0; i < refCount; i++)
+                                                mStack[frameRefBase + dstRefBase + i] = mStack[frameRefBase + srcRefBase + i];
+                                        }
                                     }
                                     else if (NeoIsClrObject(mStack, objIdx))
                                     {
@@ -3565,6 +3672,33 @@ namespace ILRuntime.Runtime.Intepreter
                                         ins = GetNeoILInstance(mStack, objIdx);
                                         ref byte srcP = ref ins.Primitives[off];
                                         Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)primSize);
+                                        if (refCount > 0)
+                                        {
+                                            // Step 17 (b): the IL-instance byref's ref region IS
+                                            // ins.ManagedObjects. Read the ref slots out into the
+                                            // dest value local's frame ref region.
+                                            int dstRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                    if (localInfos[li].Offset == ip->DstOffset)
+                                                    { dstRefBase = localInfos[li].RefOffset; break; }
+                                            }
+                                            // Step 17 (b) (M1, review-loop): mirror the frame-native
+                                            // branch -- a scan-miss is an exotic byref shape we do NOT
+                                            // resolve. Fail LOUD (tagged NIE) instead of silently
+                                            // skipping the ref copy and leaving stale/null ref slots
+                                            // in the dest local's frame ref region (silent corruption).
+                                            if (dstRefBase < 0)
+                                            {
+                                                throw new NotImplementedException(
+                                                    "Step 17: ldobj of an IL-instance VT field WITH reference fields into a non-direct-local dest (nested-field/temp) is deferred (ref-region base recovery; follow-up)");
+                                            }
+                                            var srcRefs = ins.ManagedObjects;
+                                            int dstBase = frameRefBase + dstRefBase;
+                                            for (int i = 0; i < refCount; i++)
+                                                mStack[dstBase + i] = srcRefs[i];
+                                        }
                                     }
                                 }
                                 break;
@@ -3810,16 +3944,6 @@ namespace ILRuntime.Runtime.Intepreter
                                         // Direct-call path: copy the struct's flat primitive bytes
                                         // into the callee's slot-0 frame region (the override reads
                                         // `this` via in-frame Ldfld_Inline from its ParamInfos[0]).
-                                        // The slot-0 ref region was reserved (zeroed) by ExecuteNeo's
-                                        // frame zero-init; an IL VT WITH ref fields would need its
-                                        // ref slots seeded from the caller's struct-local ref region
-                                        // (whose mStack base the byref does not carry) -- defer that
-                                        // sub-case to neo-step17-stobj-refloop with a tagged NIE.
-                                        if (ilConstrained.TotalReferenceCount > 0)
-                                        {
-                                            throw new NotImplementedException(
-                                                "Step 17: constrained.callvirt on an IL value type WITH reference fields is deferred (ref-slot seed; follow-up neo-step17-stobj-refloop)");
-                                        }
                                         var calleeFrame = ilmOverride.CompiledFrame;
                                         var thisSlotInfo = calleeFrame.ParamInfos[0];
                                         if (ilConstrained.TotalPrimitiveSize > 0)
@@ -3828,7 +3952,40 @@ namespace ILRuntime.Runtime.Intepreter
                                                 frameBase + thisByteOff,
                                                 (uint)ilConstrained.TotalPrimitiveSize);
                                         }
-                                        if (!InvokeNeoCallTarget(ilmOverride, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                        // Step 17 (b) (neo-step17-stobj-refloop): seed the callee
+                                        // slot-0 REF region from the caller's struct-local ref
+                                        // region. The byref carries the source local's primitive
+                                        // byte offset (thisByteOff) but NOT its ref-region mStack
+                                        // base; recover it via the localInfos scan (R2). The seed
+                                        // runs inside the callee's ExecuteNeo (after its mStack
+                                        // reservation, before the body) via the constrained-slot-0
+                                        // hook params -- the callee reserves its own frameRefBase,
+                                        // so a pre-call write to mStack[Count+...] would be
+                                        // clobbered by the reservation's zeroing.
+                                        int conSrcLocalRefOffset = -1;
+                                        if (ilConstrained.TotalReferenceCount > 0)
+                                        {
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                    if (localInfos[li].Offset == thisByteOff)
+                                                    { conSrcLocalRefOffset = localInfos[li].RefOffset; break; }
+                                            }
+                                            if (conSrcLocalRefOffset < 0)
+                                            {
+                                                throw new NotImplementedException(
+                                                    "Step 17: constrained.callvirt on an IL value type WITH reference fields through a non-direct-local byref is deferred (ref-region base recovery; follow-up)");
+                                            }
+                                        }
+                                        int conSeedSrcRefBase = ilConstrained.TotalReferenceCount > 0
+                                            ? (frameRefBase + conSrcLocalRefOffset) : -1;
+                                        // Call the callee's ExecuteNeo directly (not via
+                                        // InvokeNeoCallTarget) to pass the slot-0 seed hook params.
+                                        ExecuteNeo(ilmOverride, targetBase, retDstPtr, targetRetRefBase, out unhandledException,
+                                            constrainedSlot0SeedRefOffset: thisSlotInfo.RefOffset,
+                                            constrainedSlot0SeedSrcRefBase: conSeedSrcRefBase,
+                                            constrainedSlot0SeedRefCount: ilConstrained.TotalReferenceCount);
+                                        if (unhandledException)
                                             return null;
                                     }
                                     else
@@ -3867,24 +4024,34 @@ namespace ILRuntime.Runtime.Intepreter
                                             // string interpolation actually WORK (high-value -- debugging,
                                             // logging) instead of crashing.
                                             //
-                                            // The byref `this` source does NOT carry the source struct's
-                                            // ref-region mStack base (it only carries the flat-primitive
-                                            // byte offset), so an IL VT WITH reference fields cannot be
-                                            // seeded here -- NIE that sub-case (mirrors the direct-call
-                                            // path's deferral to neo-step17-stobj-refloop). A plain
-                                            // (primitive-only) IL VT boxes cleanly.
+                                            // Step 17 (b) (neo-step17-stobj-refloop): an IL VT WITH
+                                            // reference fields boxes cleanly now -- recover the source
+                                            // local's ref base via the localInfos scan (R2) and pass the
+                                            // real refOffset + refCount to CopyFrameToIL (it iterates
+                                            // ManagedObjects). The byref carries the primitive byte
+                                            // offset but NOT the ref base; the scan recovers it for a
+                                            // direct local (the green target). A non-direct-local byref
+                                            // stays a tagged NIE.
+                                            int boxSrcRefOffset = 0;
                                             if (ilBoxType.TotalReferenceCount > 0)
                                             {
-                                                throw new NotImplementedException(
-                                                    "Step 17: constrained.callvirt on an IL value type WITH reference fields resolving to an inherited CLR method is deferred (ref-slot seed; follow-up neo-step17-stobj-refloop)");
+                                                boxSrcRefOffset = -1;
+                                                if (localInfos != null)
+                                                {
+                                                    for (int li = 0; li < localInfos.Length; li++)
+                                                        if (localInfos[li].Offset == thisByteOff)
+                                                        { boxSrcRefOffset = localInfos[li].RefOffset; break; }
+                                                }
+                                                if (boxSrcRefOffset < 0)
+                                                {
+                                                    throw new NotImplementedException(
+                                                        "Step 17: constrained.callvirt on an IL value type WITH reference fields (inherited CLR method) through a non-direct-local byref is deferred (ref-region base recovery; follow-up)");
+                                                }
                                             }
                                             ILTypeInstance ilBox = ilBoxType.Instantiate(false);
-                                            if (ilBoxType.TotalPrimitiveSize > 0)
-                                            {
-                                                CopyFrameToIL(frameBase, thisByteOff, 0 /*refOffset unused: refCount==0 here*/,
-                                                    ilBoxType.TotalPrimitiveSize, 0 /*refCount*/,
-                                                    mStack, frameRefBase, ilBox);
-                                            }
+                                            CopyFrameToIL(frameBase, thisByteOff, boxSrcRefOffset,
+                                                ilBoxType.TotalPrimitiveSize, ilBoxType.TotalReferenceCount,
+                                                mStack, frameRefBase, ilBox);
                                             ilBox.Boxed = true;
                                             boxedReceiver = ilBox;
                                         }

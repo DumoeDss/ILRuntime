@@ -57,8 +57,9 @@
       "completedDate": "2026-07-05", "smoke": "Neo 130/130 + NeoOptHard 16/16 + Legacy-neutral", "review": "APPROVE round 1 (F1 Blocker fixed: IL-VT constrained+inherited-CLRMethod now works); F3/F4 accepted-known; (b)/(c) -> neo-step17-stobj-refloop"
     },
     "neo-step17-stobj-refloop": {
-      "pipeline": "small-feature", "wave": 2, "scope": "[D-CONSTRAINED b/c] Stobj/Ldobj ref-slot loop + generic-byref/fixed/interface-on-VT-constrained + IL-VT-with-ref-fields constrained",
-      "prerequisites": ["neo-step17-completion"], "dependsOn": ["neo-step17-completion"], "status": "pending", "capability": "neo-byref"
+      "pipeline": "small-feature", "wave": 2, "scope": "[D-CONSTRAINED b] Stobj/Ldobj ref-region copy for VT-with-ref-fields + IL-VT-with-ref-fields constrained (R2 runtime scan; ExecuteNeo slot-0 seed hook)",
+      "prerequisites": ["neo-step17-completion"], "dependsOn": ["neo-step17-completion"], "status": "done", "capability": "neo-byref",
+      "completedDate": "2026-07-06", "smoke": "Neo 181/181 + NeoStep17 Legacy 41/41", "review": "APPROVE round 1 (M1 IL-instance NIE-on-scan-miss + M2 dead-param dropped); (c) -> neo-step17-generic-byref-etc; cross-frame byref deferred"
     },
     "neo-vt-ldflda-inline": {
       "pipeline": "small-feature", "wave": 2, "scope": "[F-6 NEO-VT-FLDADDR] ldflda on in-frame value type (in-frame-VT-aware ldflda lowering)",
