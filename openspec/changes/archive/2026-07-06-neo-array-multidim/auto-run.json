@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "parent": "neo-completion-portfolio",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner", "name": "planner", "note": "persistent planner; reused across children via SendMessage" } },
+    "apply": { "status": "done", "worker": { "role": "implementer" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer" }, "verdict": "APPROVE 0 Blocker/0 Major" },
+    "review-loop": { "status": "done", "rounds": 0, "note": "clean round 0; 1 Minor + 1 Trivial accepted-known" },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "summary": "Dump DISPROVED orientation hypothesis: int[,] Get/Set passes on HEAD via autogen binder. Real gaps = 3 reflection-fallback issues in CLRMethod.cs: Gap1 string[,] Neo-only ref-value marshaling; Gap2 null-this Neo-only guard; Gap3 shared TargetInvocationException unwrap (Legacy-neutral gate mandatory, CATCH-COMPLETE precedent)."
+}

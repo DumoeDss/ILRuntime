@@ -97,7 +97,9 @@
     },
     "neo-array-multidim": {
       "pipeline": "small-feature", "wave": 4, "scope": "[D-ARR] multi-dimensional arrays (rank-2+): rank-aware Get/Set callvirt + frame model + new T[n,m]",
-      "prerequisites": ["neo-array-completion"], "dependsOn": ["neo-array-completion"], "status": "pending", "capability": "neo-arrays"
+      "prerequisites": ["neo-array-completion"], "dependsOn": ["neo-array-completion"], "status": "done", "capability": "neo-arrays",
+      "completedDate": "2026-07-06", "smoke": "Neo 198/198 + Legacy-neutral (strict improvement 11->10); 3 reflection-fallback gaps closed (null-ref-return encoding, null-this NRE, shared TargetInvocationException unwrap)",
+      "review": "APPROVE (0 Blocker/Major; M1 op_Inequality null-arg autogen + T1 null-InnerException theoretical accepted-known; IL VT-element [,] Non-Goal)"
     },
     "neo-double-combine-quirk": {
       "pipeline": "small-feature", "wave": 4, "scope": "[F-8 NEO-DOUBLE-COMBINE / OPT-HARDEN-3] 2+ double locals combined in one boolean expr silently misfire (F-MAJ-1 class, double-specific)",
@@ -134,8 +136,8 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-step20-async-suspend", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-peephole-isinst", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il"],
+  "runnableFrontier": ["neo-step20-async-suspend", "neo-step17-generic-byref-etc", "neo-peephole-isinst", "neo-step22-generic-template"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

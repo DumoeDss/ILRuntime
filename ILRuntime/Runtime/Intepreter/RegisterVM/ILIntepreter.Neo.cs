@@ -702,12 +702,30 @@ namespace ILRuntime.Runtime.Intepreter
             }
             else
             {
-                if (targetRetRefBase >= mStack.Count)
-                    mStack.Add(res);
+                // neo-array-multidim Gap 1: a NULL reference return MUST be encoded
+                // as the Neo null sentinel (-1) in the dest, NOT as targetRetRefBase
+                // (a valid mStack index). The index-based null test (C# `x != null`
+                // lowers to `ldnull; cgt.un`) only inspects the dest's 4-byte index
+                // (Cgt_Un at ILIntepreter.Neo.cs:1305-1308 keys on `cguA != -1`); a
+                // valid index reads as "not null" even when the result is null, so
+                // `a[i,j] != null` fires a false positive. This mirrors Ldnull
+                // (`*(int*)dst = -1`) and the convention at CLRMethod.Invoke
+                // (`idx < 0 ? null : mStack[idx]`) / the autogen Ldelem_Ref null
+                // encoding. A non-null result keeps the targetRetRefBase store
+                // (unchanged for the primitive/metadata paths).
+                if (res == null)
+                {
+                    *(int*)retDstPtr = -1;
+                }
                 else
-                    mStack[targetRetRefBase] = res;
+                {
+                    if (targetRetRefBase >= mStack.Count)
+                        mStack.Add(res);
+                    else
+                        mStack[targetRetRefBase] = res;
 
-                *(int*)retDstPtr = targetRetRefBase;
+                    *(int*)retDstPtr = targetRetRefBase;
+                }
             }
         }
 

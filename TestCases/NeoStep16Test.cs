@@ -334,5 +334,110 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // ---- Multi-dimensional array probes (neo-array-multidim) ----
+        // These exercise rank-2+ arrays: `new T[n,m]` ctor + `a[i,j]=v` (Set) +
+        // `a[i,j]` read (Get). The autogen binder System_Int32_Array2_Binding
+        // registers Neo redirects for the ctor + Set but NOT for Get, so the
+        // read is the diagnostic path (autogen vs reflection fallback).
+
+        // PROBE (minimal): rank-2 int[,] ctor + Set + Get round-trip.
+        public static void NeoStep16_MultiDimRank2Probe()
+        {
+            int[,] a = new int[2, 3];
+            a[1, 2] = 42;
+            int got = a[1, 2];
+            if (got != 42)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // PROBE (adversarial): multi-cell distinct values to rule out a
+        // coincidental default-0 / stale-value pass.
+        public static void NeoStep16_MultiDimRank2MultiCell()
+        {
+            int[,] a = new int[2, 3];
+            a[0, 0] = 11; a[0, 1] = 12; a[0, 2] = 13;
+            a[1, 0] = 21; a[1, 1] = 22; a[1, 2] = 23;
+            if (a[0, 0] != 11 || a[0, 1] != 12 || a[0, 2] != 13 ||
+                a[1, 0] != 21 || a[1, 1] != 22 || a[1, 2] != 23)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // PROBE (adversarial): rank-3 int[,,].
+        public static void NeoStep16_MultiDimRank3Probe()
+        {
+            int[,,] a = new int[2, 2, 2];
+            a[1, 1, 1] = 99;
+            a[0, 0, 0] = 7;
+            if (a[1, 1, 1] != 99 || a[0, 0, 0] != 7 || a[1, 0, 0] != 0)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // PROBE (adversarial): GetLength / Rank / Length on int[,].
+        public static void NeoStep16_MultiDimRank2Metadata()
+        {
+            int[,] a = new int[2, 3];
+            if (a.Rank != 2 || a.Length != 6 || a.GetLength(0) != 2 || a.GetLength(1) != 3)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // PROBE (adversarial): long[,] -- NO pre-registered autogen binder, so
+        // ctor + Set + Get all fall to the reflection path (the diagnostic case).
+        public static void NeoStep16_MultiDimRank2Long()
+        {
+            long[,] a = new long[2, 2];
+            a[0, 1] = 1234567890123L;
+            long got = a[0, 1];
+            if (got != 1234567890123L)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // PROBE (adversarial): string[,] -- CLR reference element, NO binder.
+        public static void NeoStep16_MultiDimRank2String()
+        {
+            string[,] a = new string[2, 2];
+            a[0, 0] = "alpha";
+            a[1, 1] = "omega";
+            if (a[0, 0] != "alpha" || a[1, 1] != "omega" || a[0, 1] != null)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // PROBE (adversarial): out-of-range index -> IndexOutOfRangeException caught.
+        public static void NeoStep16_MultiDimRank2OutOfRange()
+        {
+            int[,] a = new int[2, 3];
+            int caught = 0;
+            try { int _ = a[5, 5]; }
+            catch (System.IndexOutOfRangeException) { caught = 1; }
+            if (caught != 1)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // PROBE (adversarial): null array -> NullReferenceException caught.
+        public static void NeoStep16_MultiDimRank2Null()
+        {
+            int[,] a = null;
+            int caught = 0;
+            try { int _ = a[0, 0]; }
+            catch (System.NullReferenceException) { caught = 1; }
+            if (caught != 1)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
     }
 }

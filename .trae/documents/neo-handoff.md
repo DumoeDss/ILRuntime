@@ -130,7 +130,7 @@ The **portfolio run** then delivered these 15 children (in execution order):
 ### Test smoke progression
 Neo `NeoStep`: 37 (after 12) → 41 → 49 → 58 → 65 → 72 → 81 → 84 → **91** (end of
 prior sessions) → 99 → 100 → 108 → 117 → 130 → 140 → 146 → 154 → 161 → 175 → 181
-→ 186 → **190** (HEAD `0aafdb34`). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
+→ 186 → **190** → **198** (HEAD after `neo-array-multidim`, 2026-07-06). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
 Legacy 519 baseline unaffected (still ~518/519; the regression reference).
 
 ### Capability specs (`openspec/specs/`)
@@ -332,7 +332,11 @@ is the source of truth; this section is a quick orientation.
 - **Step 20 redirect-coverage edges (TC2/TC3/TC5)** — non-generic Task `Start`
   redirect null-SM; ValueTask builder NRE; multi-await `Task<int>.get_Result`
   redirect. Fold into a `neo-step20-async` round 2 / async-suspend.
-- **neo-array-multidim** — multi-dimensional arrays (rank-2+).
+- **neo-array-multidim** — multi-dimensional arrays (rank-2+). **RESOLVED 2026-07-06**
+  (autogen-binder path already worked; closed 3 reflection-fallback defects in
+  `CLRMethod.cs`/`ILIntepreter.Neo.cs`: null-ref-return encoding, null-`this` NRE
+  guard, shared `TargetInvocationException` unwrap at 6 sites — Legacy-neutral).
+  Neo 198/198. IL VT-element `[,]` stays a Non-Goal.
 - **neo-step17-generic-byref-etc** — generic-byref (`ref T`/`out T` with `T`
   generic), `fixed` unmanaged-pinning, interface-on-VT-constrained (the Step 17 (c)
   edges). Also owns **F-10-R1** (the F-6/F-10 both-stamp shape for an IL VT with a
@@ -377,7 +381,8 @@ has these as pending children with a dependency chain:
 - **Step 20 redirect-coverage edges (TC2/TC3/TC5)** — fold into a Step 20 round 2.
 
 ### C. Smaller completions (independent, pick up between A/B)
-- **`neo-array-multidim`** — multi-dimensional arrays (rank-2+).
+- **`neo-array-multidim`** — multi-dimensional arrays (rank-2+). **DONE 2026-07-06**
+  (see §5).
 - **`neo-step17-generic-byref-etc`** — generic-byref / `fixed` / interface-on-VT-
   constrained (Step 17 (c) edges) + the F-10-R1 JIT-discriminator gate.
 - **`neo-peephole-isinst`** — `box T; isinst U` fusion (needs patch-infra).

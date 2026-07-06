@@ -7,6 +7,7 @@ using ILRuntime.Runtime.Stack;
 using System;
 using System.Collections.Generic;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Text;
 
 #if DEBUG && !DISABLE_ILRUNTIME_DEBUG
@@ -399,7 +400,17 @@ namespace ILRuntime.CLR.Method
                 else
                 {
                     int thisIdx = *(int*)(targetBase + curPrim);
-                    instance = mStack[thisIdx];
+                    // neo-array-multidim Gap 2: a null `this` arrives as the Neo
+                    // null-ref sentinel (thisIdx < 0). Indexing mStack[-1] throws
+                    // ArgumentOutOfRangeException, masking the NullReferenceException
+                    // the call must surface (Legacy has the explicit guard at the
+                    // read + a null-instance check). Materialize null directly
+                    // (mirrors the reference-param read pattern below at
+                    // `idx < 0 ? null : mStack[idx]`); the existing null-instance
+                    // guards in the ctor (cDef.IsStatic) / method (!def.IsStatic)
+                    // branches then throw NRE. Benefits any reflection-fallback
+                    // call on a null `this`, not only multi-dim.
+                    instance = thisIdx < 0 ? null : mStack[thisIdx];
                     curPrim += 4;
                 }
             }
@@ -541,7 +552,8 @@ namespace ILRuntime.CLR.Method
                             throw new NullReferenceException();
                         if (instance is CrossBindingAdaptorType && paramCount == 0)
                             return null;
-                        cDef.Invoke(instance, param);
+                        try { cDef.Invoke(instance, param); }
+                        catch (TargetInvocationException tie) { ExceptionDispatchInfo.Capture(tie.InnerException).Throw(); throw; }
                         // Step 13 Area 4b: a struct ctor mutates `instance` (the
                         // boxed struct) in place; write the mutated flat bytes back
                         // to the `this` slot so the post-call reverse copy
@@ -554,7 +566,8 @@ namespace ILRuntime.CLR.Method
                 }
                 else
                 {
-                    res = cDef.Invoke(param);
+                    try { res = cDef.Invoke(param); }
+                    catch (TargetInvocationException tie) { ExceptionDispatchInfo.Capture(tie.InnerException).Throw(); throw; }
                 }
             }
             else
@@ -566,7 +579,8 @@ namespace ILRuntime.CLR.Method
                     if (instance == null)
                         throw new NullReferenceException();
                 }
-                res = def.Invoke(instance, param);
+                try { res = def.Invoke(instance, param); }
+                catch (TargetInvocationException tie) { ExceptionDispatchInfo.Capture(tie.InnerException).Throw(); throw; }
                 // Step 13 Area 4b: a struct instance method may mutate `this`
                 // (e.g. Reset()); write the (possibly-mutated) flat bytes back to
                 // the `this` slot so the post-call reverse copy propagates them.
@@ -680,7 +694,8 @@ namespace ILRuntime.CLR.Method
                             throw new NullReferenceException();
                         if (instance is CrossBindingAdaptorType && paramCount == 0)//It makes no sense to call the Adaptor's default constructor
                             return null;
-                        cDef.Invoke(instance, param);
+                        try { cDef.Invoke(instance, param); }
+                        catch (TargetInvocationException tie) { ExceptionDispatchInfo.Capture(tie.InnerException).Throw(); throw; }
                         Array.Clear(invocationParam, 0, invocationParam.Length);
                         return null;
                     }
@@ -691,7 +706,9 @@ namespace ILRuntime.CLR.Method
                 }
                 else
                 {
-                    var res = cDef.Invoke(param);
+                    object res;
+                    try { res = cDef.Invoke(param); }
+                    catch (TargetInvocationException tie) { ExceptionDispatchInfo.Capture(tie.InnerException).Throw(); throw; }
                     FixReference(paramCount, esp, param, mStack, null, false);
                     Array.Clear(invocationParam, 0, invocationParam.Length);
                     return res;
@@ -717,7 +734,8 @@ namespace ILRuntime.CLR.Method
                     res = redirect(new ILContext(appdomain, intepreter, esp, mStack, this), instance, param, genericArguments);
                 else*/
                 {
-                    res = def.Invoke(instance, param);
+                    try { res = def.Invoke(instance, param); }
+                    catch (TargetInvocationException tie) { ExceptionDispatchInfo.Capture(tie.InnerException).Throw(); throw; }
                 }
 
                 FixReference(paramCount, esp, param, mStack, instance, !def.IsStatic);

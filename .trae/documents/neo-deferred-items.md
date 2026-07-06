@@ -52,8 +52,9 @@ Insert these into the roadmap ordering:
    positive test yet (harness can't author an ILType catch clause).
 6. **Opportunistic** (no fixed slot; handle when triggered):
    - peephole + PatchKind.IsinstResult (Step 15) — when a patch-infra step lands.
-   - Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim
-     arrays (Step 16) — when a test or feature needs them.
+   - Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 (Step 16) —
+     when a test or feature needs them. (multi-dim RESOLVED via
+     `neo-array-multidim`, 2026-07-06; removed from this list.)
    - cgt-un comment-nit (Step 15) — trivial.
    - catch-wrapper (Step 14) — not a bug (matches Legacy); revisit only if a
      real symptom appears.
@@ -83,7 +84,7 @@ Insert these into the roadmap ordering:
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **RESOLVED ([CATCH-COMPLETE] + neo-il-exception-throw)** | CheckExceptionType IL branch + Exception-adaptor + Throw-for-IL all landed | shared-engine gap (fully closed; IL branch now reachable end-to-end) |
 | D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **RESOLVED (neo-il-exception-throw)** | System.Exception CrossBindingAdaptor (built-in) + Throw `as Exception` IL-instance unwrap on BOTH engines | shared-engine gap (closed 2026-07-05; F-4 / NEO-IL-EX-FIELDACCESS follow-up surfaced) |
 | D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **opportunistic** | patch-infra step | optimization (non-functional) |
-| D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **PARTIAL RESOLVED 2026-07-06 (neo-array-completion, rank-1); multi-dim -> `neo-array-multidim`** | rank-1 closed; multi-dim deferred | rank-1 closed; multi-dim deferred (rare) |
+| D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **RESOLVED 2026-07-06 (neo-array-completion rank-1 + neo-array-multidim rank-2+)** | rank-1 closed (neo-array-completion); multi-dim closed (neo-array-multidim -- primitive + ref element; Gap 1/2/3 reflection-fallback fixes) | Stelem_I / generic-token / UIntPtr[] / ref-array ldelema remain accepted-known edges |
 | N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** | — | cosmetic nit (comment-only; runtime expression byte-identical) |
 | N-CATCHWRAP | catch slot stores ILRuntimeException wrapper | Step 14 | **accept** (matches Legacy) | — | not-a-bug |
 | N-TC2 | Step 14 TC2 asserts `e != null` | Step 14 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** (was resolved by Step 15; the test-tighten follow-up is now done) | — | cleanup |
@@ -1091,10 +1092,22 @@ Minor/Trivial). Accepted-known upstream gaps: TC9 (UIntPtr[] — unsupported
 primitive), TC15 (ref-array — Neo `ldelema` NIEs on CLR ref-type arrays).
 See `openspec/changes/archive/2026-07-06-neo-array-completion/ship-log.md`.
 
-**STILL DEFERRED -> `neo-array-multidim` (separate child):** multi-dimensional
-arrays (rank-2+). The rank-aware `Address`/`Get`/`Set` `callvirt`, the rank-
-aware frame model, and `new T[n,m]` construction do NOT fall out of the rank-1
-work. Stays an untagged JIT `NotImplementedException` today.
+**RESOLVED -> `neo-array-multidim` (child, 2026-07-06):** multi-dimensional
+arrays (rank-2+) are DELIVERED. The planner's pre-dump hypothesis ("rank-aware
+Address/Get/Set callvirt + frame model + `new T[n,m]` do NOT fall out of rank-1
+work; stays a JIT NIE") was DISPROVEN by the HEAD dump: `new T[n,m]` ctor +
+`Set` + `Get` + metadata (`Rank`/`Length`/`GetLength`) all work via the AUTOGEN
+binder path (registered types like `int[,]`) AND the reflection-fallback path
+(`long[,]`, `string[,]` -- no binder). The child closed 3 reflection-fallback
+gaps in `CLRMethod.cs` / `ILIntepreter.Neo.cs`: (Gap 1) Neo reference-return
+write-back now encodes null as the -1 sentinel (was a valid mStack index ->
+false-positive `!= null` via `cgt.un`); (Gap 2) Neo null-`this` guard
+(`thisIdx < 0 -> null -> NRE`, was `mStack[-1]` ArgOutOfRange); (Gap 3)
+`TargetInvocationException` unwrap on BOTH engines (rethrow InnerException via
+ExceptionDispatchInfo). Neo smoke 198/198; Legacy stash-toggle 723/11 -> 723/10
+(OutOfRange now passes on both engines; 0 regression). IL VT-element `[,]` +
+multi-dim `Address` (ldelema) stay deferred (Non-Goals; neo-byref follow-up).
+See `openspec/changes/neo-array-multidim/planning-context.md`.
 
 ---
 
@@ -1102,9 +1115,11 @@ work. Stays an untagged JIT `NotImplementedException` today.
   (Step-tagged NIE) — rare `IntPtr[]`/`UIntPtr[]` native-int store.
 - generic-token `Code.Ldelem`/`Code.Stelem` and native `Code.Ldelem_I`/`Ldelem_U8`
   are not enumerated by JIT `Translate` -> JIT-time NIE; rare in C# output.
-- multi-dimensional arrays: rank-1 only.
+- multi-dimensional arrays: rank-1 (neo-array-completion) AND rank-2+
+  (neo-array-multidim, 2026-07-06).
 **Resolution:** rank-1 RESOLVED 2026-07-06 (neo-array-completion); multi-dim
-deferred to `neo-array-multidim`.
+RESOLVED 2026-07-06 (neo-array-multidim -- primitive + ref element via autogen
+binder + reflection fallback; Gap 1/2/3 closed).
 
 ### N-CGTUN — Cgt_Un divergence comment (Step 15 -> opportunistic)
 **RESOLVED 2026-07-06 (neo-opportunistic-cleanup).** The `Cgt_Un` arm's
