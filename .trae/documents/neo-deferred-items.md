@@ -66,7 +66,7 @@ Insert these into the roadmap ordering:
 | ID | Item | Surfaced by | Target | Unblocked by | Severity |
 |----|------|-------------|--------|--------------|----------|
 | D-LDELEMA | `ldelema` opcode | Step 16 | **RESOLVED (Step 17 + neo-step17-completion)** | Step 17 Ref-Slot/stind/ldind | fully resolved (IL VT array path Step 17; CLR primitive-array ldelema remainder in neo-step17-completion 2026-07-05) |
-| D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **FULLY RESOLVED for (a)/(b)/(d)/(M2); (c) edges remain -> `neo-step17-generic-byref-etc`** | Step 17 byref/VT-this-address | {a,d,M2} RESOLVED 2026-07-05 (neo-step17-completion): full constrained.-on-VT dispatch + CLR primitive-array ldelema + F-5 boxed-source NIE-guard. **(b) Stobj/Ldobj ref-region copy + IL-VT-with-ref-fields constrained RESOLVED 2026-07-06 (neo-step17-stobj-refloop):** ref-region copy gated on `TotalReferenceCount > 0` (primitive-only VTs byte-identical); byref source ref-base recovered via runtime `localInfos` scan (R2, no JIT change); Constrained IL-VT-direct-call + inherited-CLRMethod box paths seed the callee slot-0 ref region via the VT-THIS-ADDR copy-back mechanism (new `ExecuteNeo` hook, seeded post-mStack-reservation). (c) generic-byref/fixed/interface-on-VT-constrained STILL DEFERRED -> `neo-step17-generic-byref-etc` (task #22). area4 M2 obligation CLOSED. |
+| D-CONSTRAINED | `constrained.`-on-VT specialization (Step 13 area 3) | Step 13 | **FULLY RESOLVED for (a)/(b)/(c)/(d)/(M2); `fixed` rerouted to a Conv_U step** | Step 17 byref/VT-this-address | {a,d,M2} RESOLVED 2026-07-05 (neo-step17-completion): full constrained.-on-VT dispatch + CLR primitive-array ldelema + F-5 boxed-source NIE-guard. **(b) Stobj/Ldobj ref-region copy + IL-VT-with-ref-fields constrained RESOLVED 2026-07-06 (neo-step17-stobj-refloop):** ref-region copy gated on `TotalReferenceCount > 0` (primitive-only VTs byte-identical); byref source ref-base recovered via runtime `localInfos` scan (R2, no JIT change); Constrained IL-VT-direct-call + inherited-CLRMethod box paths seed the callee slot-0 ref region via the VT-THIS-ADDR copy-back mechanism (new `ExecuteNeo` hook, seeded post-mStack-reservation). **(c) edges CLOSED 2026-07-06 (neo-step17-generic-byref-etc):** per-sub-item dump-gate found generic-byref (`ref T`/`out T`, T generic) and interface-on-VT-constrained beyond the common shape are NO-OPS (the byref model is type-agnostic; the {a,d,M2,b} cohorts already cover the box-and-interface-dispatch path) — 3 + 2 TEST-ONLY regression guards added; `fixed` unmanaged-pinning rerouted to a future pointer/Conv_U step (blocked by the unimplemented `Conv_U`/`Conv_I` opcodes, outside `neo-byref`; the array-element address works via `ref arr[i]`/ldelema). The F-10-R1 latent defect (the constrained-VT both-stamp shape) is CLOSED by the JIT-discriminator gate (see the F-10-R1 row). area4 M2 obligation CLOSED. |
 | D-13B | Step 13 areas 4-5 (binding codegen + CLRMethod param layout) | Step 13 | **FULLY RESOLVED 2026-07-06 (neo-step13-area4-refandstind, 4c+4d)** | Area 5 core done; Area 4b/4a done in neo-step13-area4; Area 4c (CLR ref/out typed-ref bridge) + 4d (CLR stind/ldind/stobj/ldobj via field identity) done in neo-step13-area4-refandstind — all of Area 4 done | roadmap gap |
 | K1 | FCP mis-propagates value-type Moves (copy-then-mutate silent) | Step 12b | **RESOLVED (OPT-HARDEN)** | — | fixed (ldloca-kill) |
 | K2 | Step 8 VT-by-value param copy reads primitive value as mStack index | Step 12b | **RESOLVED (Step 13b)** | unified param layout | fixed |
@@ -92,7 +92,7 @@ Insert these into the roadmap ordering:
 | F-8 / NEO-DOUBLE-COMBINE | 2+ `double` locals combined in one boolean expression silently misfire (F-MAJ-1 class; `double`-specific, not all 8-byte primitives) | neo-array-completion review (F-1) | **RESOLVED 2026-07-06 (neo-double-combine-quirk, D4)** | dead `Operand3 = RefOffset` write in `Optimizer.Neo.cs LowerNeoOffsets` immediate-branch case clobbered the high 4 bytes of `OperandDouble`/`OperandLong` (@12-19) via the `[StructLayout(Explicit)]` union; copy-prop folds `Ldc_R8` into `Bnei_Un_R8` (reachable) but keeps `Ldc_I8` register-register (unreachable) -> double-fails/long-works | pre-existing (NOT introduced by D-ARR; upstream of the array work; surfaced when the array probes needed combined `double` assertions) |
 | F-9 / NEO-INLINED-RETURN-MOVE | an int returned from an inlined IL method moved as a reference -> `mStack[intValue]` OOB (return-value classification edge in the trivial inliner) | neo-step13-area4-refandstind review (4d.2 probe-avoidance) | **future** (route to an inliner/optimizer follow-up) | the trivial-inliner mis-classifies an inlined IL-method return value (moves an int as a reference) | pre-existing (latent; surfaced when the 4d.2 `LdindClrIntFieldPeek` probe needed to defeat it via `int v = slot; return v + 0;`) |
 | F-10 / NEO-CLRSTRUCT-FIELD-OF-IL | **RESOLVED 2026-07-06 (neo-clrstruct-field-of-il)** a CLR-struct field of an IL instance (e.g. an async SM's `<>t__builder`/`<>u__1`) is laid out as a reference slot (no `primitiveOffset` advance, ILType.cs:2129-2157) but the JIT `ldflda` addressed it as a primitive offset -> byref carried one offset, unrecoverable to the field's ManagedObjects ref slot; `ldflda &SM.<>t__builder` read Primitives OOB on the non-generic-Task SM, happened to fit on the Task<int> SM | neo-step20-async sync slice (review-loop round 1) | **RESOLVED (neo-clrstruct-field-of-il)** | encoding-only fix (Option A, NO layout change, NO ILType.cs/Optimizer.Neo.cs edit): β offset-discriminator — `NeoLdfldaClrStructFieldMarker = 0x2` (Operand4 bit 0x2; `Stfld_Ref`/`Ldfld_Ref` discriminator `Operand4 != 0`, stamps `fieldType.GetHashCode()`) + runtime flag `NeoF10ByrefOffsetFlag = 0x40000000` (bit 30 of the offset half). All THREE arms (Stfld_Ref, Ldfld_Ref, Ldflda) made consistent — box/unbox/flatten the CLR struct at `ManagedObjects[ReferenceOffset]` via `ReadNeoValueType`/`WriteNeoValueType`. Blast radius CONFIRMED SAFE (5 field shapes; existing paths byte-identical when `Operand4 == 0`). Neo-only, Legacy-neutral | **was HIGH** (pre-existing; the load-bearing primitive for the rest of Step 20 sync + the suspend slice; same family as F-2 / NEO-BYREF-THIS; TC1/TC7 passed by a layout accident) — now resolved |
-| F-10-R1 / NEO-CLRSTRUCT-FIELD-OF-IL-R1 | the F-6/F-10 markers are NOT mutually-exclusive at the JIT discriminator: an IL **value type** `struct V { TestVector3NoBinding f; }` taking `ref this.f` via `ldflda` inside a VT method gets BOTH stamped (`Operand4 = 0x3`); the runtime checks F-10 (`objIdx >= 0`) before F-6, predicting a mis-dispatch that reads flat bytes as an mStack index | neo-clrstruct-field-of-il review round 1 (Major-latent) | **accepted-known-deferred** (route to the constrained-VT follow-up `neo-step17-generic-byref-etc` or a Step 13 Area 3 follow-up) | the correct future fix is the **JIT-discriminator gate** (only stamp F-10 when the source is NOT an in-frame VT, making the two markers genuinely mutually-exclusive at the producer), NOT a runtime reorder — the reviewer's recommended runtime F-6-before-F-10 reorder was DISPROVEN by the fixer (broke 6 NeoStep17 F-6-only probes, 190→184; F-6 shape 3 vs shape 1/2 produce different byrefs). The defect is fully latent: the feared F-10-first mis-dispatch requires `objIdx >= 0` with flat bytes, gated behind the DEFERRED `constrained.callvirt`-on-VT; for all reachable VT shapes `objIdx == -1` → HEAD order routes correctly to F-6 shape 1/2. Probe 4.8 (`NeoClrStructField_IlVtMethodLdfldaThisClrStructField`) is a green regression guard for the both-stamp shape's `objIdx == -1` routing | latent (Major; gated behind constrained-VT; not reachable today) |
+| F-10-R1 / NEO-CLRSTRUCT-FIELD-OF-IL-R1 | the F-6/F-10 markers are NOT mutually-exclusive at the JIT discriminator: an IL **value type** `struct V { TestVector3NoBinding f; }` taking `ref this.f` via `ldflda` inside a VT method gets BOTH stamped (`Operand4 = 0x3`); the runtime checks F-10 (`objIdx >= 0`) before F-6, predicting a mis-dispatch that reads flat bytes as an mStack index | neo-clrstruct-field-of-il review round 1 (Major-latent) | **RESOLVED 2026-07-06 (neo-step17-generic-byref-etc)** | the **JIT-discriminator gate** shipped (type-spec-pass form): `TypeSpecializeNeoOpcodes case Ldflda:` clears F-10 when F-6 stamps (`op.Operand4 &= ~NeoLdfldaClrStructFieldMarker;`, JITCompiler.cs:913) — keys on the OPERAND's value-category (in-frame VT), NOT `!declaringType.IsValueType` (the latter would break the boxed-IL-VT-with-CLR-struct-field case). Runtime arm UNCHANGED (the reviewer's runtime F-6-before-F-10 reorder was DISPROVEN -- broke 6 F-6-only probes 190->184). Adversarial keeper `NeoStep17_F10R1_ConstrainedVtLdfldaClrField` (constrained-VT direct-call shape, forces `objIdx >= 0`) FAIL-on-HEAD (NRE) -> PASS-after; stash-toggle confirmed. Neo-only, Legacy-neutral | **resolved** (was latent Major; gated behind constrained-VT; now constructively unreachable) |
 | STEP-20-PARTIAL | Step 20 async/await — sync Task<int> green; the rest deferred | neo-step20-async (Step 20) | **PARTIAL**: sync Task<int> (TC1) + nested (TC7) SHIPPED; the rest (non-generic Task, ValueTask, multi-await, exception, async void, incomplete-await NIE) deferred to F-10 + `neo-step20-async-suspend` | F-10 (CLR-struct-field-of-IL) for the remaining sync shapes; `neo-step20-async-suspend` for the truly-async suspend/resume | infrastructure shipped (builder redirects + awaiter/Task accessor overrides + Start->MoveNext fresh-interpreter routing + SmTaskMap stash + HoistNeoILValueToHeap + ILAsyncContext skeleton) |
 
 ---
@@ -169,13 +169,30 @@ Review round 0 APPROVED; round 1 fixed M1 + M2; LEAD non-author diff-read
 confirmed. See
 `openspec/changes/archive/2026-07-06-neo-step17-stobj-refloop/ship-log.md`.
 
-**STILL DEFERRED -> `neo-step17-generic-byref-etc` (task #22):** (c) generic-byref
-(`ref T`/`out T` with `T` generic), `fixed` unmanaged-pinning, interface-on-VT-
-constrained beyond the common shape -- remain Step-17-tagged NIEs (or accept-known
-for `fixed` if a probe shows the address works without GC pinning). They are
-independent plumbing (a generic-param type-token discriminator; a pinned-local
-flag; an interface-dispatch branch) that does NOT fall out of (b) and is not
-exercised by the smoke.
+**(c) edges RESOLVED 2026-07-06 (neo-step17-generic-byref-etc).** The per-sub-item
+dump-gate (HEAD `0aafdb34`, NeoStep 198/198) DISPROVED the LEAD orientation
+hypothesis for 3 of 4 sub-items and found exactly ONE real engine gap:
+- **generic-byref (`ref T`/`out T`, T generic) -- NO-OP.** 3/3 probes PASS on
+  HEAD (`Swap<int>`, `Swap<IL-ref-class>`, `Swap<IL-VT>`). The byref model is
+  type-agnostic (an 8-byte Ref Slot copied regardless of element type; the
+  generic-param token is resolved at the call site via JIT generic
+  substitution, NOT at the byref-marshal level). -> 3 TEST-ONLY guards.
+- **interface-on-VT-constrained beyond the common shape -- NO-OP.** 2/2 probes
+  PASS on HEAD (IL-VT via generic constrained caller -> direct-call; CLR-VT via
+  generic constrained caller -> box-once). The {a,d,M2,b} cohorts already cover
+  it. -> 2 TEST-ONLY guards.
+- **`fixed` unmanaged-pinning -- REROUTED.** `fixed (int* p = arr)` FAILS on
+  HEAD with `Conv_U not yet implemented (Step 6)` (and `Ldtoken` if an array
+  initializer is used). The array-element address works via `ref arr[i]`
+  (ldelema + stind/ldind, TC14 green); the `fixed` statement needs the
+  unimplemented `Conv_U`/`Conv_I` pointer-conversion opcodes. Rerouted from
+  "accept-known for `fixed`" to a future pointer/`Conv_U` step (outside
+  `neo-byref`).
+- **F-10-R1 -- REAL GAP (the only engine change).** The latent F-6/F-10 both-
+  stamp shape IS reachable via the constrained-VT direct-call. The JIT-
+  discriminator gate shipped (see the F-10-R1 §3 entry below). The adversarial
+  keeper `NeoStep17_F10R1_ConstrainedVtLdfldaClrField` FAIL-on-HEAD -> PASS-after.
+
 
 ---
 
@@ -200,16 +217,19 @@ tightened (mutating INSTANCE METHODS, not ctors). NeoStep 130/130, NeoOptHard
 16/16, Legacy-neutral. **(d) CLR primitive-array ldelema also shipped in this
 cohort** (see D-LDELEMA -- now fully resolved).
 
-**STILL DEFERRED -> `neo-step17-generic-byref-etc` (task #22):** (c) generic-byref
-(`ref T`/`out T` with `T` generic), `fixed` unmanaged-pinning, interface-on-VT-
-constrained beyond the common shape -- remain Step-17-tagged NIEs. [(b) Stobj/
+**(c) edges RESOLVED 2026-07-06 (neo-step17-generic-byref-etc).** [(b) Stobj/
 Ldobj ref-region copy + IL-VT-with-ref-fields constrained were RESOLVED
 2026-07-06 by `neo-step17-stobj-refloop` — see the RESOLVED-(b) prepend at the
-top of this §3 entry.] See
+top of this §3 entry.] The (c) sub-items closed by `neo-step17-generic-byref-etc`
+(dump-gate): generic-byref and interface-on-VT-constrained were NO-OPS (3 + 2
+TEST-ONLY guards); `fixed` rerouted to a future pointer/`Conv_U` step (blocked
+by unimplemented `Conv_U`/`Conv_I`); the F-10-R1 latent both-stamp defect was
+CLOSED by the JIT-discriminator gate (see the F-10-R1 §3 entry below). See
 `openspec/changes/archive/2026-07-05-neo-step17-completion/ship-log.md` for the
-{a,d,M2} cohort and
+{a,d,M2} cohort,
 `openspec/changes/archive/2026-07-06-neo-step17-stobj-refloop/ship-log.md` for
-the (b) closure.
+the (b) closure, and
+`openspec/changes/neo-step17-generic-byref-etc/ship-log.md` for the (c) closure.
 
 Step 13 deferred `constrained.` callvirt specialization on a value-type `this`
 (`T.ToString()` where T:struct). Three blockers, all Step 17 territory: (1)
@@ -893,7 +913,54 @@ void) AND the suspend slice (the awaiter field `<>u__1` is the same shape).
 Recorded so the `neo-clrstruct-field-of-il` planner finds it. See
 `openspec/changes/archive/2026-07-06-neo-step20-async/ship-log.md`.
 
-### F-10-R1 / NEO-CLRSTRUCT-FIELD-OF-IL-R1 — F-6/F-10 marker not mutually-exclusive at the JIT discriminator (-> accepted-known-deferred, constrained-VT follow-up)
+### F-10-R1 / NEO-CLRSTRUCT-FIELD-OF-IL-R1 — F-6/F-10 marker not mutually-exclusive at the JIT discriminator (RESOLVED 2026-07-06, neo-step17-generic-byref-etc)
+
+**RESOLVED 2026-07-06 (neo-step17-generic-byref-etc).** The JIT-discriminator
+gate shipped. In `TypeSpecializeNeoOpcodes case OpCodeREnum.Ldflda:` (the F-6
+stamping site, JITCompiler.cs:862-914), when F-6 stamps (`srcType is ILType &&
+IsValueType && !IsEnum`), the gate CLEARS any F-10 the main-JIT body emission
+set: `op.Operand4 &= ~NeoLdfldaClrStructFieldMarker;` (JITCompiler.cs:913, the
+single engine line). The type-spec pass runs AFTER body emission, so the body's
+F-10 stamp is already on Operand4 at the clear. The both-stamp shape
+(`Operand4 = 0x3`) is now impossible at the producer; the runtime Ldflda arm's
+F-10-first check can no longer mis-fire on an in-frame-VT operand.
+
+The gate keys on the OPERAND's value-category (in-frame VT vs heap/boxed) —
+exactly the F-6 condition — so it is correct for ALL three operand shapes:
+in-frame VT (F-10 cleared -> F-6 shape 1/2/3), heap IL class (F-6 not stamped ->
+F-10 stays), boxed IL VT (operand is a heap mStack object -> F-6 not stamped ->
+F-10 stays). A naive `!declaringType.IsValueType` gate was REJECTED at propose:
+it would suppress F-10 for the boxed-IL-VT-with-CLR-struct-field case.
+
+The runtime arm is UNCHANGED (the reviewer's recommended runtime F-6-before-F-10
+reorder was DISPROVEN -- broke 6 NeoStep17 F-6-only probes, 190->184). The fix
+is JIT-producer-side only. The latent defect (gated behind the constrained-VT
+direct-call shape) is closed: the new adversarial keeper
+`NeoStep17_F10R1_ConstrainedVtLdfldaClrField` (an IL VT `struct V { int prefix;
+TestVector3NoBinding field; }` implementing an interface, invoked via a generic
+constrained caller `T v where T:struct,IFace`, body does `ldflda this.field`)
+FAILS on HEAD (NRE at `NeoMarshalByrefFieldToSlot`, reading `prefix` value 7 as
+objectIndex) -> PASSES after the gate. Stash-toggle confirmed (gate OFF -> NRE
+returns; F-6-only + heap-IL F-10 probes unaffected). Neo-only (the type-spec
+pass is `#if ENABLE_NEO_MODE`); Legacy-neutral by construction (Step 17 Legacy
+filter 47/47). Verification: full NeoStep smoke 204/204 (198 baseline + 6 new
+keepers: 3 generic-byref + 2 interface-on-VT TEST-ONLY guards + 1 F-10-R1
+FAIL->PASS); NeoClrStructField 8/8; NeoStep20 9/9; NeoOptHard 24/24. See
+`openspec/changes/neo-step17-generic-byref-etc/ship-log.md`.
+
+**Forward-looking audit note (review Minor F-1):** the boxed-IL-VT-with-CLR-
+struct-field operand shape (which the gate intentionally lets KEEP F-10) could
+NOT be positively verified end-to-end -- boxed-IL-VT interface-`callvirt` is a
+separate pre-existing Neo gap (`MissingMethodException: Neo Callvirt_Interface`,
+identical on HEAD and gate-applied, so the gate introduces NO regression). The
+gate's correctness for the boxed-VT-keeps-F-10 case depends on the current fact
+that boxed-IL-VT dispatch is unimplemented (`BuildInitialRegisterTypes` types
+`this` as the declaringType for all VT method bodies, so a boxed-VT method body's
+`ldflda this.clrField` would clear F-10 either way today). **RE-AUDIT this gate
+when boxed-IL-VT interface-`callvirt` / `Callvirt_Interface` is implemented** --
+at that point construct a positive boxed-VT-with-CLR-struct-field `ldflda` probe
+and confirm it keeps F-10 (heap-field-offset path). See
+`openspec/changes/neo-step17-generic-byref-etc/review-report.md` (finding F-1).
 
 **Reclassified accepted-known-deferred 2026-07-06 (neo-clrstruct-field-of-il
 review round 1).** The reviewer flagged that the F-6 marker (`Operand4` bit

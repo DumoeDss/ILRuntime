@@ -875,6 +875,42 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 // Ldflda, so bit 0x1 is collision-free (mirrors the
                                 // Constrained-callvirt 0x1 flag convention).
                                 op.Operand4 |= NeoLdfldaInlineMarker;
+                                // F-10-R1: the F-6 (in-frame-VT) and F-10 (CLR-
+                                // struct-field-of-IL) markers are NOT mutually-
+                                // exclusive at the main-JIT body emission -- the
+                                // body's `case Code.Ldflda` (below) stamps F-10
+                                // whenever IsClrStructFieldOfIL is true, and that
+                                // predicate returns true for an IL VALUE-type
+                                // declaring type too (it checks `declaringType is
+                                // ILType`, not `!IsValueType`). So an in-frame-VT
+                                // source whose field is a CLR struct gets BOTH
+                                // stamps (Operand4 = 0x3). The runtime Ldflda arm
+                                // then checks F-10 FIRST (clrStructFieldMarker &&
+                                // objIdx >= 0); for the constrained.callvirt
+                                // direct-call shape, slot-0 holds the struct's FLAT
+                                // PRIMITIVE bytes (e.g. an int `prefix`), which the
+                                // body's `ldflda this.field` reads as the byref
+                                // objectIndex -> the F-10 branch fires on a garbage
+                                // index -> NRE at NeoMarshalByrefFieldToSlot.
+                                //
+                                // The gate: an in-frame-VT source MUST route through
+                                // the F-6 runtime branch (shape 1/2/3), NEVER the
+                                // F-10 heap-ManagedObjects branch. This type-spec
+                                // pass runs AFTER body emission, so the body's F-10
+                                // stamp is already on Operand4 -- clear it here. The
+                                // gate keys on the OPERAND's value-category (in-frame
+                                // VT vs heap/boxed), exactly the F-6 condition, so it
+                                // is correct for ALL three operand shapes: in-frame
+                                // VT (F-10 cleared -> F-6 shape 1/2/3), heap IL class
+                                // (F-6 not stamped -> F-10 stays), and boxed IL VT
+                                // (operand is a heap mStack object, not an in-frame VT
+                                // -> F-6 not stamped -> F-10 stays). A naive
+                                // `!declaringType.IsValueType` gate was REJECTED: it
+                                // would suppress F-10 for the boxed-IL-VT-with-CLR-
+                                // struct-field case (declaring type is a value type,
+                                // but the operand is a heap boxed object that
+                                // correctly needs F-10).
+                                op.Operand4 &= ~NeoLdfldaClrStructFieldMarker;
                             }
                         }
                         break;

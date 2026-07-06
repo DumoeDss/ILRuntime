@@ -130,7 +130,7 @@ The **portfolio run** then delivered these 15 children (in execution order):
 ### Test smoke progression
 Neo `NeoStep`: 37 (after 12) → 41 → 49 → 58 → 65 → 72 → 81 → 84 → **91** (end of
 prior sessions) → 99 → 100 → 108 → 117 → 130 → 140 → 146 → 154 → 161 → 175 → 181
-→ 186 → **190** → **198** (HEAD after `neo-array-multidim`, 2026-07-06). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
+→ 186 → **190** → **198** → **204** (HEAD after `neo-step17-generic-byref-etc`, 2026-07-06). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
 Legacy 519 baseline unaffected (still ~518/519; the regression reference).
 
 ### Capability specs (`openspec/specs/`)
@@ -339,10 +339,16 @@ is the source of truth; this section is a quick orientation.
   Neo 198/198. IL VT-element `[,]` stays a Non-Goal.
 - **neo-step17-generic-byref-etc** — generic-byref (`ref T`/`out T` with `T`
   generic), `fixed` unmanaged-pinning, interface-on-VT-constrained (the Step 17 (c)
-  edges). Also owns **F-10-R1** (the F-6/F-10 both-stamp shape for an IL VT with a
-  CLR-struct field — latent, gated behind `constrained.callvirt`-on-VT; the correct
-  fix is the JIT-discriminator gate, NOT the runtime reorder the reviewer proposed —
-  that was disproven).
+  edges) + **F-10-R1**. **RESOLVED 2026-07-06**: per-sub-item dump-gate found 3/4
+  sub-items are NO-OPs (generic-byref is type-agnostic; interface-on-VT-constrained
+  already covered by the {a,d,M2,b} cohorts; `fixed` is blocked by the unimplemented
+  `Conv_U`/`Conv_I` opcodes — rerouted to a future pointer step, NOT a byref gap).
+  The 1 real gap = **F-10-R1**: the JIT-discriminator gate
+  (`TypeSpecializeNeoOpcodes case Ldflda:` clears the F-10 marker when F-6 stamps,
+  `JITCompiler.cs:913`; keys on the operand value-category, NOT `!IsValueType`;
+  runtime arm unchanged — the runtime reorder was disproven). Neo 204/204,
+  Legacy-neutral. Forward-looking audit note added (re-audit the gate when boxed-IL-VT
+  interface-callvirt lands — see F-10-R1 §3 in `neo-deferred-items.md`).
 - **peephole-isinst [D-PEEP]** — `box T; isinst U` fusion + `PatchKind.IsinstResult`
   (needs a patch-infra that doesn't exist yet).
 - **Smaller accepted-known / latent upstream gaps:** **F-4** (Stind/Ldind CLR-array
@@ -384,7 +390,8 @@ has these as pending children with a dependency chain:
 - **`neo-array-multidim`** — multi-dimensional arrays (rank-2+). **DONE 2026-07-06**
   (see §5).
 - **`neo-step17-generic-byref-etc`** — generic-byref / `fixed` / interface-on-VT-
-  constrained (Step 17 (c) edges) + the F-10-R1 JIT-discriminator gate.
+  constrained (Step 17 (c) edges) + the F-10-R1 JIT-discriminator gate. **DONE
+  2026-07-06** (see §5).
 - **`neo-peephole-isinst`** — `box T; isinst U` fusion (needs patch-infra).
 
 ### Workflow

@@ -61,6 +61,12 @@
       "prerequisites": ["neo-step17-completion"], "dependsOn": ["neo-step17-completion"], "status": "done", "capability": "neo-byref",
       "completedDate": "2026-07-06", "smoke": "Neo 181/181 + NeoStep17 Legacy 41/41", "review": "APPROVE round 1 (M1 IL-instance NIE-on-scan-miss + M2 dead-param dropped); (c) -> neo-step17-generic-byref-etc; cross-frame byref deferred"
     },
+    "neo-step17-generic-byref-etc": {
+      "pipeline": "small-feature", "wave": 2, "scope": "[D-CONSTRAINED (c)] generic-byref + fixed + interface-on-VT-constrained + F-10-R1 JIT-discriminator gate",
+      "prerequisites": ["neo-step17-stobj-refloop"], "dependsOn": ["neo-step17-stobj-refloop"], "status": "done", "capability": "neo-byref",
+      "completedDate": "2026-07-06", "smoke": "Neo 204/204 + Legacy-neutral (Step17 47/47); dump-gate found 3/4 sub-items NO-OPs (generic-byref type-agnostic; interface-on-VT covered; fixed blocked by Conv_U out-of-scope). 1 real gap: F-10-R1 JIT gate (clear F-10 marker when F-6 stamps, JITCompiler.cs:913)",
+      "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; Minor F-1 doc-only forward-looking note re boxed-VT re-audit added; Trivial F-2 fixed/Conv_U deferred)"
+    },
     "neo-vt-ldflda-inline": {
       "pipeline": "small-feature", "wave": 2, "scope": "[F-6 NEO-VT-FLDADDR] ldflda on in-frame value type (in-frame-VT-aware ldflda lowering)",
       "prerequisites": ["neo-vt-this-addr"], "dependsOn": ["neo-vt-this-addr"], "status": "done", "capability": "neo-value-types",
@@ -136,8 +142,8 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-step20-async-suspend", "neo-step17-generic-byref-etc", "neo-peephole-isinst", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim"],
+  "runnableFrontier": ["neo-step20-async-suspend", "neo-peephole-isinst", "neo-step22-generic-template"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

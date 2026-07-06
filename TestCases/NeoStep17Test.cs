@@ -961,5 +961,150 @@ namespace TestCases
         {
             dst = src;
         }
+
+        // ======================================================================
+        // Step 17 (c) edges + F-10-R1 JIT-discriminator gate
+        //            (neo-step17-generic-byref-etc).
+        //   * generic-byref (ref T/out T, T generic) -- type-agnostic model; 3
+        //     TEST-ONLY guards (Swap int / IL-ref / IL-VT). PASS on HEAD.
+        //   * interface-on-VT-constrained beyond the common shape -- the
+        //     {a,d,M2,b} cohorts already cover it; 2 TEST-ONLY guards (IL-VT
+        //     direct-call, CLR-VT box-once). PASS on HEAD.
+        //   * F-10-R1: the latent F-6/F-10 both-stamp shape, triggered via a
+        //     constrained.callvirt direct-call on an IL VT with a CLR-struct
+        //     field. FAIL-on-HEAD (NRE at NeoMarshalByrefFieldToSlot, reading
+        //     `prefix`'s flat bytes as objectIndex) -> PASS-after the JIT-
+        //     discriminator gate (TypeSpecializeNeoOpcodes case Ldflda clears
+        //     F-10 when F-6 stamps).
+        // ======================================================================
+
+        // ---- generic-byref: Swap<T> with T a generic parameter. The Neo byref
+        //      is an 8-byte Ref Slot (objectIndex, offset) copied as 8 bytes
+        //      regardless of element type; the generic-param type token is
+        //      resolved at the call site via JIT generic substitution, NOT at the
+        //      byref-marshal level. ----
+
+        static void Swap<T>(ref T a, ref T b) { T tmp = a; a = b; b = tmp; }
+
+        // (c).1 Swap<int>: the primitive concrete substitution.
+        public static void NeoStep17_GenericByRef_SwapInt()
+        {
+            int a = 1, b = 2;
+            Swap(ref a, ref b);
+            if (a != 2 || b != 1) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // (c).2 Swap<IL-ref-class>: T is a heap IL reference type.
+        public static void NeoStep17_GenericByRef_SwapIlRef()
+        {
+            NeoStep17Holder a = new NeoStep17Holder(); a.value = 11;
+            NeoStep17Holder b = new NeoStep17Holder(); b.value = 22;
+            Swap(ref a, ref b);
+            if (a.value != 22 || b.value != 11) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // (c).3 Swap<IL-VT>: T is an IL value type (Move_Vt body).
+        public static void NeoStep17_GenericByRef_SwapIlVt()
+        {
+            NeoStep17Point a; a.x = 1; a.y = 2;
+            NeoStep17Point b; b.x = 3; b.y = 4;
+            Swap(ref a, ref b);
+            if (a.x != 3 || a.y != 4 || b.x != 1 || b.y != 2)
+            { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // ---- interface-on-VT-constrained beyond the common shape. The
+        //      {a,d,M2,b} cohorts (neo-step17-completion + neo-step17-stobj-
+        //      refloop) already cover the box-and-interface-dispatch + IL-VT-
+        //      direct-call + CLR-VT-box-once + IL-VT-inherited-CLRMethod paths;
+        //      these 2 guards lock the closure so a future change cannot silently
+        //      regress it. ----
+
+        // (c).4 IL-VT implementing an interface, dispatched via a generic
+        //      constrained caller -> the constrained.callvirt direct-call path
+        //      (actualMethod is an ILMethod, constrainedType is an ILType).
+        public interface INeoStep17ProbeIface { int ProbeValue(); }
+        public struct NeoStep17ProbeIlVtIface : INeoStep17ProbeIface
+        {
+            public int val;
+            public int ProbeValue() { return val; }
+        }
+        static int ProbeConstrainedIface<T>(T v) where T : INeoStep17ProbeIface
+        {
+            return v.ProbeValue();
+        }
+        public static void NeoStep17_InterfaceOnIlVtConstrained()
+        {
+            NeoStep17ProbeIlVtIface s; s.val = 4242;
+            int r = ProbeConstrainedIface(s);
+            if (r != 4242) { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // (c).5 CLR-VT implementing IComparable<int>, dispatched via a generic
+        //      constrained caller -> the box-once path. int (Int32) is the CLR
+        //      value type; the constrained arm boxes it and dispatches via the
+        //      interface map.
+        static int ProbeConstrainedCompare<T>(T v, int other) where T : IComparable<int>
+        {
+            return v.CompareTo(other);
+        }
+        public static void NeoStep17_InterfaceOnClrVtConstrained()
+        {
+            int v = 5;
+            int lt = ProbeConstrainedCompare(v, 7);  // 5 < 7 -> negative
+            int eq = ProbeConstrainedCompare(v, 5);  // equal -> 0
+            int gt = ProbeConstrainedCompare(v, 3);  // 5 > 3 -> positive
+            if (!(lt < 0 && eq == 0 && gt > 0))
+            { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // ---- F-10-R1: the JIT-discriminator gate reproducer (the ONLY engine
+        //      change in this change). ----
+
+        // An IL value type with an IL-primitive `prefix` (a NON-empty flat
+        // region) AND a CLR-struct field (the F-10 marker). Invoked via a generic
+        // constrained caller `T v where T:struct,IFace` -> constrained.callvirt
+        // direct-call -> slot-0 seeded with the struct's FLAT PRIMITIVE bytes
+        // (just `prefix`, 4 bytes -- the CLR-struct field is a reference slot,
+        // zero primitive contribution, its boxed value lives in the ref region).
+        // The body's `ldflda this.field` then reads slot-0's leading int =
+        // `prefix` value (e.g. 7) as the byref objectIndex.
+        //
+        // On HEAD: BOTH markers stamp (Operand4 = 0x3: F-6 in-frame-VT 0x1 | F-10
+        // CLR-struct-field 0x2; IsClrStructFieldOfIL returns true for an IL
+        // value-type declaring type too). The runtime Ldflda arm checks F-10
+        // FIRST (clrStructFieldMarker && objIdx >= 0) -> (objIdx=7, refOff|flag)
+        // -> the byref consumer reads mStack[7] (a garbage slot; the struct was
+        // NOT boxed in the direct-call path) -> NullReferenceException at
+        // NeoMarshalByrefFieldToSlot.
+        //
+        // After the JIT gate (TypeSpecializeNeoOpcodes case Ldflda clears F-10
+        // when F-6 stamps): Operand4 = 0x1 -> the F-10-first check is false ->
+        // routes to F-6 shape 3 (frame-native byref at operandSlotOff +
+        // fieldPrimOff) -> the byref points at the in-frame ref slot of `field`,
+        // the host helpers read/write it correctly -> returns 60.
+        public interface INeoStep17SetAndSum { int SetAndSumViaLdflda(float x, float y, float z); }
+        public struct NeoStep17F10R1Vt : INeoStep17SetAndSum
+        {
+            public int prefix;                  // IL-primitive (non-empty flat region)
+            public TestVector3NoBinding field;  // CLR-struct field (F-10 marker)
+            public int SetAndSumViaLdflda(float x, float y, float z)
+            {
+                TestCLRBinding.SetTestVector3NoBindingByRef(ref this.field, x, y, z);
+                return TestCLRBinding.SumTestVector3NoBindingByRef(ref this.field);
+            }
+        }
+        static int ProbeConstrainedCallSetAndSum<T>(T v, float x, float y, float z)
+            where T : struct, INeoStep17SetAndSum
+        {
+            return v.SetAndSumViaLdflda(x, y, z);
+        }
+        public static void NeoStep17_F10R1_ConstrainedVtLdfldaClrField()
+        {
+            NeoStep17F10R1Vt v = default(NeoStep17F10R1Vt);
+            v.prefix = 7;
+            int r = ProbeConstrainedCallSetAndSum(v, 10f, 20f, 30f);
+            if (r != 60) { int z = 1; int d = 0; int _ = z / d; }
+        }
     }
 }
