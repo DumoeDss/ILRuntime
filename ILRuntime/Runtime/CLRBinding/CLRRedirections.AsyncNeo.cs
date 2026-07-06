@@ -427,6 +427,12 @@ namespace ILRuntime.Runtime.Enviorment
         public static void AwaitUnsafeOnCompleted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
+            // DEFERRED (neo-step20-async-suspend STOP): the suspend machinery is
+            // not wired. The redirect is also currently unreachable end-to-end
+            // (see planning-context Findings) -- the closed-generic call does not
+            // dispatch here, and a stacked control-flow issue routes MoveNext to
+            // the completion path regardless of IsCompleted. Re-dump-gate B1 + the
+            // control-flow bug before implementing this body. Kept as a tagged NIE.
             throw new NotImplementedException("Neo async suspend path: neo-step20-async-suspend (Step 20 suspend slice)");
         }
 
@@ -492,6 +498,18 @@ namespace ILRuntime.Runtime.Enviorment
             object awaiter = ILIntepreter.ReadNeoValueType(method.DeclearingType.TypeForCLR, frameBase, ref curPrim, sz);
             Task task = GetAwaiterTask(awaiter) as Task;
             if (task == null) throw new NullReferenceException("Neo async GetResult: awaiter has no task");
+            // B2 (neo-step20-async-suspend): this redirect is registered for BOTH
+            // the generic TaskAwaiter<T> AND the non-generic TaskAwaiter (via
+            // RegisterAwaiterAccessors on typeof(TaskAwaiter)). The non-generic
+            // TaskAwaiter.GetResult() is void -- a non-generic Task (e.g. the
+            // Task+DelayPromise from Task.Delay) has NO Result property, so an
+            // unconditional InvokeMember("Result") throws MissingMethodException.
+            // Gate the Result read on the awaiter being the generic TaskAwaiter<T>;
+            // the void path writes nothing (GetResult returns void). Same family as
+            // the sync-slice TC2/TC5 redirect-coverage edges.
+            Type awaiterClr = method.DeclearingType.TypeForCLR;
+            if (!awaiterClr.IsGenericType)
+                return;
             object result = task.GetType().InvokeMember("Result",
                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.GetProperty, null, task, null);
             WriteReturnByType(method.ReturnType, result, retDst, retRefBase, mStack);
@@ -549,6 +567,22 @@ namespace ILRuntime.Runtime.Enviorment
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
             WriteReferenceReturn(Task.CompletedTask, retDst, retRefBase, mStack);
+        }
+
+        // Task.Delay(int) -- static, returns the real Task.Delay(ms). Permanent
+        // redirect (neo-step20-async-suspend): the awaitable source for the suspend
+        // green test. A genuinely-completing-on-threadpool Task whose IsCompleted is
+        // false at the await check is what triggers the suspend path
+        // (AwaitUnsafeOnCompleted); Task.Run(ilLambda) cannot serve this role (the
+        // IL lambda is a Step-19 DelegateAdapter that does not round-trip through
+        // the un-redirected Task.Run reflection fallback). The real Task.Delay is
+        // returned verbatim (its threadpool completion drives the resume).
+        public static void Task_Delay_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
+            CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            int ms = *(int*)(frameBase + curPrim);
+            WriteReferenceReturn(Task.Delay(ms), retDst, retRefBase, mStack);
         }
 
         // Helpers: read/write the return value by its Neo kind.
@@ -695,6 +729,10 @@ namespace ILRuntime.Runtime.Enviorment
             MethodInfo gct = typeof(Task).GetMethod("get_CompletedTask", flag);
             if (gct != null)
                 app.RegisterCLRMethodRedirectionNeo(gct, Task_GetCompletedTask_Neo);
+            // Task.Delay(int) -- permanent redirect (the suspend awaitable source).
+            MethodInfo delay = typeof(Task).GetMethod("Delay", flag, null, new[] { typeof(int) }, null);
+            if (delay != null)
+                app.RegisterCLRMethodRedirectionNeo(delay, Task_Delay_Neo);
         }
 
         private static void RegisterAwaiterAccessors(AppDomain app, BindingFlags flag, Type awaiterType)

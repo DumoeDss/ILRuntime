@@ -1045,6 +1045,29 @@ Step-20 follow-ups, NOT F-10; re-trimmed green, documented in
 `neo-step20-async-suspend`) owns these redirect edges. The truly-async
 suspend/resume path is still `neo-step20-async-suspend`.
 
+**UPDATE 2026-07-06 (neo-step20-async-suspend landed — PARTIAL: Phase 1 only):**
+the suspend slice dump-gated HEAD and found `AwaitUnsafeOnCompleted_Neo` is
+UNREACHABLE end-to-end (3 stacked pre-existing blockers). The implementer
+correctly STOPPED at Phase 1 (F-10/K1 discipline; a false-positive probe green
+via blocking `GetResult` on an incomplete `Task.Delay` was caught + removed).
+**Phase 1 SHIPPED (3 reachability unblockers, Neo-only, Legacy-neutral):** B3
+`case Nop: ip++; continue;` (the catch-all NIE threw on Nop); B2 `IsGenericType`
+guard in `TaskAwaiter_T_GetResult_Neo` (the non-generic `TaskAwaiter` has void
+GetResult / no `.Result` -> the unconditional `InvokeMember("Result")` threw
+`MissingMethodException`; reviewer proved load-bearing); `Task.Delay(int)`
+redirect (a real threadpool-completing suspend source). Neo 204/204, NeoStep20
+sync 9/9, NeoOptHard 24/24. **Phase 2 (suspend machinery) DEFERRED to 2 split
+children:** (1) `neo-async-controlflow-iscompleted` — the `brtrue`-after-
+`get_IsCompleted` register mismatch (`get_IsCompleted` writes `DstOffset` but
+`brtrue.s` reads `SrcOffset` -> always takes the completion path ->
+`AwaitUnsafeOnCompleted` never called; MASKS B1; highest value); (2)
+`neo-generic-redirect-resolution` — B1: the 2-generic-arg
+`AwaitUnsafeOnCompleted<TA,TSM>` resolves only on the Legacy `RedirectMap`, not
+`RedirectMapNeo` (broad/entangled shared dispatch; re-dump-gate AFTER #1 lands).
+`AwaitUnsafeOnCompleted_Neo`/`AwaitOnCompleted_Neo` + `ILAsyncContext<T>.MoveNext`
+remain tagged NIEs; the foundation is unchanged + proven. See
+`openspec/changes/archive/2026-07-06-neo-step20-async-suspend/ship-log.md`.
+
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
 suspected to hit an optimizer temp-renumber quirk (BCP/copy-prop). **OPT-HARDEN

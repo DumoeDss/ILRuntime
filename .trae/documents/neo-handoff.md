@@ -324,11 +324,20 @@ is the source of truth; this section is a quick orientation.
 
 ### Open follow-ups (the remaining portfolio children + accepted-known edges)
 - **AOT toolchain (Steps 22-26)** — the next big focus; see §6.
-- **neo-step20-async-suspend** — the truly-async suspend/resume slice
-  (`AwaitUnsafeOnCompleted` → frame-to-heap hoist + `ILAsyncContext` resumption).
-  The sync-slice infrastructure (builder redirects, `HoistNeoILValueToHeap`,
-  `ILAsyncContext` skeleton) is shipped as the foundation. F-10 (the prerequisite)
-  is now resolved.
+- **neo-step20-async-suspend** — **PARTIAL 2026-07-06**: shipped Phase 1
+  reachability unblockers (B3 `Nop` case, B2 non-generic-awaiter `void-GetResult`
+  guard, `Task.Delay` redirect; Neo 204/204, NeoStep20 sync 9/9). Phase 2 (the
+  suspend machinery) STOPPED at 2 stacked pre-existing blockers (a false-positive
+  probe — green via blocking `GetResult` on an incomplete Task — was caught +
+  removed; F-10/K1 discipline). Deferred to 2 split children:
+  **`neo-async-controlflow-iscompleted`** (the `brtrue`-after-`get_IsCompleted`
+  register mismatch — `get_IsCompleted` writes `DstOffset` but `brtrue.s` reads
+  `SrcOffset` → always takes the completion path → `AwaitUnsafeOnCompleted` never
+  called; masks B1; **next, highest value**) + **`neo-generic-redirect-resolution`**
+  (B1: the 2-generic-arg redirect resolves only on the Legacy map, not
+  `RedirectMapNeo`; broad shared dispatch; re-dump-gate AFTER the control-flow
+  child). The sync-slice infrastructure + `HoistNeoILValueToHeap` + `ILAsyncContext`
+  skeleton are the shipped foundation.
 - **Step 20 redirect-coverage edges (TC2/TC3/TC5)** — non-generic Task `Start`
   redirect null-SM; ValueTask builder NRE; multi-await `Task<int>.get_Result`
   redirect. Fold into a `neo-step20-async` round 2 / async-suspend.

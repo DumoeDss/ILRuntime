@@ -16,7 +16,14 @@ pre-existing `[NEO-CLRSTRUCT-FIELD-OF-IL]` edge (a CLR-struct field of an IL
 instance is laid out as a reference slot but the JIT `ldflda` addresses it as a
 primitive offset → OOB); they ship as REQUIREMENTS here and are re-enabled when
 that follow-up lands. The truly-async suspend/resume path is a DEFERRED
-sub-requirement (`neo-step20-async-suspend`).
+sub-requirement.
+
+**Update 2026-07-06:** the `neo-step20-async-suspend` portfolio child shipped
+only its Phase-1 reachability unblockers (B3 `Nop` dispatch, B2 non-generic-
+awaiter `void-GetResult` guard, `Task.Delay` redirect); the suspend/resume
+machinery (`AwaitUnsafeOnCompleted` suspend + `ILAsyncContext<T>` resumption)
+remains deferred to split children `neo-async-controlflow-iscompleted` +
+`neo-generic-redirect-resolution`.
 
 ## Requirements
 
@@ -279,8 +286,10 @@ concrete `IValueTaskSource<T>` type.
 
 ### Requirement: Neo async suspend and resumption (DEFERRED)
 
-The Neo async SUSPEND and RESUMPTION paths SHALL be deferred to a follow-up
-change (`neo-step20-async-suspend`). The SUSPEND path
+The Neo async SUSPEND and RESUMPTION paths SHALL be deferred to follow-up
+changes (`neo-async-controlflow-iscompleted` + `neo-generic-redirect-resolution`;
+originally scoped under `neo-step20-async-suspend`, which shipped only its
+Phase-1 reachability unblockers on 2026-07-06). The SUSPEND path
 (`AwaitUnsafeOnCompleted`/`AwaitOnCompleted` real implementation — wire the
 `HoistNeoILValueToHeap` helper + register an `ILAsyncContext<T>` continuation
 with the awaiter's `UnsafeOnCompleted`) and RESUMPTION path

@@ -4014,6 +4014,13 @@ namespace ILRuntime.Runtime.Intepreter
                             // outer catch into lastCaughtEx.
                             case OpCodeREnum.Rethrow:
                                 throw lastCaughtEx;
+                            // Neo: Nop is a true no-op (the optimizer strips nops in
+                            // normal methods, but the async state machine's exception-
+                            // region structure can surface one). Mirror Leave/Endfinally
+                            // which ARE handled. (neo-step20-async-suspend B3.)
+                            case OpCodeREnum.Nop:
+                                ip++;
+                                continue;
                             // Step 14: Leave / Leave_S. Route through any enclosing
                             // finally whose try range straddles the leave boundary
                             // (port of Legacy ILIntepreter.Register.cs:2765-2783).

@@ -16,6 +16,9 @@
     "neo-k2fam-bridge",
     "neo-step19-delegate",
     "neo-step20-async",
+    "neo-step20-async-suspend",
+    "neo-async-controlflow-iscompleted",
+    "neo-generic-redirect-resolution",
     "neo-array-completion",
     "neo-peephole-isinst",
     "neo-opportunistic-cleanup",
@@ -94,7 +97,17 @@
     },
     "neo-step20-async-suspend": {
       "pipeline": "small-feature", "wave": 3, "scope": "[Step 20 suspend slice] truly-async AwaitUnsafeOnCompleted -> frame-to-heap hoist + ILAsyncContext + resumption",
-      "prerequisites": ["neo-step20-async", "neo-clrstruct-field-of-il"], "dependsOn": ["neo-step20-async", "neo-clrstruct-field-of-il"], "status": "pending", "capability": "neo-async"
+      "prerequisites": ["neo-step20-async", "neo-clrstruct-field-of-il"], "dependsOn": ["neo-step20-async", "neo-clrstruct-field-of-il"], "status": "done", "capability": "neo-async",
+      "completedDate": "2026-07-06", "smoke": "Neo 204/204 + NeoStep20 sync 9/9 (PARTIAL: Phase 1 reachability unblockers shipped -- B3 Nop case, B2 void-GetResult guard, Task.Delay redirect; Phase 2 suspend machinery STOPPED at 2 stacked blockers)",
+      "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; B2 reviewer-proved load-bearing; false-positive probe caught+removed). Phase 2 deferred to neo-async-controlflow-iscompleted + neo-generic-redirect-resolution"
+    },
+    "neo-async-controlflow-iscompleted": {
+      "pipeline": "small-feature", "wave": 3, "scope": "[Step 20 blocker #1] brtrue.s reads SrcOffset but get_IsCompleted redirect writes DstOffset -> always completion path -> AwaitUnsafeOnCompleted never called (masks B1)",
+      "prerequisites": ["neo-step20-async-suspend"], "dependsOn": ["neo-step20-async-suspend"], "status": "pending", "capability": "neo-async"
+    },
+    "neo-generic-redirect-resolution": {
+      "pipeline": "small-feature", "wave": 3, "scope": "[Step 20 blocker #2 / B1] 2-generic-arg redirect (AwaitUnsafeOnCompleted<TA,TSM>) resolves only on Legacy RedirectMap, not RedirectMapNeo (broad shared dispatch)",
+      "prerequisites": ["neo-async-controlflow-iscompleted"], "dependsOn": ["neo-async-controlflow-iscompleted"], "status": "pending", "capability": "neo-async"
     },
     "neo-array-completion": {
       "pipeline": "small-feature", "wave": 4, "scope": "[D-ARR rank-1] Stelem_I/Ldelem_I arms + F-4 other-width CLR-array Stind/Ldind branches",
@@ -142,8 +155,8 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-step20-async-suspend", "neo-peephole-isinst", "neo-step22-generic-template"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc"],
+  "runnableFrontier": ["neo-async-controlflow-iscompleted", "neo-peephole-isinst", "neo-step22-generic-template"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."
