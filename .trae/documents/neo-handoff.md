@@ -401,10 +401,41 @@ has these as pending children with a dependency chain:
   Initobj site, not just the prefix). REUSES HybridPatch's reference tables. V1
   roundtrip self-check **15/15** (matrix incl. multi-Constrained-pair, nested EH,
   real-aqname byref, multi-interface). Neo 205/205, NeoOptHard 24/24, NeoStep20 9/9,
-  NeoStep22SelfCheck 55/55, Legacy-neutral. **Next: Step 24** (`ilrt_neoc` CLI).
+  NeoStep22SelfCheck 55/55, Legacy-neutral. **Next: Step 25** (runtime loader).
   Step-25 deferrals: cross-AppDomain token re-resolution, CLR aqname indexing,
   static .cctor seeding, V2 functional deserialize->ExecuteNeo.
-- **Step 24** `neo-step24-ilrt-neoc` — `ilrt_neoc` standalone precompile CLI.
+- **Step 24** `neo-step24-ilrt-neoc` — `ilrt_neoc` standalone precompile CLI. **DONE
+  2026-07-07**: the CLI integration layer shipped. A NEW `public NeoCompiler` driver
+  (`ILRuntime/Runtime/NeoAOT/NeoCompiler.cs`, `#if ENABLE_NEO_MODE`) is the single
+  in-assembly seam that bulk-compiles an assembly: enumerates every IL type/method
+  in the input module, partitions non-generic methods (-> MethodDefTable via
+  `NeoAssemblyWriter.Write`) from generic-method definitions (-> TemplateTable via a
+  SYNTHESIZED capture-eligible `int`-per-param instantiation -- no call site needed),
+  force-compiles each non-generic method in a per-method try/catch (skip-with-warning
+  + exit codes 0/2/1), and calls the UNCHANGED Step-23 `NeoAssemblyWriter.Write`. A
+  NEW `ILRuntimeNeoCompiler/` console-app project (mirror `PatchTool.csproj`, Neo-only,
+  builds STANDALONE via `dotnet build ILRuntimeNeoCompiler/ILRuntimeNeoCompiler.csproj
+  -c Debug_Neo`, NOT in the sln) is a thin CLI wrapper. V1 CLI-roundtrip self-check
+  **5/5** (`NeoStep24CliRoundtripCheck`: header + counts+split + model1==model2 via
+  Step-23 comparators + independent fresh-body check). Neo 205/205, NeoStep23Roundtrip
+  15/15, NeoStep22SelfCheck 55/55, Legacy-neutral. Minimal additive accessor: 3 Step-23
+  comparators (`MethodDefsEqual`/`TemplatesEqual`/`TypeDefsEqual`) widened private ->
+  internal for reuse. **V1 boundary (review round-0 Major-1/2, corrected):** the
+  full-`TestCases.dll` CLI run FAILS with a CLR-type-resolution fatal
+  (`Cannot find Type:ILRuntimeTest.TestFramework.TestCLREnum` -- a CLR enum in
+  `ILRuntimeTestBase`, a host CLR assembly the standalone CLI never registers; NOT
+  a Step-19 JIT stall as an earlier note mis-stated). This is design D7's "V1 =
+  BCL-only ref assemblies" boundary -> the skip-with-warning/exit-2 contract does
+  NOT engage for non-BCL CLR refs (serialize aborts -> exit 1). V1-A proves
+  `CompileCore` (enumeration + partition + template synthesis + serialize) via the
+  explicit-types overload; V1-B covers the CLI happy path (the sample has only BCL
+  refs) -- the CLI-specific Cecil-resolver / `InitializeFromModule` / ref
+  `LoadAssembly` / module-filter-exclusion / `Dispose` paths are V1-A-UNVERIFIED
+  (Step-25 hardening: robust IL-vs-CLR ref classification + the module-filter's
+  exclusion correctness). Step-25 deferrals: the runtime `.neo` LOADER + V2
+  functional deserialize->ExecuteNeo + the ref-classification + module-filter
+  hardening + registering host CLR assemblies (TestCLREnum etc.) for a full
+  `TestCases.dll` compile.
 - **Step 25** `neo-step25-runtime-loader` — `.neo` runtime loader + ILType/ILMethod
   Cecil-decoupling dual-path.
 - **Step 26** `neo-step26-perf-validation` — benchmarks + reflection/thread-safety

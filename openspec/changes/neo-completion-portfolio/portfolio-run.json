@@ -149,7 +149,9 @@
     },
     "neo-step24-ilrt-neoc": {
       "pipeline": "small-feature", "wave": 5, "scope": "[Step 24] ilrt_neoc standalone precompile CLI",
-      "prerequisites": ["neo-step23-neoassembly"], "dependsOn": ["neo-step23-neoassembly"], "status": "pending", "capability": "neo-optimizer"
+      "prerequisites": ["neo-step23-neoassembly"], "dependsOn": ["neo-step23-neoassembly"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-07", "smoke": "Neo 205/205 + NeoStep23Roundtrip 15/15 + NeoStep22SelfCheck 55/55 + NeoStep24CliRoundtrip 5/5 + V1-B exit-code/magic; Legacy-neutral; standalone build",
+      "review": "APPROVE-WITH-FINDINGS (0 code Blocker/Major; 2 doc/scope Majors -- full-TestCases.dll deferral rationale corrected + V1-A coverage qualified -- LEAD-fixed in handoff). Step-25 hardening: IL-vs-CLR ref classification, module-filter, host-CLR-assembly registration (TestCLREnum)."
     },
     "neo-step25-runtime-loader": {
       "pipeline": "small-feature", "wave": 5, "scope": "[Step 25] .neo runtime loader + ILType/ILMethod Cecil-decoupling dual-path",
@@ -160,8 +162,8 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-generic-redirect-resolution", "neo-peephole-isinst", "neo-step24-ilrt-neoc"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly"],
+  "runnableFrontier": ["neo-generic-redirect-resolution", "neo-peephole-isinst", "neo-step25-runtime-loader"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

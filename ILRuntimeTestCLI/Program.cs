@@ -90,6 +90,29 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 24 host-side V1 CLI-roundtrip self-check (drives the SAME
+            // NeoCompiler the ilrt_neoc CLI uses).
+            if (nameFilter == "NeoStep24CliRoundtrip")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep24CliRoundtripCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep24 V1 CLI roundtrip: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep24CliRoundtrip threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
 #endif
             int ignoreCnt = 0;
             int todoCnt = 0;

@@ -300,7 +300,10 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             return sa.SequenceEqual(sb);
         }
 
-        static string MethodDefsEqual(NeoMethodDefRecord a, NeoMethodDefRecord b)
+        // Step 24 (NeoStep24CliRoundtripCheck) reuses these comparators; they are
+        // internal (additive visibility widening within this DEBUG+Neo self-check
+        // file) so the Step-24 V1-A gate does not duplicate them.
+        internal static string MethodDefsEqual(NeoMethodDefRecord a, NeoMethodDefRecord b)
         {
             // Minor-1: the identity ref-idx IS serialized (first int written)
             // + read (first int read), so it roundtrips positionally -- but the V1
@@ -437,7 +440,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             return true;
         }
 
-        static string TypeDefsEqual(NeoTypeDefRecord a, NeoTypeDefRecord b)
+        internal static string TypeDefsEqual(NeoTypeDefRecord a, NeoTypeDefRecord b)
         {
             // Minor-1: the type's own identity ref-idx (-> TypeRefTable full name).
             // Asserted, not just read, so a future identity-idx write/read-order
@@ -472,7 +475,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             return null;
         }
 
-        static string TemplatesEqual(NeoTemplateRecord a, NeoTemplateRecord b)
+        internal static string TemplatesEqual(NeoTemplateRecord a, NeoTemplateRecord b)
         {
             // Minor-1: the open generic method def's identity ref-idx
             // (-> MethodRefTable). Asserted, not just read.

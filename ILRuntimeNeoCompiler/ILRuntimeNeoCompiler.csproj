@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net8.0;netcoreapp3.0</TargetFrameworks>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Configurations>Debug;Release;Debug_Neo;Release_Neo</Configurations>
+    <AssemblyName>ilrt_neoc</AssemblyName>
+    <RootNamespace>ILRuntimeNeoCompiler</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Mirror ILRuntimeTestCLI.csproj: ENABLE_NEO_MODE on the *_Neo configs so the
+       linked ILRuntime runtime compiles its Neo paths (NeoCompiler + the Step-22/23
+       NeoAOT machinery) in. Plain Debug/Release compile Neo out (Legacy). -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug_Neo|AnyCPU'">
+    <DefineConstants>ENABLE_NEO_MODE</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_Neo|AnyCPU'">
+    <DefineConstants>ENABLE_NEO_MODE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ILRuntime\ILRuntime.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="ILRuntime.Mono.Cecil">
+      <HintPath>..\Dependencies\netstandard2.0\ILRuntime.Mono.Cecil.dll</HintPath>
+    </Reference>
+    <Reference Include="ILRuntime.Mono.Cecil.Pdb">
+      <HintPath>..\Dependencies\netstandard2.0\ILRuntime.Mono.Cecil.Pdb.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+</Project>
