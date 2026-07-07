@@ -1402,6 +1402,20 @@ namespace ILRuntime.CLR.Method
                 genericMethodTemplate = null;
             }
         }
+
+        // Step 25 S2: install a GenericMethodTemplate reconstructed from a deserialized
+        // .neo TemplateTable record, OVERWRITING any previously-cached (JIT-captured)
+        // template. Distinct from StoreGenericTemplate: the S2 loader runs AFTER the
+        // V2 capstone's compile step (which already cached a JIT-captured template via
+        // NeoCompiler.CaptureTemplate -> the capture hook), so the loader's AOT template
+        // MUST replace it for a subsequent generic call to route through CloneAndPatch
+        // against the AOT template body. The overwrite is intentional + Neo-only;
+        // StoreGenericTemplate's guard stays intact for the normal JIT capture path.
+        internal void InitTemplateFromNeo(Runtime.Intepreter.RegisterVM.GenericMethodTemplate template)
+        {
+            if (IsGenericInstance) return;  // only the definition caches
+            genericMethodTemplate = template;
+        }
 #endif
 
         string cachedName;

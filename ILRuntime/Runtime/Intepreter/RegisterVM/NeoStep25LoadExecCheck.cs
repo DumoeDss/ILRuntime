@@ -277,7 +277,228 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 RecordCell(res, "ConstProbe body-mutation (AOT body really runs)", diff);
             }
 
+            // ===== S2 generic cells (clone+patch from the .neo template at load) =====
+            //
+            // The main Attach above ALSO consumed model.Templates: it reconstructed
+            // the Echo/ConstGeneric GenericMethodTemplates from the .neo + bound them
+            // to the generic definitions' GenericMethodTemplateCache (OVERWRITING the
+            // JIT-captured template from the compile step). So a generic-instance call
+            // on the AOT-loaded probe now routes through Step-22 CloneAndPatch from the
+            // AOT template. These cells prove that, adversarially.
+            //
+            // (1) FUNCTIONAL cells: parameterless wrappers calling Echo<T> at concrete
+            //     T's (int / long[8-byte prim] / string[ref] / struct) -> assert each
+            //     result EQUALS its known-expected value. WrapEchoLong is ALSO the
+            //     (2) FRESH-INSTANCE cell: the compile step only instantiated Echo<int>
+            //     (capture-eligible), so Echo<long> was NEVER instantiated before
+            //     attach -> its first call MUST route through CloneAndPatch via the AOT
+            //     template (no JIT-cached instance body exists), isolating the AOT path.
+            // (3) TEMPLATE BODY-MUTATION cell: mutate ConstGeneric's deserialized
+            //     TemplateBody Ldc_I4 before attach -> observe the MUTATED value (NOT
+            //     the JIT value) -> proves CloneAndPatch ran the genuine AOT template
+            //     body, not the JIT-captured one (a green functional cell alone is
+            //     insufficient: Step 23 made the bodies byte-identical).
+            // (4) STRUCTURAL-EQUIVALENCE cell (DEBUG host-side): the AOT-reconstructed
+            //     template's CloneAndPatch body EQUALS the per-occurrence JIT body for
+            //     each concrete T (reusing the Step-22 BodiesEqual comparator).
+
+            // ---- locate the generic definitions (open defs, GPC > 0) ----
+            ILMethod echoDef = null, constDef = null;
+            if (probeType.GetMethods() != null)
+            {
+                foreach (var mm in probeType.GetMethods())
+                {
+                    var ilm = mm as ILMethod;
+                    if (ilm == null || ilm.IsGenericInstance || ilm.GenericParameterCount <= 0) continue;
+                    if (ilm.Name == "Echo") echoDef = ilm;
+                    else if (ilm.Name == "ConstGeneric") constDef = ilm;
+                }
+            }
+
+            // ---- S2 attach coverage: both generic templates bound ----
+            res.TotalCells++;
+            {
+                bool echoBound = echoDef != null && echoDef.GenericMethodTemplateCache != null;
+                bool constBound = constDef != null && constDef.GenericMethodTemplateCache != null;
+                string diff = (echoBound && constBound)
+                    ? null
+                    : $"echoDef={(echoDef != null)} echoTpl={(echoDef?.GenericMethodTemplateCache != null)} constDef={(constDef != null)} constTpl={(constDef?.GenericMethodTemplateCache != null)}";
+                RecordCell(res, "S2 generic template attach coverage", diff);
+            }
+
+            // ---- (1)+(2) FUNCTIONAL + FRESH-INSTANCE cells ----
+            var genCells = new GenCell[]
+            {
+                new GenCell("WrapEchoInt",    42),            // int (4-byte prim)
+                new GenCell("WrapEchoLong",   9000000000L),   // long (8-byte prim) -- ALSO fresh-instance
+                new GenCell("WrapEchoRef",    1234567),       // ref-T (string) via ConstGeneric<string> -> int
+                new GenCell("WrapEchoStruct", 77),            // IL struct
+            };
+            foreach (var gc in genCells)
+            {
+                res.TotalCells++;
+                var m = probeType.GetMethod(gc.Name, 0);
+                object r;
+                try { r = appdomain.Invoke(m, null); }
+                catch (Exception ex) { r = new ThrownMarker(ex); }
+                string diff = ValueEqualsObj(r, gc.Expected)
+                    ? null : $"got={Format(r)} expected={gc.Expected}";
+                string label = gc.Name == "WrapEchoLong"
+                    ? $"{gc.Name} (AOT CloneAndPatch + fresh long-T instance)"
+                    : $"generic {gc.Name} (AOT CloneAndPatch)";
+                RecordCell(res, label, diff);
+            }
+
+            // ---- (4) STRUCTURAL-EQUIVALENCE cell: AOT-CloneAndPatch body == per-
+            //      occurrence JIT body for each concrete T (DEBUG host-side). The AOT
+            //      template is the one bound on echoDef.GenericMethodTemplateCache. ----
+            if (echoDef != null)
+            {
+                var aotTpl = echoDef.GenericMethodTemplateCache;
+                var tlist = BuildConcreteTs(appdomain);
+                foreach (var tkv in tlist)
+                {
+                    res.TotalCells++;
+                    string tname = tkv.Key;
+                    IType T = tkv.Value;
+                    string diff;
+                    try
+                    {
+                        ILMethod inst;
+                        try { inst = echoDef.MakeGenericMethod(new IType[] { T }) as ILMethod; }
+                        catch (Exception ex) { diff = $"{tname}: MakeGenericMethod threw {ex.GetType().Name}"; RecordCell(res, $"Echo<{tname}> structural-equiv", diff); continue; }
+                        if (inst == null) { diff = $"{tname}: instance null"; RecordCell(res, $"Echo<{tname}> structural-equiv", diff); continue; }
+                        var perOcc = GenericMethodTemplateOps.CompilePerOccurrenceNeoBody(appdomain, probeType, inst);
+                        var aotBody = GenericMethodTemplateOps.CompileViaAotTemplateNeoBody(appdomain, probeType, inst, aotTpl);
+                        bool eq = GenericMethodTemplateOps.BodiesEqual(perOcc, aotBody);
+                        diff = eq ? null : $"BODY MISMATCH perOccLen={perOcc?.Length ?? -1} aotLen={aotBody?.Length ?? -1}";
+                    }
+                    catch (Exception ex)
+                    {
+                        diff = $"{tname}: structural-equiv threw {ex.GetType().Name}: {ex.Message}";
+                    }
+                    RecordCell(res, $"Echo<{tname}> structural-equiv (AOT == JIT)", diff);
+                }
+            }
+
+            // ---- (3) TEMPLATE BODY-MUTATION cell: mutate ConstGeneric's deserialized
+            //      TemplateBody Ldc_I4 CONST -> MUTATED before attach, run a wrapper
+            //      calling a FRESH generic instance (ConstGeneric<string>), assert
+            //      MUTATED. Observing MUTATED proves CloneAndPatch ran the AOT template
+            //      body (the JIT-captured template still carries CONST). ----
+            {
+                const int CONST = 1234567;
+                const int MUTATED = 7654321;
+                res.TotalCells++;
+                string diff;
+                try
+                {
+                    NeoAssemblyModel model3;
+                    using (var ms3 = new MemoryStream())
+                    {
+                        new NeoCompiler().Compile(new[] { probeType }, ms3);
+                        ms3.Position = 0;
+                        model3 = NeoAssemblyReader.Read(ms3);
+                    }
+                    // Find ConstGeneric's template record (by MethodRef name).
+                    int tplIdx = -1;
+                    if (model3.Templates != null)
+                    {
+                        for (int i = 0; i < model3.Templates.Length; i++)
+                        {
+                            var trec = model3.Templates[i];
+                            if (trec.DefinitionMethodRefIdx < 0 || trec.DefinitionMethodRefIdx >= model3.MethodRefs.Length) continue;
+                            if (model3.MethodRefs[trec.DefinitionMethodRefIdx].Name == "ConstGeneric") { tplIdx = i; break; }
+                        }
+                    }
+                    OpCodeR[] tbody = (tplIdx >= 0) ? model3.Templates[tplIdx].TemplateBody : null;
+                    int mutateAt = -1;
+                    if (tbody != null)
+                    {
+                        for (int j = 0; j < tbody.Length; j++)
+                            if (tbody[j].Code == OpCodeREnum.Ldc_I4 && tbody[j].Operand == CONST) { mutateAt = j; break; }
+                    }
+                    if (mutateAt < 0)
+                    {
+                        var sb = new System.Text.StringBuilder();
+                        if (tbody == null) sb.Append("null template body (tplIdx=").Append(tplIdx).Append(')');
+                        else for (int j = 0; j < tbody.Length; j++)
+                        {
+                            if (j > 0) sb.Append(',');
+                            sb.Append(tbody[j].Code);
+                            if (tbody[j].Code == OpCodeREnum.Ldc_I4) { sb.Append('='); sb.Append(tbody[j].Operand); }
+                        }
+                        diff = $"ConstGeneric template Ldc_I4={CONST} not found [{sb}]";
+                    }
+                    else
+                    {
+                        tbody[mutateAt].Operand = MUTATED;            // mutate the deserialized AOT template body
+                        NeoAssemblyLoader.Attach(appdomain, model3);  // binds the MUTATED template (overwrites)
+                        // Drive a FRESH ConstGeneric<string> instance (ref-T) DIRECTLY --
+                        // NOT via a wrapper. A wrapper's Call resolves its generic callee
+                        // via AppDomain.GetMethod, which returns the instance registered
+                        // during the compile step's force-compile (its bodyRegister is
+                        // already cached with the unmutated template). MakeGenericMethod
+                        // returns a NEW instance (bodyRegister null), so its BodyRegister
+                        // getter re-runs InitCodeBody -> the Step-22 hook -> CloneAndPatch
+                        // against the MUTATED AOT template. This is the fresh-instance
+                        // cell (D5 cell 2) AND the mutation cell (D5 cell 1) combined.
+                        IType stringT = null;
+                        try { stringT = appdomain.GetType("System.String"); } catch { }
+                        object r;
+                        if (constDef == null || stringT == null)
+                        {
+                            diff = $"ConstGeneric def={(constDef != null)} stringT={(stringT != null)}";
+                        }
+                        else
+                        {
+                            var freshInst = constDef.MakeGenericMethod(new IType[] { stringT }) as ILMethod;
+                            try { r = appdomain.Invoke(freshInst, null); }
+                            catch (Exception ex) { r = new ThrownMarker(ex); }
+                            diff = ValueEqualsObj(r, MUTATED)
+                                ? null
+                                : $"expected MUTATED={MUTATED} got={Format(r)} (a JIT-template run would yield CONST={CONST})";
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    diff = $"generic body-mutation cell threw {ex.GetType().Name}: {ex.Message}";
+                }
+                RecordCell(res, "ConstGeneric<T> template body-mutation (AOT template really runs)", diff);
+            }
+
             return res;
+        }
+
+        // The concrete-T matrix for the structural-equivalence cell: int (4-byte
+        // prim), long (8-byte prim), string (ref), NeoStep25ProbeVal (IL struct).
+        static List<KeyValuePair<string, IType>> BuildConcreteTs(ILRuntime.Runtime.Enviorment.AppDomain appdomain)
+        {
+            var ts = new List<KeyValuePair<string, IType>>();
+            ts.Add(new KeyValuePair<string, IType>("int", appdomain.IntType));
+            ts.Add(new KeyValuePair<string, IType>("long", appdomain.LongType));
+            IType stringT = null;
+            try { stringT = appdomain.GetType("System.String"); } catch { }
+            if (stringT != null) ts.Add(new KeyValuePair<string, IType>("string", stringT));
+            if (appdomain.LoadedTypes.TryGetValue("TestCases.NeoStep25ProbeVal", out var structIt) && structIt is ILType structIl)
+                ts.Add(new KeyValuePair<string, IType>("struct", structIl));
+            return ts;
+        }
+
+        static bool ValueEqualsObj(object o, object expected)
+        {
+            if (o is ThrownMarker) return false;
+            if (o == null || expected == null) return Equals(o, expected);
+            if (expected is string) return o is string && (string)o == (string)expected;
+            try { return Convert.ToInt64(o) == Convert.ToInt64(expected); } catch { return Equals(o, expected); }
+        }
+
+        struct GenCell
+        {
+            public string Name;
+            public object Expected;
+            public GenCell(string name, object expected) { Name = name; Expected = expected; }
         }
 
         struct Cell

@@ -128,5 +128,85 @@ namespace TestCases
             int bumped = BumpRef(ref val);   // val -> 15 via byref write-back
             return (int)acc + bumped + prim + val;
         }
+
+        // ===== Step 25 S2: generic-method probe (clone+patch from the .neo template) =====
+        //
+        // A GENERIC method + non-generic PARAMETERLESS wrappers. The S2 loader
+        // (NeoAssemblyLoader.Attach) consumes the .neo TemplateTable, reconstructs
+        // the GenericMethodTemplate, and binds it to the Echo/ConstGeneric DEFINITION's
+        // GenericMethodTemplateCache (overwriting the JIT-captured template). A
+        // subsequent generic-instance call routes through Step-22 CloneAndPatch from
+        // the AOT template instead of per-occurrence JIT.
+        //
+        // Echo<T> is a pure-dataflow body with a generic-param LOCAL (tmp). It has
+        // NO T-identity token (no Box T / Ldobj T / default(T) -- those would emit
+        // an Initobj-T / Ldobj-T type-token, an S3 case). The local drives
+        // VariableTypes re-resolution (OQ1) + the struct-T Initobj prefix rebuild.
+        // For each concrete T the body is the SAME T-invariant template; the back-
+        // half specializes the Move/Initobj for the concrete T.
+
+        // Pure dataflow with a generic-param LOCAL. tmp = v; return tmp.
+        // No T-identity token. Expected (any T): the input value round-trips.
+        public static T Echo<T>(T v)
+        {
+            T tmp = v;
+            return tmp;
+        }
+
+        // Constant body for the TEMPLATE BODY-MUTATION cell. Compiles to Ldc_I4 <CONST>
+        // + Ret (T is unused -> no T-identity token). CONST is outside sbyte range so
+        // the JIT emits a real Ldc_I4 carrying the full value. The capstone mutates the
+        // deserialized TemplateBody Ldc_I4 CONST -> MUTATED before Attach; observing
+        // MUTATED proves CloneAndPatch ran the AOT template. PARAMETERLESS so the
+        // capstone can invoke a FRESH ref-T instance (<string>) directly via the
+        // parameterless Run shim (the wrapper-based invoke is eagerly compiled + body-
+        // cached at compile time, so the mutation cell drives a fresh instance instead).
+        public static int ConstGeneric<T>()
+        {
+            return 1234567;
+        }
+
+        // ---- non-generic PARAMETERLESS wrappers (the Run shim is no-arg) ----
+        // Each calls a generic method at a concrete T; the capstone pins each expected
+        // value. WrapEchoLong uses long (8-byte primitive, a fresh T never instantiated
+        // before attach -> isolates the AOT-template path). WrapEchoRef uses a ref-T
+        // (string) but returns int (the Run shim's NeoBoxReturnValue handles primitive
+        // returns only; a string return would read raw bytes -- a pre-existing shim
+        // limitation, NOT an S2 regression -- so the ref-T functional cell returns int).
+        public static int WrapEchoInt()
+        {
+            return Echo<int>(42);
+        }
+
+        public static long WrapEchoLong()
+        {
+            return Echo<long>(9000000000L);
+        }
+
+        // ref-T functional cell: ConstGeneric<string> (T=string, a reference type).
+        // Returns the int constant (1234567 unmutated) -- exercises ref-T generic
+        // instantiation + CloneAndPatch + execution without a reference return.
+        public static int WrapEchoRef()
+        {
+            return ConstGeneric<string>();
+        }
+
+        public static int WrapEchoStruct()
+        {
+            NeoStep25ProbeVal s;
+            s.X = 77;
+            return Echo<NeoStep25ProbeVal>(s).X;
+        }
+    }
+
+    // A top-level (NON-NESTED) value type used as a concrete struct generic arg in
+    // the S2 generic probe (WrapEchoStruct). Top-level keeps its TypeRef full name
+    // == the LoadedTypes key (nested uses "/" vs "+"). One int field so the wrapper
+    // can observe the round-trip without constructing the struct via newobj (which
+    // needs [VT-THIS-ADDR], not yet done) -- the wrapper uses definite-assignment
+    // (s.X = 77) instead.
+    public struct NeoStep25ProbeVal
+    {
+        public int X;
     }
 }

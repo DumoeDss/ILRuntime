@@ -3,7 +3,7 @@
 > **Read this FIRST when continuing the ILRuntime Neo work.**
 > Companion to `neo-implementation-steps.md` (the 26-step roadmap) and
 > `neo-deferred-items.md` (the deferred-items resolution map).
-> Last updated: 2026-07-07. Branch: `features/object-model-overhaul`. HEAD `9e89b05a`.
+> Last updated: 2026-07-07. Branch: `features/object-model-overhaul`. HEAD `cfbf8ff9`.
 > Authoritative current state lives in this file + `neo-deferred-items.md` +
 > the `openspec/specs/` capability specs + `openspec/changes/archive/`, and the
 > portfolio run state in
@@ -445,11 +445,22 @@ has these as pending children with a dependency chain:
   bind). V2 capstone **11/11** (`NeoStep25LoadExec`: deserialize + ExecuteNeo == JIT for
   a non-generic matrix, incl. a body-mutation guard proving the AOT body genuinely runs).
   Neo 210/210, all AOT gates green, Legacy-neutral (ILMethod SHARED, Neo-gated).
-  **S2 (generic-instantiation-at-load) + S3 (full ILType Cecil-decoupling + cross-
-  AppDomain hash re-resolution + .cctor seeding) DEFERRED** -> `neo-step25-s2-generic-at-load`
-  + `neo-step25-s3-full-decoupling`. Step-6 Run-shim parameterless limitation = S2/S3
-  prerequisite. See `neo-deferred-items.md` STEP-25-PARTIAL. **Next: Step 26** (perf) or
-  the S2/S3 follow-ups.
+  **S2 (generic-instantiation-at-load) SHIPPED 2026-07-07**
+  (`neo-step25-s2-generic-at-load`): the no-T-identity-token generic slice.
+  `NeoAssemblyLoader.Attach` consumes `model.Templates` +
+  `GenericMethodTemplateOps.BuildFromNeoRecord` (re-resolves `VariableTypes` from
+  `VariableTypeRefIdxs`; rejects T-identity-token/MethodToken patches w/ non-none
+  CecilTokenKind) + `ILMethod.InitTemplateFromNeo` (OVERWRITES the JIT-captured
+  template); the Step-22 hook (UNCHANGED) routes generic instances through
+  CloneAndPatch from the AOT template. V2 capstone **21/21** (4 functional T-kinds
+  int/long/ref/struct + structural-equivalence incl. string-T via `BodiesEqual` +
+  template body-mutation on a fresh ref-T instance + fresh-instance). Neo 215/215,
+  NeoStep22 55/55 + NeoStep23 15/15 + NeoStep24 5/5 unchanged, Legacy-neutral.
+  **S3 (full ILType Cecil-decoupling + cross-AppDomain hash re-resolution +
+  .cctor seeding) DEFERRED** -> `neo-step25-s3-full-decoupling`. Step-6 Run-shim
+  parameterless limitation = S3 prerequisite (F-11 eager-compile / F-12 ref-return
+  in `neo-deferred-items.md`). See `neo-deferred-items.md` STEP-25-PARTIAL.
+  **Next: Step 26** (perf) or the S3 follow-up.
 - **Step 26** `neo-step26-perf-validation` — benchmarks + reflection/thread-safety
   edges + debugger adaptation.
 

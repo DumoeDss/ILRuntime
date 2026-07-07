@@ -1,0 +1,33 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "child": "neo-step25-s2-generic-at-load",
+  "stages": {
+    "propose": { "status": "done", "decision": "P1 (parameterless wrapper; Step-22 CloneAndPatch hook already exists). Scope = no-T-identity-token slice; defers T-identity/cross-AppDomain/full-ILType-decoupling to S3. Same-AppDomain only." },
+    "apply": { "status": "done", "outcome": "All 4 adversarial capstone cells PASS (no partial-ship). OQ1/OQ2/OQ3 resolved. NeoStep25LoadExec 11->21; NeoStep 210->215; NeoStep22/23/24 unchanged; Legacy-neutral (8 pre-existing, 0 new)." },
+    "verify": {
+      "status": "done",
+      "verdict": "APPROVE-WITH-FINDINGS (0 Blocker/Major)",
+      "independentReRun": "all counts match implementer claim (NeoStep25LoadExec 21/21, NeoStep 215/215, self-checks unchanged, Legacy 215/8-pre-existing-0-new)",
+      "mutationCellProof": "DECISIVE — stash InitTemplateFromNeo call -> mutation cell flips PASS->FAIL (7654321->1234567 JIT), other cells stay green. Mutation cell is load-bearing, NOT reading JIT by accident.",
+      "worker": { "role": "reviewer", "runtime": "claude", "name": "rev-s2" }
+    },
+    "review-loop": {
+      "status": "done",
+      "outcome": "clean (0 Blocker/Major); 1 Minor + 3 Trivial accepted-known + S3-routed",
+      "acceptedKnownFindings": [
+        "M1 (Minor): T-identity/Method/Type-token rejection path correct-by-inspection but UNTESTED (probe Patches=[]); recommend a synthetic-record cell in S3.",
+        "T1 (Trivial): redundant '&& CecilTokenKind != 2' clause in rejection check; a malformed TypeToken+none record would slip through and silently skip at DoCloneAndPatch. Simplify to 'Kind==TypeToken||MethodToken' (S3 cleanup).",
+        "T2 (Trivial): document that ONLY the mutation cell proves AOT-ran (structural-equiv is JIT-vs-JIT when S2 stashed). Doc-only.",
+        "T3 (Trivial): MatchGenericDefinition doesn't disambiguate by full signature (collision->skip; acceptable for S2 matrix, round-2 if a collision lands)."
+      ],
+      "f11Assessment": "F-11 NEO-AOT-GENERIC-EAGER-COMPILE = accepted-known (stale bodyRegister is a CORRECT JIT body = missed optimization, NOT corruption; DoCloneAndPatch copies into a new array, setter replaces the definition field not the live template; S3-routed)."
+    },
+    "ship": { "status": "in_progress", "mode": "LEAD-driven (gateway flaky; ship/archive are deterministic)" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 1,
+  "openFindings": [],
+  "baseline": "NeoStep 215/215; NeoStep25LoadExec 21/21; NeoStep22SelfCheck 55/55; NeoStep23Roundtrip 15/15; NeoStep24CliRoundtrip 5/5"
+}

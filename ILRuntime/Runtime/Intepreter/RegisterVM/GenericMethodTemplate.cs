@@ -403,6 +403,121 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             return template;
         }
 
+        // ---- Step 25 S2: reconstruct a GenericMethodTemplate from a deserialized
+        //      .neo NeoTemplateRecord (no live JIT capture). Mirrors StoreFromCapture
+        //      but reads the Cecil-free fields from the record + re-resolves the
+        //      Cecil-typed VariableTypes from VariableTypeRefIdxs via a loader-
+        //      provided closure (same-AppDomain Cecil module available). Returns
+        //      null (-> loader skips the bind -> generic method keeps JIT) when the
+        //      record hits a deferred S3 case:
+        //        - a T-identity token patch (TypeToken/MethodToken with a non-none
+        //          CecilTokenKind) -- needs Cecil TypeReference/MethodReference
+        //          recovery or a Cecil-free patch applier keyed on GenericParamIdx.
+        //        - a VariableTypes re-resolution miss (a local type the live Cecil
+        //          module cannot resolve).
+        //      The S2 slice covers the no-T-identity-token generic method (patch
+        //      table IsRefMoveFlag-only or empty), so CecilToken is set null on
+        //      every rebuilt patch (DoCloneAndPatch skips a null CecilToken at
+        //      :485; the back-half re-derives the is-ref flag). Addr/Symbols/
+        //      Constrained tokens are null (the S2 probe's generic methods carry no
+        //      EH and no constrained. prefix; those are S3).
+        internal static GenericMethodTemplate BuildFromNeoRecord(
+            ILMethod definition,
+            ILRuntime.Runtime.Enviorment.AppDomain appdomain,
+            ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model,
+            ILRuntime.Runtime.NeoAOT.NeoTemplateRecord rec,
+            Func<int, TypeReference> resolveVariableType)
+        {
+            if (rec.TemplateBody == null) return null;
+            var tpl = new GenericMethodTemplate();
+            tpl.Definition = definition;
+            tpl.TemplateBody = rec.TemplateBody;
+            tpl.LocVarRegStart = rec.LocVarRegStart;
+            tpl.TotalRegCnt = rec.TotalRegCnt;
+            tpl.NeoCatchExRegFinal = rec.NeoCatchExRegFinal;
+            tpl.StackRegisterCount = rec.StackRegisterCount;
+            tpl.VarCnt = rec.VarCnt;
+            tpl.InitObjPrefixLength = rec.InitObjPrefixLength;
+            tpl.InitObjPrefixRegisters = rec.InitObjPrefixRegisters ?? Array.Empty<int>();
+            tpl.SwitchTargets = RebuildSwitchTargetsFromNeo(rec.SwitchTargets);
+
+            // Re-resolve VariableTypes from VariableTypeRefIdxs. BuildInitObjPrefix
+            // reads template.VariableTypes[v] unconditionally for v in [0, varCnt),
+            // so the array MUST be non-null of length >= varCnt. A miss -> skip.
+            int varCnt = rec.VarCnt;
+            var vtIdxs = rec.VariableTypeRefIdxs;
+            if (varCnt > 0)
+            {
+                if (vtIdxs == null || vtIdxs.Length < varCnt) return null;  // OQ1: incomplete
+                var vts = new TypeReference[varCnt];
+                for (int v = 0; v < varCnt; v++)
+                {
+                    var resolved = resolveVariableType(vtIdxs[v]);
+                    if (resolved == null) return null;  // OQ1 miss -> skip (additive)
+                    vts[v] = resolved;
+                }
+                tpl.VariableTypes = vts;
+            }
+            else
+            {
+                tpl.VariableTypes = Array.Empty<TypeReference>();
+            }
+
+            // Rebuild Patches with CecilToken = null (the S2 slice). A TypeToken/
+            // MethodToken patch carries a non-none CecilTokenKind -- it needs a Cecil
+            // token to re-resolve at CloneAndPatch, which the Cecil-free .neo record
+            // does not carry in a form S2 re-resolves -> REJECT (return null -> skip).
+            tpl.Patches = RebuildPatchesNoCecil(rec.Patches, out bool hasIdentityToken);
+            if (hasIdentityToken) return null;  // OQ3: T-identity token -> S3
+
+            // Not read at CloneAndPatch / ExecuteNeo for the S2 slice (no EH, no
+            // constrained. prefix in the probe's generic methods). S3 owns these.
+            tpl.Addr = null;
+            tpl.Symbols = null;
+            tpl.ConstrainedTypeTokens = null;
+            tpl.ConstrainedMethodTokens = null;
+            return tpl;
+        }
+
+        static Dictionary<int, int[]> RebuildSwitchTargetsFromNeo(
+            KeyValuePair<int, int[]>[] pairs)
+        {
+            if (pairs == null || pairs.Length == 0) return null;
+            var dict = new Dictionary<int, int[]>(pairs.Length);
+            for (int i = 0; i < pairs.Length; i++)
+                dict[pairs[i].Key] = pairs[i].Value;
+            return dict;
+        }
+
+        static PatchEntry[] RebuildPatchesNoCecil(
+            ILRuntime.Runtime.NeoAOT.NeoPatchEntryRecord[] recs, out bool hasIdentityToken)
+        {
+            hasIdentityToken = false;
+            if (recs == null) return Array.Empty<PatchEntry>();
+            var res = new PatchEntry[recs.Length];
+            for (int i = 0; i < recs.Length; i++)
+            {
+                var r = recs[i];
+                // OQ3: a TypeToken/MethodToken patch needs a Cecil token to re-resolve
+                // (CecilTokenKind 0=TypeReference / 1=MethodReference, both non-none).
+                // The S2 slice covers IsRefMoveFlag (CecilTokenKind 2=none) + empty only.
+                if ((r.Kind == (int)PatchKind.TypeToken || r.Kind == (int)PatchKind.MethodToken)
+                    && r.CecilTokenKind != 2)
+                {
+                    hasIdentityToken = true;
+                }
+                res[i] = new PatchEntry
+                {
+                    InstrIdx = r.InstrIdx,
+                    Field = (PatchField)r.Field,
+                    Kind = (PatchKind)r.Kind,
+                    GenericParamIdx = r.GenericParamIdx,
+                    CecilToken = null,   // S2: Cecil-free; back-half re-derives the is-ref flag
+                };
+            }
+            return res;
+        }
+
         // Does `instance`'s concrete typeArgs keep the front-half T-invariant?
         // (every arg a reference type or a primitive -> no generic-param-value-T
         // local -> no Initobj insertion -> the front-half stream is T-invariant).
@@ -643,6 +758,22 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             var addr = new Dictionary<Mono.Cecil.Cil.Instruction, int>();
             var frame = new CompiledFrame();
             if (!DoCloneAndPatch(template, instance, appdomain, declaringType, addr, ref frame)) return null;
+            return frame.NeoExecuteBody;
+        }
+
+        // Step 25 S2: the CloneAndPatch body for `instance` driven by an AOT-
+        // reconstructed template (built from a .neo record via BuildFromNeoRecord),
+        // NOT the JIT-captured one. The structural-equivalence cell compares this
+        // against CompilePerOccurrenceNeoBody (the per-occurrence JIT reference) to
+        // prove the AOT-reconstructed template drives CloneAndPatch identically.
+        internal static OpCodeR[] CompileViaAotTemplateNeoBody(
+            ILRuntime.Runtime.Enviorment.AppDomain appdomain, ILType declaringType,
+            ILMethod instance, GenericMethodTemplate aotTemplate)
+        {
+            if (aotTemplate == null) return null;
+            var addr = new Dictionary<Mono.Cecil.Cil.Instruction, int>();
+            var frame = new CompiledFrame();
+            if (!DoCloneAndPatch(aotTemplate, instance, appdomain, declaringType, addr, ref frame)) return null;
             return frame.NeoExecuteBody;
         }
 

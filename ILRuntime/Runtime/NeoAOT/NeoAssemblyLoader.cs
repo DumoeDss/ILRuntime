@@ -91,6 +91,61 @@ namespace ILRuntime.Runtime.NeoAOT
                 ilm.InitCodeBodyFromNeo(rec, resolveCatchType);
                 report.Attached.Add(typeFullName + "." + mr.Name);
             }
+
+            // ===== Step 25 S2: consume the .neo TemplateTable. For each
+            // NeoTemplateRecord, reconstruct the GenericMethodTemplate + bind it to
+            // the matching open generic-method DEFINITION's GenericMethodTemplateCache
+            // (OVERWRITING any JIT-captured template). A subsequent generic-instance
+            // call then routes through Step-22 CloneAndPatch from the AOT template
+            // instead of per-occurrence JIT. A miss (type not loaded, generic def not
+            // matched, T-identity-token patch, or a VariableTypes re-resolution miss)
+            // is SKIPPED -- the generic method keeps JIT (the additive contract). =====
+            if (model.Templates != null)
+            {
+                foreach (var trec in model.Templates)
+                {
+                    if (trec.DefinitionMethodRefIdx < 0 || trec.DefinitionMethodRefIdx >= model.MethodRefs.Length)
+                    {
+                        report.Skipped.Add(("bad DefinitionMethodRefIdx", "#" + trec.DefinitionMethodRefIdx));
+                        continue;
+                    }
+                    var mref = model.MethodRefs[trec.DefinitionMethodRefIdx];
+                    string typeFullName = mref.DeclaringType != null ? mref.DeclaringType.Name : null;
+                    if (string.IsNullOrEmpty(typeFullName))
+                    {
+                        report.Skipped.Add(("template empty declaring type", mref.Name ?? "?"));
+                        continue;
+                    }
+                    if (!appdomain.LoadedTypes.TryGetValue(typeFullName, out var itype) || !(itype is ILType iltype))
+                    {
+                        report.Skipped.Add(("template type not loaded", typeFullName));
+                        continue;
+                    }
+                    int wantParam = mref.Parameters != null ? mref.Parameters.Length : 0;
+                    var def = MatchGenericDefinition(iltype, mref.Name, wantParam);
+                    if (def == null)
+                    {
+                        report.Skipped.Add(("generic def not matched", typeFullName + "." + (mref.Name ?? "?")));
+                        continue;
+                    }
+                    // The VariableTypes re-resolution closure (TypeRef idx -> Cecil
+                    // TypeReference, same-AppDomain). A generic-parameter name maps to
+                    // definition.Definition.GenericParameters[k]; an IL type to
+                    // iltype.TypeReference; a CLR type to ImportReference(TypeForCLR).
+                    // A miss returns null -> BuildFromNeoRecord skips the bind.
+                    Func<int, ILRuntime.Mono.Cecil.TypeReference> resolveVariableType = idx =>
+                        ResolveVariableType(appdomain, model, def, idx);
+                    var tpl = Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.BuildFromNeoRecord(
+                        def, appdomain, model, trec, resolveVariableType);
+                    if (tpl == null)
+                    {
+                        report.Skipped.Add(("template rebuild miss (S3 case)", typeFullName + "." + (mref.Name ?? "?")));
+                        continue;
+                    }
+                    def.InitTemplateFromNeo(tpl);
+                    report.Attached.Add(typeFullName + "." + (mref.Name ?? "?") + "<T>");
+                }
+            }
             return report;
         }
 
@@ -129,6 +184,76 @@ namespace ILRuntime.Runtime.NeoAOT
                 }
             }
             return hit;
+        }
+
+        // Step 25 S2: match the OPEN generic-method DEFINITION by name + parameter
+        // count + GenericParameterCount > 0 + !IsGenericInstance. The inverse of
+        // MatchMethod's generic-def skip. Constructors are excluded (a generic .ctor
+        // is not a method-template target). A collision (2+ matches) -> null -> skip
+        // (additive contract; generic-arity disambiguation is round-2 -- the S2 probe
+        // declares no same-name+same-paramcount generic overloads of different arity).
+        static ILMethod MatchGenericDefinition(ILType iltype, string name, int paramCount)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            if (iltype.GetMethods() == null) return null;
+            ILMethod hit = null;
+            foreach (var m in iltype.GetMethods())
+            {
+                var ilm = m as ILMethod;
+                if (ilm == null) continue;
+                if (ilm.IsGenericInstance) continue;          // instance, not the def
+                if (ilm.GenericParameterCount <= 0) continue;  // not a generic def
+                if (ilm.Name != name) continue;
+                if (ilm.ParameterCount != paramCount) continue;
+                if (hit != null) return null;                  // collision -> skip
+                hit = ilm;
+            }
+            return hit;
+        }
+
+        // Step 25 S2: re-resolve a VariableTypeRefIdx (-> TypeRef table) to a Cecil
+        // TypeReference in the SAME AppDomain. A generic-parameter name (e.g. "T")
+        // maps to definition.Definition.GenericParameters[k]; an IL type to
+        // iltype.TypeReference; a CLR type to module.ImportReference(TypeForCLR).
+        // A miss returns null (-> BuildFromNeoRecord skips the bind). The IL/CLR
+        // discrimination tries LoadedTypes (IL/CLR) then GetType(fullName), so it
+        // does not depend on the NeoTypeRefKind byte (round-2 robustness).
+        static ILRuntime.Mono.Cecil.TypeReference ResolveVariableType(
+            ILRuntime.Runtime.Enviorment.AppDomain appdomain, NeoAssemblyModel model,
+            ILMethod definition, int typeRefIdx)
+        {
+            if (typeRefIdx < 0 || typeRefIdx >= model.TypeRefs.Length) return null;
+            var trInfo = model.TypeRefs[typeRefIdx];
+            var fullName = trInfo != null ? trInfo.Name : null;
+            if (string.IsNullOrEmpty(fullName)) return null;
+            // (a) A method generic parameter (e.g. "T"). The TypeRef table stores
+            //     the generic param's NAME; map it back to the Cecil GenericParameter
+            //     on the live definition. BuildInitObjPrefix + GetTypeTokenHashCode
+            //     resolve the concrete T via FindGenericArgument(name).
+            try
+            {
+                var gps = definition.Definition.GenericParameters;
+                for (int i = 0; i < gps.Count; i++)
+                    if (gps[i].Name == fullName) return gps[i];
+            }
+            catch { }
+            // (b) Any loaded IType (IL via LoadedTypes; CLR via GetType). IL ->
+            //     ILType.TypeReference; CLR -> ImportReference(TypeForCLR).
+            IType it = null;
+            if (!appdomain.LoadedTypes.TryGetValue(fullName, out it) || it == null)
+            {
+                try { it = appdomain.GetType(fullName); } catch { it = null; }
+            }
+            if (it == null) return null;
+            if (it is ILType ilt) return ilt.TypeReference;
+            if (it is CLRType clr)
+            {
+                var module = appdomain.LoadedModules != null && appdomain.LoadedModules.Count > 0
+                    ? appdomain.LoadedModules[0] : null;
+                if (module == null) return null;
+                try { return module.ImportReference(clr.TypeForCLR); } catch { return null; }
+            }
+            return null;
         }
 
         // Resolve a TypeRef index to the runtime IType for EH catch-type matching.
