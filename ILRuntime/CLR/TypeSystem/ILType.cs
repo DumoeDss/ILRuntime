@@ -740,6 +740,24 @@ namespace ILRuntime.CLR.TypeSystem
             return neoInterfaceOffsets.TryGetValue(interfaceType, out offset);
         }
 
+#if ENABLE_NEO_MODE
+        /// <summary>
+        /// Step 23 (Neo AOT serializer): read-only accessor over the interface
+        /// offset map, so the .neo writer can serialize each InterfaceEntry
+        /// (InterfaceType-ref + VTableOffset + MethodSlotKeys[] + ClassSlotRemap[])
+        /// without reconstructing it from the public surface. Additive internal
+        /// accessor on an already-computed field (no behavior change); Neo-only.
+        /// </summary>
+        internal InterfaceEntry[] NeoInterfaceMapForAOT
+        {
+            get
+            {
+                EnsureNeoInterfaceMap();
+                return neoInterfaceMap;
+            }
+        }
+#endif
+
         /// <summary>
         /// 0-based slot of <paramref name="method"/> within its own interface
         /// declaring type, as seen by this implementing type's interface map.

@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "parent": "neo-completion-portfolio",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner" } },
+    "apply": { "status": "done", "worker": { "role": "implementer" }, "note": "NeoAOT namespace (NeoAssembly/Writer/Reader) + V1 roundtrip 9/9; 2 serializer bugs caught+fixed at apply; Q1/Q2/Q3 resolved" },
+    "verify": { "status": "in_progress", "worker": { "role": "reviewer" } },
+    "review-loop": { "status": "pending" },
+    "ship": { "status": "pending" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "summary": "Step 23 SHIPPED roundtrip-proven. NeoStep 205/205, NeoOptHard 24/24, NeoStep20 9/9, NeoStep22SelfCheck 55/55, Legacy-neutral. V1 roundtrip 9/9."
+}

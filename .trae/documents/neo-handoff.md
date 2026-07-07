@@ -393,7 +393,17 @@ has these as pending children with a dependency chain:
   CloneAndPatch gap (the serializer must not assume the Initobj prefix is the only
   Initobj site).
 - **Step 23** `neo-step23-neoassembly` — `.neo` binary format (header + tables) +
-  serializer/deserializer + roundtrip.
+  serializer/deserializer + roundtrip. **DONE 2026-07-07**: the `.neo` serialization
+  layer shipped under a new `ILRuntime/Runtime/NeoAOT/` namespace (Neo-only, additive,
+  Legacy-neutral). `NeoAssemblyWriter`/`Reader` serialize OpCodeR[] raw-24-byte LE
+  (via MemoryMarshal, captures all union aliases), CompiledFrame load-bearing fields
+  (EH as body-indices), type metadata, + faithful GenericMethodTemplate (every
+  Initobj site, not just the prefix). REUSES HybridPatch's reference tables. V1
+  roundtrip self-check **15/15** (matrix incl. multi-Constrained-pair, nested EH,
+  real-aqname byref, multi-interface). Neo 205/205, NeoOptHard 24/24, NeoStep20 9/9,
+  NeoStep22SelfCheck 55/55, Legacy-neutral. **Next: Step 24** (`ilrt_neoc` CLI).
+  Step-25 deferrals: cross-AppDomain token re-resolution, CLR aqname indexing,
+  static .cctor seeding, V2 functional deserialize->ExecuteNeo.
 - **Step 24** `neo-step24-ilrt-neoc` — `ilrt_neoc` standalone precompile CLI.
 - **Step 25** `neo-step25-runtime-loader` — `.neo` runtime loader + ILType/ILMethod
   Cecil-decoupling dual-path.
