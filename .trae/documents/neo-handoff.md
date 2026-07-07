@@ -3,7 +3,7 @@
 > **Read this FIRST when continuing the ILRuntime Neo work.**
 > Companion to `neo-implementation-steps.md` (the 26-step roadmap) and
 > `neo-deferred-items.md` (the deferred-items resolution map).
-> Last updated: 2026-07-08. Branch: `features/object-model-overhaul`. HEAD `cfbf8ff9` (S3 partial -- `neo-step25-s3-full-decoupling` sub-surface 1: ILType layout + Neo VTable rebuild -- applied, uncommitted).
+> Last updated: 2026-07-08. Branch: `features/object-model-overhaul`. HEAD `997eddfc`. **PORTFOLIO COMPLETE** -- all 28 children done (this session drove the final 5 frontier children: `neo-step25-s2-generic-at-load`, `neo-step26-perf-validation`, `neo-generic-redirect-resolution` [B1 EXONERATED], `neo-step25-s3-full-decoupling` [sub-surface 1 partial], `neo-peephole-isinst` [D-PEEP scoped-deferral]). NeoStep 218/0 failed/1 ignored; NeoStep25LoadExec 28/28; NeoStep26Bench 5/5; NeoStep22/23/24 self-checks green. Open work = the deferred items in `neo-deferred-items.md` (async Phase-2 MoveNext fix is the highest-value next item). See `openspec/changes/neo-completion-portfolio/handoff/lead-2.md`.
 > Authoritative current state lives in this file + `neo-deferred-items.md` +
 > the `openspec/specs/` capability specs + `openspec/changes/archive/`, and the
 > portfolio run state in

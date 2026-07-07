@@ -7,7 +7,7 @@
   "createdAt": "2026-07-05",
   "policy": "serial-by-default (shared interpreter/JIT files); parallel only on proven file-disjoint independence + Tier A. User authorized full autonomy: skip gates, commit+push after each clean child.",
   "planner": null,
-  "sessionHandoff": { "path": "handoff/lead-1.md", "pct": 2.05, "contextTokens": 410642, "afterStage": "portfolio drive: 8 children archived (array, byref, async-suspend-partial, controlflow-noop, step22, step23, step24, step25-S1); AOT chain proven end-to-end", "at": "2026-07-07", "note": "pct is a probe misread (glm-5.2 config); the raw contextTokens (410k) is the real signal -- very long session. Read handoff/lead-1.md FIRST." },
+  "sessionHandoff": { "path": "handoff/lead-2.md", "afterStage": "PORTFOLIO COMPLETE -- all 28 children done (this session drove the final 5: S2, step26, B1, S3-partial, D-PEEP); frontier EMPTY", "at": "2026-07-08", "head": "997eddfc", "baseline": "NeoStep 218/0/1; NeoStep25LoadExec 28/28; NeoStep26Bench 5/5; NeoStep22/23/24 green; NeoOptHardening 24/24", "note": "Portfolio complete. Open work = the deferred items in neo-deferred-items.md (async Phase-2 MoveNext fix is highest-value). lead-1.md is the prior (pre-completion) handoff." },
   "executionOrder": [
     "neo-vt-this-addr",
     "neo-opt-harden-2",
