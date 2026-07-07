@@ -155,15 +155,25 @@
     },
     "neo-step25-runtime-loader": {
       "pipeline": "small-feature", "wave": 5, "scope": "[Step 25] .neo runtime loader + ILType/ILMethod Cecil-decoupling dual-path",
-      "prerequisites": ["neo-step23-neoassembly", "neo-step24-ilrt-neoc"], "dependsOn": ["neo-step23-neoassembly", "neo-step24-ilrt-neoc"], "status": "pending", "capability": "neo-optimizer"
+      "prerequisites": ["neo-step23-neoassembly", "neo-step24-ilrt-neoc"], "dependsOn": ["neo-step23-neoassembly", "neo-step24-ilrt-neoc"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-07", "smoke": "PARTIAL (S1): Neo 210/210 + NeoStep22 55/55 + NeoStep23 15/15 + NeoStep24 5/5 + NeoStep25LoadExec 11/11 (deserialize+ExecuteNeo==JIT, incl body-mutation guard); Legacy-neutral. KEY: Cecil-coupling is ZERO at execution (init-only). ILMethod isNeoAotBody dual-path + NeoAssemblyLoader.Attach (same-AppDomain, non-generic)",
+      "review": "APPROVE (0 Blocker/Major); round-1: permanent body-mutation guard + typed-catch cell + Minor-1/2 fail-loud. S2 (generic-at-load) + S3 (full ILType decoupling + cross-AppDomain + .cctor) deferred (see neo-deferred-items STEP-25-PARTIAL). Step-6 Run-shim paramless limitation = S2/S3 prerequisite."
+    },
+    "neo-step25-s2-generic-at-load": {
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 25 S2 follow-up] generic-instantiation-at-load (CloneAndPatch from the .neo template into an AOT ILMethod)",
+      "prerequisites": ["neo-step25-runtime-loader"], "dependsOn": ["neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-step25-s3-full-decoupling": {
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 25 S3 follow-up] full ILType Cecil-decoupling + Cecil-free AppDomain load + cross-AppDomain token-hash re-resolution (Approach 1) + static .cctor seeding + full CLR aqname/host registration",
+      "prerequisites": ["neo-step25-runtime-loader"], "dependsOn": ["neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     },
     "neo-step26-perf-validation": {
       "pipeline": "small-feature", "wave": 5, "scope": "[Step 26] benchmarks + reflection/thread-safety edge cases + debugger adaptation",
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": ["neo-generic-redirect-resolution", "neo-peephole-isinst", "neo-step25-runtime-loader"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc"],
+  "runnableFrontier": ["neo-generic-redirect-resolution", "neo-peephole-isinst", "neo-step25-s2-generic-at-load", "neo-step25-s3-full-decoupling", "neo-step26-perf-validation"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

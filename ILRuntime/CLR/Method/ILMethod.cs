@@ -42,6 +42,13 @@ namespace ILRuntime.CLR.Method
         // null template (not yet captured / capture deferred for struct-T-first)
         // also falls through to JIT.
         Runtime.Intepreter.RegisterVM.GenericMethodTemplate genericMethodTemplate;
+        // Step 25: the AOT-init dual-path flag. Default false (every method the
+        // AOT loader did not bind). When true, BodyRegister short-circuits to the
+        // AOT-populated bodyRegister (InitCodeBody/JIT is SKIPPED); compiledFrame
+        // was populated field-by-field from a .neo NeoMethodDefRecord by
+        // InitCodeBodyFromNeo. The Cecil/JIT path is byte-identical when this is
+        // false (the reference + the fallback). Neo-only.
+        internal bool isNeoAotBody;
 #endif
         bool isEventAdd, isEventRemove;
         int eventFieldIndex;
@@ -390,6 +397,14 @@ namespace ILRuntime.CLR.Method
         {
             get
             {
+#if ENABLE_NEO_MODE
+                // Step 25: an AOT-attached method already has bodyRegister
+                // populated from the .neo -- skip InitCodeBody/JIT entirely.
+                // The flag is false for every method the AOT loader did not
+                // bind, so the JIT path below is byte-identical to before.
+                if (isNeoAotBody)
+                    return bodyRegister;
+#endif
                 if (bodyRegister == null)
                     InitCodeBody(true);
                 return bodyRegister;
@@ -829,6 +844,182 @@ namespace ILRuntime.CLR.Method
                 bodyRegister = new OpCodeR[0];
             }
         }
+#if ENABLE_NEO_MODE
+        // ===== Step 25: the AOT-init dual-path (Neo-only) =====
+        //
+        // Populate compiledFrame field-by-field from a deserialized .neo
+        // NeoMethodDefRecord (Step 23), BYPASSING InitCodeBody / JITCompiler.
+        // ExecuteNeo reads ONLY method.CompiledFrame (NeoExecuteBody + frame
+        // metadata) + resolves token operands via the AppDomain hash maps -- it
+        // is Cecil-free at execution time -- so once compiledFrame is populated,
+        // ExecuteNeo runs the AOT body directly. The Cecil/JIT path STAYS as the
+        // reference + the fallback (the isNeoAotBody flag defaults false; the
+        // BodyRegister getter short-circuits only when the flag is set).
+        //
+        // The catch-type resolver is loader-provided (it needs the .neo model's
+        // TypeRef table + the AppDomain -- both in the loader's scope, NOT on
+        // ILMethod). It maps a TypeRef index -> the runtime IType for
+        // CheckExceptionType matching.
+        internal void InitCodeBodyFromNeo(
+            ILRuntime.Runtime.NeoAOT.NeoMethodDefRecord rec,
+            Func<int, IType> resolveCatchType)
+        {
+            int bodyLen = rec.NeoExecuteBody != null ? rec.NeoExecuteBody.Length : 0;
+
+            // ----- frame layout: direct field copies (the record IS the frame) -----
+            compiledFrame.NeoExecuteBody         = rec.NeoExecuteBody;
+            compiledFrame.LocalInfos             = rec.LocalInfos;
+            compiledFrame.ParamInfos             = rec.ParamInfos;
+            compiledFrame.TotalStructSize        = rec.TotalStructSize;
+            compiledFrame.TotalRefSize           = rec.TotalRefSize;
+            compiledFrame.ParamPrimitiveSize     = rec.ParamPrimitiveSize;
+            compiledFrame.ParamReferenceCount    = rec.ParamReferenceCount;
+            compiledFrame.LocalsPrimitiveSize    = rec.LocalsPrimitiveSize;
+            compiledFrame.LocalsReferenceCount   = rec.LocalsReferenceCount;
+            compiledFrame.ReturnPrimitiveSize    = rec.ReturnPrimitiveSize;
+            compiledFrame.ReturnRefCount         = rec.ReturnRefCount;
+            compiledFrame.StackRegisterCount     = rec.StackRegisterCount;
+            compiledFrame.LocalIsReference       = rec.LocalIsReference;
+            compiledFrame.NeoCatchExceptionRegIndex   = rec.NeoCatchExceptionRegIndex;
+            compiledFrame.NeoCatchExceptionByteOffset = rec.NeoCatchExceptionByteOffset;
+            compiledFrame.NeoCatchExceptionRefOffset  = rec.NeoCatchExceptionRefOffset;
+
+            // ----- SwitchTargets: Dictionary<int,int[]> from the serialized pairs -----
+            compiledFrame.SwitchTargets = RebuildSwitchTargetsFromNeo(rec.SwitchTargets);
+
+            // ----- NeoCallParams: NeoCallParamMap[] from NeoCallParamMapRecord[]
+            //       (the CLR System.Type[] element types resolved back from aqnames) -----
+            compiledFrame.NeoCallParams = RebuildNeoCallParamsFromNeo(rec.NeoCallParams);
+
+            // ----- EH: rebuild Method.ExceptionHandler[] (the exceptionHandlerR
+            //       field ExecuteNeo scans via GetCorrespondingExceptionHandler) -----
+            exceptionHandlerR = RebuildEHFromNeo(rec.ExceptionHandlers, bodyLen, resolveCatchType);
+
+            // ----- ILMethod-level mirrors (what InitCodeBody sets on the JIT path) -----
+            bodyRegister     = rec.NeoExecuteBody;
+            stackRegisterCnt = rec.StackRegisterCount;
+            jumptablesR      = compiledFrame.SwitchTargets;
+            // OQ1: ExecuteNeo reads frame layout from CompiledFrame.LocalInfos, not
+            // ILMethod.Variables; set localVarCnt from LocalInfos.Length for consistency.
+            localVarCnt      = rec.LocalInfos != null ? rec.LocalInfos.Length : 0;
+            // OQ2: registerSymbols stays null -- ExecuteNeo does not read symbols and
+            // the Cecil-keyed symbol map is not serialized (debugger-on-AOT deferred).
+
+            isNeoAotBody = true;
+        }
+
+        static Dictionary<int, int[]> RebuildSwitchTargetsFromNeo(KeyValuePair<int, int[]>[] pairs)
+        {
+            if (pairs == null || pairs.Length == 0) return null;
+            var dict = new Dictionary<int, int[]>(pairs.Length);
+            for (int i = 0; i < pairs.Length; i++)
+                dict[pairs[i].Key] = pairs[i].Value;
+            return dict;
+        }
+
+        static NeoCallParamMap[] RebuildNeoCallParamsFromNeo(
+            ILRuntime.Runtime.NeoAOT.NeoCallParamMapRecord[] recs)
+        {
+            if (recs == null || recs.Length == 0) return null;
+            var arr = new NeoCallParamMap[recs.Length];
+            for (int i = 0; i < recs.Length; i++)
+            {
+                var r = recs[i];
+                arr[i] = new NeoCallParamMap
+                {
+                    PrimitiveSrc             = r.PrimitiveSrc,
+                    PrimitiveDst             = r.PrimitiveDst,
+                    PrimitiveSize            = r.PrimitiveSize,
+                    RefSrc                   = r.RefSrc,
+                    RefDst                   = r.RefDst,
+                    PrimitiveByRefSrc        = r.PrimitiveByRefSrc,
+                    PrimitiveByRefWriteBack  = r.PrimitiveByRefWriteBack,
+                    // CLR byref element types are name-stable; re-resolve via the
+                    // Step-23 helper (Type.GetType(aqname), null on miss).
+                    PrimitiveByRefElemType   = ResolveElemTypesFromNeo(r.PrimitiveByRefElemTypeAqName),
+                };
+            }
+            return arr;
+        }
+
+        static System.Type[] ResolveElemTypesFromNeo(string[] aqNames)
+        {
+            if (aqNames == null || aqNames.Length == 0) return null;
+            var arr = new System.Type[aqNames.Length];
+            for (int i = 0; i < aqNames.Length; i++)
+            {
+                arr[i] = ILRuntime.Runtime.NeoAOT.NeoAssemblyReader.ResolveAqName(aqNames[i]);
+                // A null/empty aqname is EXPECTED (a frame-native byref / non-byref
+                // slot -- see NeoCallParamMapRecord) and stays null. But a NON-EMPTY
+                // aqname that fails to resolve is a real miss (a CLR byref element
+                // type from an assembly not loaded in the host -- an S3 concern) --
+                // fail LOUD (a silent null slot could NRE in the runtime byref
+                // copy/write-back), rather than degrade. The sibling catch-type
+                // resolver is tolerant (a miss just means the handler won't match);
+                // the element-type slot has no safe fallback.
+                if (arr[i] == null && !string.IsNullOrEmpty(aqNames[i]))
+                    throw new NotImplementedException(
+                        "Neo AOT NeoCallParamMap: unresolved byref element type aqname='"
+                        + aqNames[i] + "' (CLR type from an unloaded assembly; S3 host-registration concern).");
+            }
+            return arr;
+        }
+
+        // Rebuild the runtime ExceptionHandler[] from the body-index records. The
+        // record stores the RAW JIT-time addr[] indices: TryStart/HandlerStart are
+        // the FIRST instruction of the region (used verbatim); TryEnd/HandlerEnd
+        // are the instruction AFTER the region (EXCLUSIVE), so the runtime's
+        // INCLUSIVE convention (addr <= TryEnd, see GetCorrespondingExceptionHandler)
+        // needs the -1 adjustment -- EXACTLY mirroring InitCodeBody's Cecil
+        // conversion (e.TryEnd = addr[eh.TryEnd] - 1). A -1 end (Cecil null --
+        // the last handler in the body) -> bodyLen - 1 (InitCodeBody's fallback).
+        static ExceptionHandler[] RebuildEHFromNeo(
+            ILRuntime.Runtime.NeoAOT.NeoExceptionHandlerRecord[] recs,
+            int bodyLen,
+            Func<int, IType> resolveCatchType)
+        {
+            if (recs == null || recs.Length == 0) return null;
+            var arr = new ExceptionHandler[recs.Length];
+            for (int i = 0; i < recs.Length; i++)
+            {
+                var r = recs[i];
+                var e = new ExceptionHandler();
+                e.TryStart     = r.TryStartIdx;
+                e.TryEnd       = r.TryEndIdx     >= 0 ? r.TryEndIdx - 1     : bodyLen - 1;
+                e.HandlerStart = r.HandlerStartIdx;
+                e.HandlerEnd   = r.HandlerEndIdx >= 0 ? r.HandlerEndIdx - 1 : bodyLen - 1;
+                switch ((Mono.Cecil.Cil.ExceptionHandlerType)r.HandlerType)
+                {
+                    case Mono.Cecil.Cil.ExceptionHandlerType.Catch:
+                        e.HandlerType = ExceptionHandlerType.Catch;
+                        // OQ3: IL catch types resolve via LoadedTypes (the S1 probe
+                        // uses IL catch types only); CLR catch types route through
+                        // GetType(aqname) in the loader's resolver.
+                        e.CatchType   = (r.CatchTypeRefIdx >= 0 && resolveCatchType != null)
+                                        ? resolveCatchType(r.CatchTypeRefIdx) : null;
+                        break;
+                    case Mono.Cecil.Cil.ExceptionHandlerType.Finally:
+                        e.HandlerType = ExceptionHandlerType.Finally;
+                        break;
+                    case Mono.Cecil.Cil.ExceptionHandlerType.Fault:
+                        e.HandlerType = ExceptionHandlerType.Fault;
+                        break;
+                    default:
+                        // Fail-loud to MATCH InitCodeBody (line ~828 throws NIE for
+                        // the default case). An unknown/Filter HandlerType is a
+                        // future-S2/S3 case (the Step-24 partition emits only
+                        // Catch/Finally/Fault today); silently misclassifying it as
+                        // Catch would mis-dispatch at runtime, where the JIT path
+                        // throws. Be loud, not silent.
+                        throw new NotImplementedException(
+                            "Neo AOT EH rebuild: unsupported HandlerType=" + r.HandlerType
+                            + " (Filter/unknown is not supported; InitCodeBody throws for the same case).");
+                }
+                arr[i] = e;
+            }
+            return arr;
+        }
+#endif
 
         void InitStackCodeBody(Dictionary<Mono.Cecil.Cil.Instruction, int> addr)
         {

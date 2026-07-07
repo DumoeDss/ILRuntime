@@ -130,7 +130,7 @@ The **portfolio run** then delivered these 15 children (in execution order):
 ### Test smoke progression
 Neo `NeoStep`: 37 (after 12) → 41 → 49 → 58 → 65 → 72 → 81 → 84 → **91** (end of
 prior sessions) → 99 → 100 → 108 → 117 → 130 → 140 → 146 → 154 → 161 → 175 → 181
-→ 186 → **190** → **198** → **204** → **205** (HEAD after `neo-step22-generic-template`, 2026-07-07). **NeoOptHardening 24/24.** **NeoStep20 9/9.**
+→ 186 → **190** → **198** → **204** → **205** → **210** (HEAD after `neo-step25-runtime-loader`, 2026-07-07). **NeoOptHardening 24/24.** **NeoStep20 9/9.** AOT self-checks: **NeoStep22SelfCheck 55/55, NeoStep23Roundtrip 15/15, NeoStep24CliRoundtrip 5/5, NeoStep25LoadExec 11/11**.
 Legacy 519 baseline unaffected (still ~518/519; the regression reference).
 
 ### Capability specs (`openspec/specs/`)
@@ -437,7 +437,19 @@ has these as pending children with a dependency chain:
   hardening + registering host CLR assemblies (TestCLREnum etc.) for a full
   `TestCases.dll` compile.
 - **Step 25** `neo-step25-runtime-loader` — `.neo` runtime loader + ILType/ILMethod
-  Cecil-decoupling dual-path.
+  Cecil-decoupling dual-path. **PARTIAL (S1) 2026-07-07**: the non-generic load+execute
+  shipped + V2-PROVEN. KEY: Cecil-coupling is ZERO at execution (ExecuteNeo reads only
+  `CompiledFrame.NeoExecuteBody` + token hashes) -> Step 25 is init-only. ILMethod
+  `isNeoAotBody` dual-path (`InitCodeBodyFromNeo` populates CompiledFrame from the .neo;
+  BodyRegister short-circuits) + `NeoAssemblyLoader.Attach` (same-AppDomain, non-generic
+  bind). V2 capstone **11/11** (`NeoStep25LoadExec`: deserialize + ExecuteNeo == JIT for
+  a non-generic matrix, incl. a body-mutation guard proving the AOT body genuinely runs).
+  Neo 210/210, all AOT gates green, Legacy-neutral (ILMethod SHARED, Neo-gated).
+  **S2 (generic-instantiation-at-load) + S3 (full ILType Cecil-decoupling + cross-
+  AppDomain hash re-resolution + .cctor seeding) DEFERRED** -> `neo-step25-s2-generic-at-load`
+  + `neo-step25-s3-full-decoupling`. Step-6 Run-shim parameterless limitation = S2/S3
+  prerequisite. See `neo-deferred-items.md` STEP-25-PARTIAL. **Next: Step 26** (perf) or
+  the S2/S3 follow-ups.
 - **Step 26** `neo-step26-perf-validation` — benchmarks + reflection/thread-safety
   edges + debugger adaptation.
 
