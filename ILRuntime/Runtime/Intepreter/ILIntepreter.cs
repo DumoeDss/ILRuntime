@@ -52,6 +52,23 @@ namespace ILRuntime.Runtime.Intepreter
         {
             //Clear old debug state
             ClearDebugState();
+            // ----------------------------------------------------------------------
+            // SINGLE-THREADED COOPERATIVE CONTRACT (Step 26 documentation -- no
+            // behavioral change). A single ILRuntime AppDomain + its ILIntepreter
+            // pool is NOT safe for concurrent multi-threaded access. The engine is
+            // single-threaded cooperative: the UnityMainThreadID checks below (and
+            // the mirrors in ILIntepreter.Neo.cs / ILIntepreter.Register.cs) drive
+            // a cooperative coroutine pump (the Thread.Sleep(10) yield), NOT thread
+            // safety. The AppDomain token maps (mapTypeToken / mapMethod /
+            // LoadedTypes / the string interner) have NO synchronization.
+            //
+            // The delegate (Step 19 DelegateAdapter.NeoInvokeSub) and async (Step 20
+            // ILAsyncContext) paths allocate a FRESH pooled interpreter per callback
+            // or resumption to ISOLATE frame state across SEQUENTIAL callbacks; the
+            // pool isolates per-callback state, it does NOT enable concurrent
+            // execution against one AppDomain. A host that needs multi-threaded
+            // execution SHALL use one AppDomain per thread.
+            // ----------------------------------------------------------------------
 #if DEBUG && !NO_PROFILER
             if(domain.UnityMainThreadID == Thread.CurrentThread.ManagedThreadId)
             {

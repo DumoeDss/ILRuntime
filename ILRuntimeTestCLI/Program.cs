@@ -138,6 +138,36 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 26 host-side Neo-vs-Legacy benchmark self-check (the
+            // perf-validation capstone; the LAST numbered AOT-chain step).
+            // Drives 5 bench workloads via appdomain.Invoke, host-times each
+            // with a real Stopwatch, asserts each returned its expected
+            // primitive (the correctness-of-measurement divide-assert gate),
+            // and emits BENCH:<name>:<iters>:<ticks> lines. The Neo-vs-Legacy
+            // RATIO is computed by the separate runner script
+            // (scripts/run-neo-bench.{ps1,sh}); the self-check does NOT assert
+            // a ratio (this host is not the perf baseline host).
+            if (nameFilter == "NeoStep26Bench")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep26BenchCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep26 bench: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep26Bench threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
 #endif
             int ignoreCnt = 0;
             int todoCnt = 0;
