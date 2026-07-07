@@ -83,7 +83,7 @@ Insert these into the roadmap ordering:
 | Q-LONG | long default-zero compare (conv.i8) quirk | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect conv.i8 / branch type-spec | pre-existing (unconfirmed) |
 | D-CHECKEX | `CheckExceptionType` NIE for non-CLRType catch types | Step 14 | **RESOLVED ([CATCH-COMPLETE] + neo-il-exception-throw)** | CheckExceptionType IL branch + Exception-adaptor + Throw-for-IL all landed | shared-engine gap (fully closed; IL branch now reachable end-to-end) |
 | D-IL-EXCEPTION-THROW | End-to-end IL-exception catch (Exception-adaptor + Throw-for-IL) | Step 18/CATCH-COMPLETE | **RESOLVED (neo-il-exception-throw)** | System.Exception CrossBindingAdaptor (built-in) + Throw `as Exception` IL-instance unwrap on BOTH engines | shared-engine gap (closed 2026-07-05; F-4 / NEO-IL-EX-FIELDACCESS follow-up surfaced) |
-| D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **opportunistic** | patch-infra step | optimization (non-functional) |
+| D-PEEP | `box T; isinst U` peephole + `PatchKind.IsinstResult` | Step 15 | **DEFERRED (scoped-deferral 2026-07-08)** | a peephole-pass framework + liveness -- PatchKind EXISTS post-Step-22 but is the wrong shape (generic-template T-identity value-substitution, not an opcode-stream rewrite); no fusion pass exists | optimization (non-functional) |
 | D-ARR | Stelem_I / generic-token Ldelem·Stelem / native Ldelem_I·U8 / multi-dim | Step 16 | **RESOLVED 2026-07-06 (neo-array-completion rank-1 + neo-array-multidim rank-2+)** | rank-1 closed (neo-array-completion); multi-dim closed (neo-array-multidim -- primitive + ref element; Gap 1/2/3 reflection-fallback fixes) | Stelem_I / generic-token / UIntPtr[] / ref-array ldelema remain accepted-known edges |
 | N-CGTUN | Cgt_Un divergence comment (src=sentinel case) | Step 15 | **RESOLVED 2026-07-06 (neo-opportunistic-cleanup)** | — | cosmetic nit (comment-only; runtime expression byte-identical) |
 | N-CATCHWRAP | catch slot stores ILRuntimeException wrapper | Step 14 | **accept** (matches Legacy) | — | not-a-bug |
@@ -1220,7 +1220,30 @@ Area 4 / cross-binding-adaptor follow-up.
 
 See `openspec/changes/archive/2026-07-05-neo-il-exception-throw/ship-log.md`.
 
-### D-PEEP — `box T; isinst U` peephole + `PatchKind.IsinstResult` (Step 15 -> opportunistic)
+### D-PEEP — `box T; isinst U` peephole + `PatchKind.IsinstResult` (Step 15 -> DEFERRED scoped-deferral 2026-07-08)
+
+**DEFERRED (scoped-deferral 2026-07-08, neo-peephole-isinst).** A HEAD `70505eba`
+dump-gate updated the premise: `PatchKind` now EXISTS post-`neo-step22-generic-
+template` (`GenericMethodTemplate.cs:54` `enum PatchKind { TypeToken, MethodToken,
+IsRefMoveFlag }` + `PatchEntry` keyed by `GenericParamIdx` + `CecilToken`) but is
+the WRONG shape for a peephole fusion -- it is a generic-method-template T-identity
+VALUE-SUBSTITUTION mechanism, whereas a `box;isinst` fusion is an OPCODE-STREAM
+REWRITE (delete the box, merge into the isinst) that the patch table's fields/
+applier cannot express; adding an `IsinstResult` kind would not help. NO peephole/
+fusion pass exists (grep of `RegisterVM/` for `peephole|fuse|fusion|IsinstResult` =
+zero matches; the optimizer passes are FCP/BCP/ELDC/InlineMethod/RegisterCleanup +
+the Neo back-half, none pattern-match adjacent opcodes). `box T; isinst U` IS
+emitted adjacently (`JITCompiler.cs:2637-2645`) and runs correctly via two arms
+(`Box` + `Isinst`) with no box-fusion fast path; copy-prop can move the box away
+from the isinst, so a correct fusion needs real def-use/liveness, not a trivial
+adjacency peephole. Resolution = DEFERRED: hosting the fusion requires substantial
+NEW infra (a peephole-pass framework + liveness + a fused opcode on a standalone
+`OpCodeR` field per the F-8 union discipline). Forcing that for a non-functional
+gain on the lowest-priority item is the "force a fix past the dump-gate"
+anti-pattern. Route: a future peephole-pass child. The `box;isinst` path stays
+correct un-fused. See
+`openspec/changes/archive/2026-07-08-neo-peephole-isinst/ship-log.md`.
+
 The compile-time peephole (detect `box T; isinst U`, statically resolve) and the
 generic-parameter `PatchKind.IsinstResult` patch-table entry were deferred because
 **neither the fusion pass nor `PatchKind` exists in this codebase**. `box->isinst`

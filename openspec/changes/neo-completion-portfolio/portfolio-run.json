@@ -131,7 +131,9 @@
     },
     "neo-peephole-isinst": {
       "pipeline": "small-feature", "wave": 4, "scope": "[D-PEEP] box T;isinst U fusion + PatchKind.IsinstResult (needs patch-infra)",
-      "prerequisites": [], "dependsOn": [], "status": "pending", "capability": "neo-type-checks"
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-08", "smoke": "DOC-ONLY scoped-deferral (no code/test change; smoke byte-identical to HEAD). Dump-gate: PatchKind EXISTS post-Step-22 but WRONG shape (generic-template T-identity value-substitution, not an opcode-stream rewrite); no fusion pass exists; needs a peephole-pass framework + liveness.",
+      "review": "LEAD diff-read (doc-only scoped-deferral; no code to verify). box;isinst stays correct un-fused. D-PEEP deferred-items row updated with the post-Step-22 finding."
     },
     "neo-opportunistic-cleanup": {
       "pipeline": "small-feature", "wave": 4, "scope": "[N-CGTUN + N-TC2] cgt-un comment nit + Step14 TC2 tighten",
@@ -181,8 +183,8 @@
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; Minor dead-divide-assert + 3 Minor/Trivial accepted-known). Last numbered AOT-chain step."
     }
   },
-  "runnableFrontier": ["neo-peephole-isinst"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling"],
+  "runnableFrontier": [],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling", "neo-peephole-isinst"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."
