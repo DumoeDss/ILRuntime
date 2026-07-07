@@ -1,0 +1,23 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "child": "neo-step25-s3-full-decoupling",
+  "stages": {
+    "propose": { "status": "done", "scope": "SHIP sub-surface 1 (ILType AOT-init from record, same-AppDomain, NOT installed on live ILType). DEFER 2/3/4/5.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-s3" } },
+    "apply": {
+      "status": "done",
+      "outcome": "PARTIAL-SHIP sub-surface 1. OQ1 resolved (added NeoStep25S3Probe.cs -- existing too thin). Structural-equiv (layout/VTable/interface) + 2 mutation cells (field offset; VTable slot swap) PASS + DECISIVE stash-toggle proof (un-mutated->equality, mutated->divergence => rebuild reads the record, not a Cecil cache). NeoStep25LoadExec 21->28; NeoStep 218/0/1 unchanged; NeoStep22/23/24 unchanged; Legacy-neutral PROVEN (ILType.cs SHARED; plain Debug 0 errors; 8 Legacy failures identical w/wo probe => pre-existing).",
+      "filesChanged": ["ILRuntime/CLR/TypeSystem/ILType.cs (+157 #if ENABLE_NEO_MODE: RebuildFromNeoRecord builder, does NOT install on live ILType)", "ILRuntime/Runtime/NeoAOT/NeoAssemblyLoader.cs (+102/-4: ResolveVTableFromRecord hierarchy-aware helper)", "ILRuntime/Runtime/Intepreter/RegisterVM/NeoStep25LoadExecCheck.cs (+307: 7 S3 cells)", "TestCases/NeoStep25S3Probe.cs (NEW)", ".trae/documents/neo-deferred-items.md + neo-handoff.md"],
+      "deferrals": "2 (Cecil-free load) + 3 (cross-AppDomain Approach-1 re-resolution) + 4 (.cctor) + 5 (CLR registration) -- all honestly deferred, not promoted.",
+      "worker": { "role": "implementer", "runtime": "claude", "name": "impl-s3" }
+    },
+    "verify": { "status": "in_progress" },
+    "review-loop": { "status": "pending" },
+    "ship": { "status": "pending" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "baseline": "NeoStep 218/0/1 @ HEAD 3ec1fa37; NeoStep25LoadExec 28/28; NeoStep22/23/24 unchanged"
+}

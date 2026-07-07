@@ -169,8 +169,10 @@
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; M1 T-identity-rejection untested + T1/T2/T3 Trivial accepted-known, S3-routed). P1 decision (parameterless wrapper suffices); Step-22 CloneAndPatch hook reused; init-only. New follow-ups F-11/F-12 (S3-routed)."
     },
     "neo-step25-s3-full-decoupling": {
-      "pipeline": "small-feature", "wave": 5, "scope": "[Step 25 S3 follow-up] full ILType Cecil-decoupling + Cecil-free AppDomain load + cross-AppDomain token-hash re-resolution (Approach 1) + static .cctor seeding + full CLR aqname/host registration",
-      "prerequisites": ["neo-step25-runtime-loader"], "dependsOn": ["neo-step25-runtime-loader"], "status": "pending", "capability": "neo-optimizer"
+      "pipeline": "small-feature", "wave": 5, "scope": "[Step 25 S3 follow-up] PARTIAL: SHIP sub-surface 1 (ILType layout+VTable rebuild from NeoTypeDefRecord, same-AppDomain, structural-equiv+mutation proven, NOT installed on live ILType); DEFER 2 (Cecil-free load) + 3 (cross-AppDomain Approach-1) + 4 (.cctor) + 5 (CLR registration)",
+      "prerequisites": ["neo-step25-runtime-loader"], "dependsOn": ["neo-step25-runtime-loader"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-08", "smoke": "NeoStep25LoadExec 28/28 (21 S1/S2 + 7 S3: structural-equiv + 2 load-bearing mutation cells w/ GOLD-STANDARD adversarial stash-toggle) + NeoStep 218/0/1 + NeoStep22/23/24 unchanged; Legacy-neutral PROVEN (ILType.cs SHARED stash-toggle, failure-set diff empty)",
+      "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; 2 Informational accepted: naturalAlignment simple-types-only, ResolveVTableFromRecord skips generic-instance method refs -- both forward-compat for sub-surface 2)."
     },
     "neo-step26-perf-validation": {
       "pipeline": "small-feature", "wave": 5, "scope": "[Step 26] SHIP benchmark suite (host-side NeoStep26BenchCheck + runner) + single-threaded-cooperative contract doc; DEFER D (debugger -> neo-debugger-neo-frame) + F-4 (reflection-on-Neo, stays OPEN)",
@@ -179,8 +181,8 @@
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; Minor dead-divide-assert + 3 Minor/Trivial accepted-known). Last numbered AOT-chain step."
     }
   },
-  "runnableFrontier": ["neo-peephole-isinst", "neo-step25-s3-full-decoupling"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution"],
+  "runnableFrontier": ["neo-peephole-isinst"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

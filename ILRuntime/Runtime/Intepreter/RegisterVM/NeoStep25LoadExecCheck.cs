@@ -468,6 +468,256 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 RecordCell(res, "ConstGeneric<T> template body-mutation (AOT template really runs)", diff);
             }
 
+            // ===== S3 cells: ILType layout + VTable rebuild from the .neo TypeDef
+            // record (host-side, DEBUG+Neo). The ILType side of the AOT decoupling:
+            // prove the NeoTypeDefRecord carries ENOUGH to rebuild an ILType's
+            // instance layout + Neo VTable + interface map WITHOUT replaying the
+            // Cecil init, validated by a structural-equivalence comparison against
+            // the Cecil-computed values + TWO adversarial mutation cells (one per
+            // path) that prove the rebuild genuinely reads the record (a green
+            // structural-equiv cell alone is insufficient -- the record is built
+            // FROM Cecil's values at serialize time, so equality can hold trivially
+            // even if the rebuild ignored the record). Mirrors S1's body-mutation +
+            // S2's template-mutation + structural-equivalence discipline, applied
+            // to the ILType side. Uses a DEDICATED probe (NeoStep25S3Probe) because
+            // the S1/S2 probe is a static-only container (empty layout / trivial
+            // VTable -> cannot make the comparison meaningful). =====
+
+            // ---- locate the S3 probe type (2+ differing-width fields + a base
+            // virtual override + an interface impl) ----
+            ILType s3ProbeType = null;
+            if (appdomain.LoadedTypes.TryGetValue("TestCases.NeoStep25S3Probe", out var s3It) && s3It is ILType s3Il)
+                s3ProbeType = s3Il;
+
+            if (s3ProbeType == null)
+            {
+                res.TotalCells++; res.Failed++;
+                res.Failures.Add("TestCases.NeoStep25S3Probe not loaded / not an ILType");
+                Console.WriteLine("  [FAIL] TestCases.NeoStep25S3Probe not loaded / not an ILType");
+            }
+            else
+            {
+                // ---- S3 compile: a .neo carrying the probe's TypeDef record ----
+                NeoAssemblyModel s3Model = null;
+                NeoCompilerResult s3DriverResult = null;
+                try
+                {
+                    using (var ms = new MemoryStream())
+                    {
+                        s3DriverResult = new NeoCompiler().Compile(new[] { s3ProbeType }, ms);
+                        ms.Position = 0;
+                        s3Model = NeoAssemblyReader.Read(ms);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    res.TotalCells++; res.Failed++;
+                    res.Failures.Add($"S3 compile threw {ex.GetType().Name}: {ex.Message}");
+                    Console.WriteLine($"  [FAIL] S3 compile threw {ex.GetType().Name}: {ex.Message}");
+                }
+                if (s3Model != null)
+                {
+                    res.TotalCells++;
+                    RecordCell(res, "S3 compile (NeoStep25S3Probe -> .neo)",
+                        s3DriverResult.IsComplete ? null : $"skipped {s3DriverResult.Skipped.Count} methods");
+
+                    int s3TdIdx = FindTypeDefByName(s3Model, "TestCases.NeoStep25S3Probe");
+                    res.TotalCells++;
+                    RecordCell(res, "S3 TypeDef record located",
+                        s3TdIdx < 0 ? "NeoStep25S3Probe TypeDef not found in .neo" : null);
+
+                    if (s3TdIdx >= 0)
+                    {
+                        var tdRec = s3Model.TypeDefs[s3TdIdx];
+                        var rb = ILType.RebuildFromNeoRecord(s3ProbeType, s3Model, tdRec);
+
+                        // ---- (1) Structural-equivalence: layout (field-by-field +
+                        // totals + the RE-DERIVED naturalAlignment). ----
+                        res.TotalCells++;
+                        {
+                            var sb = new System.Text.StringBuilder();
+                            if (rb.TotalPrimitiveSize != s3ProbeType.TotalPrimitiveSize)
+                                sb.Append("TotalPrimitiveSize rb=").Append(rb.TotalPrimitiveSize).Append(" cecil=").Append(s3ProbeType.TotalPrimitiveSize).Append("; ");
+                            if (rb.TotalReferenceCount != s3ProbeType.TotalReferenceCount)
+                                sb.Append("TotalReferenceCount rb=").Append(rb.TotalReferenceCount).Append(" cecil=").Append(s3ProbeType.TotalReferenceCount).Append("; ");
+                            if (rb.NaturalAlignment != s3ProbeType.NaturalAlignment)
+                                sb.Append("NaturalAlignment rb=").Append(rb.NaturalAlignment).Append(" cecil=").Append(s3ProbeType.NaturalAlignment).Append("; ");
+                            int start = s3ProbeType.FieldStartIndex;
+                            int cecilFieldCount = s3ProbeType.TotalFieldCount - start;
+                            if (rb.FieldPrimitiveOffsets.Length != cecilFieldCount)
+                                sb.Append("field-count rb=").Append(rb.FieldPrimitiveOffsets.Length).Append(" cecil=").Append(cecilFieldCount).Append("; ");
+                            int fcmp = Math.Min(rb.FieldPrimitiveOffsets.Length, cecilFieldCount);
+                            for (int i = 0; i < fcmp; i++)
+                            {
+                                var cec = s3ProbeType.GetFieldOffset(start + i);
+                                if (rb.FieldPrimitiveOffsets[i] != cec.PrimitiveOffset)
+                                    sb.Append("F[").Append(i).Append("].PrimOffset rb=").Append(rb.FieldPrimitiveOffsets[i]).Append(" cecil=").Append(cec.PrimitiveOffset).Append("; ");
+                                if (rb.FieldReferenceOffsets[i] != cec.ReferenceOffset)
+                                    sb.Append("F[").Append(i).Append("].RefOffset rb=").Append(rb.FieldReferenceOffsets[i]).Append(" cecil=").Append(cec.ReferenceOffset).Append("; ");
+                            }
+                            RecordCell(res, "S3 layout structural-equiv (rebuild == Cecil)", sb.Length == 0 ? null : sb.ToString());
+                        }
+
+                        // ---- (2) Structural-equivalence: VTable (slot-by-slot +
+                        // key-by-key). Compares BOTH the resolved IMethod[] slots
+                        // AND the re-derived slot-key map against the Cecil-built
+                        // values (OQ2 -- the slot-key map drives TryGetNeoVTableSlot;
+                        // a key drift would mis-route interface dispatch in a future
+                        // Cecil-free load). ----
+                        res.TotalCells++;
+                        {
+                            var sb = new System.Text.StringBuilder();
+                            var cecVT = s3ProbeType.NeoVTable;
+                            var cecKeys = s3ProbeType.NeoVTableSlotKeysForAOT;
+                            if (rb.UnresolvedVTableSlots != 0)
+                                sb.Append("unresolved=").Append(rb.UnresolvedVTableSlots).Append("; ");
+                            if (rb.VTable.Length != cecVT.Length)
+                                sb.Append("vtable-len rb=").Append(rb.VTable.Length).Append(" cecil=").Append(cecVT.Length).Append("; ");
+                            int vcmp = Math.Min(rb.VTable.Length, cecVT.Length);
+                            for (int i = 0; i < vcmp; i++)
+                                if (!VTableSlotEqual(rb.VTable[i], cecVT[i]))
+                                    sb.Append("VT[").Append(i).Append("] rb=").Append(MethodLabel(rb.VTable[i])).Append(" cecil=").Append(MethodLabel(cecVT[i])).Append("; ");
+                            int kcmp = Math.Min(rb.VTableSlotKeys.Length, cecKeys != null ? cecKeys.Length : 0);
+                            for (int i = 0; i < kcmp; i++)
+                                if (rb.VTableSlotKeys[i] != cecKeys[i])
+                                    sb.Append("VTkey[").Append(i).Append("] rb=").Append(rb.VTableSlotKeys[i]).Append(" cecil=").Append(cecKeys[i]).Append("; ");
+                            RecordCell(res, "S3 VTable structural-equiv (rebuild == Cecil)", sb.Length == 0 ? null : sb.ToString());
+                        }
+
+                        // ---- (3) Structural-equivalence: interface offset map
+                        // (VTableOffset + MethodSlotKeys + ClassSlotRemap). ----
+                        res.TotalCells++;
+                        {
+                            var sb = new System.Text.StringBuilder();
+                            var cecIfaces = s3ProbeType.NeoInterfaceMapForAOT;
+                            int cecIfaceCount = cecIfaces != null ? cecIfaces.Length : 0;
+                            int rbIfaceCount = rb.Interfaces != null ? rb.Interfaces.Length : 0;
+                            if (rb.UnresolvedInterfaces != 0)
+                                sb.Append("unresolved-iface=").Append(rb.UnresolvedInterfaces).Append("; ");
+                            if (rbIfaceCount != cecIfaceCount)
+                                sb.Append("iface-count rb=").Append(rbIfaceCount).Append(" cecil=").Append(cecIfaceCount).Append("; ");
+                            int icmp = Math.Min(rbIfaceCount, cecIfaceCount);
+                            for (int k = 0; k < icmp; k++)
+                            {
+                                var rbI = rb.Interfaces[k];
+                                ILType.InterfaceEntry? cecINullable = null;
+                                for (int j = 0; j < cecIfaceCount; j++)
+                                    if (object.Equals(cecIfaces[j].InterfaceType, rbI.InterfaceType)) { cecINullable = cecIfaces[j]; break; }
+                                if (!cecINullable.HasValue)
+                                {
+                                    sb.Append("iface[").Append(k).Append("] type ").Append(rbI.InterfaceType != null ? rbI.InterfaceType.FullName : "<null>").Append(" not in cecil map; ");
+                                    continue;
+                                }
+                                var cecI = cecINullable.Value;
+                                if (rbI.VTableOffset != cecI.VTableOffset)
+                                    sb.Append("iface[").Append(k).Append("].Offset rb=").Append(rbI.VTableOffset).Append(" cecil=").Append(cecI.VTableOffset).Append("; ");
+                                if (!StringArrayEqual(rbI.MethodSlotKeys, cecI.MethodSlotKeys))
+                                    sb.Append("iface[").Append(k).Append("].SlotKeys differ; ");
+                                if (!IntArrayEqualNullTolerant(rbI.ClassSlotRemap, cecI.ClassSlotRemap))
+                                    sb.Append("iface[").Append(k).Append("].Remap differ; ");
+                            }
+                            RecordCell(res, "S3 interface map structural-equiv (rebuild == Cecil)", sb.Length == 0 ? null : sb.ToString());
+                        }
+
+                        // ---- (4) MUTATION cell (load-bearing, LAYOUT path): mutate a
+                        // field PrimitiveOffset in an INDEPENDENT model2 BEFORE rebuild
+                        // -> assert the rebuilt layout DIVERGES exactly where mutated
+                        // (and ONLY there). The structural-equiv cell (1) proves the
+                        // UN-mutated rebuild EQUALS Cecil; this cell proves a MUTATED
+                        // record yields a divergent rebuild -> the rebuild genuinely
+                        // reads the record (a hardcoded-Cecil rebuild would NOT
+                        // diverge). PASS = divergence observed. ----
+                        res.TotalCells++;
+                        {
+                            string diff;
+                            try
+                            {
+                                NeoAssemblyModel model2;
+                                using (var ms2 = new MemoryStream())
+                                {
+                                    new NeoCompiler().Compile(new[] { s3ProbeType }, ms2);
+                                    ms2.Position = 0;
+                                    model2 = NeoAssemblyReader.Read(ms2);
+                                }
+                                int tdIdx2 = FindTypeDefByName(model2, "TestCases.NeoStep25S3Probe");
+                                if (tdIdx2 < 0) diff = "model2: probe TypeDef not found";
+                                else
+                                {
+                                    // MUTATE Fields[0].PrimitiveOffset in the record. Fields
+                                    // is a struct array -> copy the element, mutate, write back
+                                    // (the array is shared with the record, so this is visible
+                                    // to the rebuild).
+                                    var fields2 = model2.TypeDefs[tdIdx2].Fields;
+                                    var f0 = fields2[0];
+                                    int origPO = f0.PrimitiveOffset;
+                                    int mutatedPO = origPO + 9999;
+                                    f0.PrimitiveOffset = mutatedPO;
+                                    fields2[0] = f0;
+                                    var rb2 = ILType.RebuildFromNeoRecord(s3ProbeType, model2, model2.TypeDefs[tdIdx2]);
+                                    int start = s3ProbeType.FieldStartIndex;
+                                    int cecilF0 = s3ProbeType.GetFieldOffset(start + 0).PrimitiveOffset;
+                                    int cecilF1 = s3ProbeType.GetFieldOffset(start + 1).PrimitiveOffset;
+                                    bool div0 = rb2.FieldPrimitiveOffsets[0] != cecilF0;        // diverged at the mutated field
+                                    bool readMutated = rb2.FieldPrimitiveOffsets[0] == mutatedPO; // ... and read the mutated value
+                                    bool eq1 = rb2.FieldPrimitiveOffsets.Length > 1 && rb2.FieldPrimitiveOffsets[1] == cecilF1; // ... and still-equal elsewhere
+                                    diff = (div0 && readMutated && eq1)
+                                        ? null
+                                        : $"expected divergence at F[0] (orig={origPO} mutated={mutatedPO} cecilF0={cecilF0}); rb.F[0]={(rb2.FieldPrimitiveOffsets.Length > 0 ? rb2.FieldPrimitiveOffsets[0] : -1)} div0={div0} readMutated={readMutated} eq1={eq1}";
+                                }
+                            }
+                            catch (Exception ex) { diff = $"mutation(layout) threw {ex.GetType().Name}: {ex.Message}"; }
+                            RecordCell(res, "S3 mutation: field offset (PASS = divergence, rebuild reads record)", diff);
+                        }
+
+                        // ---- (5) MUTATION cell (load-bearing, VTABLE path): swap two
+                        // VTableMethodRefIdxs entries in an INDEPENDENT model3 BEFORE
+                        // rebuild -> assert the rebuilt VTable DIVERGES at the swapped
+                        // slots. Proves the VTable rebuild genuinely reads the record
+                        // (the structural-equiv cell (2) proves the UN-swapped rebuild
+                        // equals Cecil). PASS = divergence observed. ----
+                        res.TotalCells++;
+                        {
+                            string diff;
+                            try
+                            {
+                                NeoAssemblyModel model3;
+                                using (var ms3 = new MemoryStream())
+                                {
+                                    new NeoCompiler().Compile(new[] { s3ProbeType }, ms3);
+                                    ms3.Position = 0;
+                                    model3 = NeoAssemblyReader.Read(ms3);
+                                }
+                                int tdIdx3 = FindTypeDefByName(model3, "TestCases.NeoStep25S3Probe");
+                                if (tdIdx3 < 0) diff = "model3: probe TypeDef not found";
+                                else
+                                {
+                                    // MUTATE: swap the head + tail VTableMethodRefIdxs. VTableMethodRefIdxs
+                                    // is an int[] (reference type) shared with the record -> an in-place
+                                    // swap is visible to the rebuild.
+                                    var idxs = model3.TypeDefs[tdIdx3].VTableMethodRefIdxs;
+                                    if (idxs == null || idxs.Length < 2) diff = $"model3 VTable too short ({idxs?.Length ?? 0})";
+                                    else
+                                    {
+                                        int last = idxs.Length - 1;
+                                        int tmp = idxs[0]; idxs[0] = idxs[last]; idxs[last] = tmp;
+                                        var rb3 = ILType.RebuildFromNeoRecord(s3ProbeType, model3, model3.TypeDefs[tdIdx3]);
+                                        var cecVT = s3ProbeType.NeoVTable;
+                                        bool divHead = !VTableSlotEqual(rb3.VTable[0], cecVT[0]);       // slot 0 now resolves to what was at [last]
+                                        bool divTail = !VTableSlotEqual(rb3.VTable[last], cecVT[last]); // slot [last] now resolves to what was at [0]
+                                        bool headNowIsOrigTail = VTableSlotEqual(rb3.VTable[0], cecVT[last]); // the swap is observable
+                                        diff = (divHead && divTail && headNowIsOrigTail)
+                                            ? null
+                                            : $"expected VTable divergence at swapped slots [0]<->[{last}]; divHead={divHead} divTail={divTail} headNowIsOrigTail={headNowIsOrigTail}";
+                                    }
+                                }
+                            }
+                            catch (Exception ex) { diff = $"mutation(vtable) threw {ex.GetType().Name}: {ex.Message}"; }
+                            RecordCell(res, "S3 mutation: VTable slot swap (PASS = divergence, rebuild reads record)", diff);
+                        }
+                    }
+                }
+            }
+
             return res;
         }
 
@@ -539,6 +789,63 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 res.Failed++; res.Failures.Add($"{name}: {diff}");
                 Console.WriteLine($"  [FAIL] {name}: {diff}");
             }
+        }
+
+        // ===== S3 helpers =====
+
+        // Find a TypeDef record by its type full name (TypeRefIdx -> TypeRef name).
+        // Mirrors NeoAssemblyLoader.Attach's MethodRefIdx -> MethodRef name lookup.
+        static int FindTypeDefByName(NeoAssemblyModel model, string fullName)
+        {
+            if (model == null || model.TypeDefs == null || model.TypeRefs == null || string.IsNullOrEmpty(fullName))
+                return -1;
+            for (int i = 0; i < model.TypeDefs.Length; i++)
+            {
+                int trIdx = model.TypeDefs[i].TypeRefIdx;
+                if (trIdx < 0 || trIdx >= model.TypeRefs.Length) continue;
+                if (model.TypeRefs[trIdx].Name == fullName) return i;
+            }
+            return -1;
+        }
+
+        // Two VTable slots are equal iff same declaring type + same signature.
+        // Reference equality short-circuits the common case (the same IMethod
+        // object); the signature + declaring-type compare is the semantic
+        // fallback (robust to a freshly-resolved vs cached method object).
+        static bool VTableSlotEqual(IMethod a, IMethod b)
+        {
+            if (object.ReferenceEquals(a, b)) return true;
+            if (a == null || b == null) return false;
+            if (a.SignatureString != b.SignatureString) return false;
+            var ad = a.DeclearingType != null ? a.DeclearingType.FullName : null;
+            var bd = b.DeclearingType != null ? b.DeclearingType.FullName : null;
+            return ad == bd;
+        }
+
+        static string MethodLabel(IMethod m)
+        {
+            if (m == null) return "<null>";
+            return (m.DeclearingType != null ? m.DeclearingType.FullName : "?") + "::" + m.SignatureString;
+        }
+
+        static bool StringArrayEqual(string[] a, string[] b)
+        {
+            int an = a != null ? a.Length : 0;
+            int bn = b != null ? b.Length : 0;
+            if (an != bn) return false;
+            for (int i = 0; i < an; i++) if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        // Null-tolerant int[] compare (ClassSlotRemap is null in the contiguous
+        // fast path on both sides; a non-null array compares element-wise).
+        static bool IntArrayEqualNullTolerant(int[] a, int[] b)
+        {
+            int an = a != null ? a.Length : 0;
+            int bn = b != null ? b.Length : 0;
+            if (an != bn) return false;
+            for (int i = 0; i < an; i++) if (a[i] != b[i]) return false;
+            return true;
         }
     }
 }

@@ -758,6 +758,163 @@ namespace ILRuntime.CLR.TypeSystem
         }
 #endif
 
+#if ENABLE_NEO_MODE
+        /// <summary>
+        /// Step 25 S3 (Neo AOT self-check): read-only accessor over the Neo
+        /// VTable slot-key map, so the host-side rebuild self-check can compare
+        /// the record-re-derived slot keys against the Cecil-built keys (the
+        /// slot-key map drives TryGetNeoVTableSlot; a key drift would mis-route
+        /// interface dispatch in a future Cecil-free load). Additive internal
+        /// accessor on an already-computed field (no behavior change); Neo-only.
+        /// </summary>
+        internal string[] NeoVTableSlotKeysForAOT
+        {
+            get
+            {
+                EnsureNeoVTable();
+                return neoVTableSlotKeys;
+            }
+        }
+
+        /// <summary>
+        /// Step 25 S3 (Neo-only, DEBUG host-side): reconstruct this ILType's
+        /// instance field layout + Neo VTable + interface offset map as PURE
+        /// DATA from a deserialized NeoTypeDefRecord, WITHOUT replaying the
+        /// Cecil init (InitializeFields / BuildNeoVTable). The rebuild reads
+        /// ONLY what the record carries:
+        ///  - the carried TotalPrimitiveSize / TotalReferenceCount + the per-
+        ///    field PrimitiveOffset / ReferenceOffset (Fields[]).
+        ///  - the VTableMethodRefIdxs, resolved to live IMethods via the same-
+        ///    AppDomain maps (NeoAssemblyLoader.ResolveVTableFromRecord).
+        ///  - the interface entries (InterfaceTypeRefIdx resolved via
+        ///    NeoAssemblyLoader.ResolveTypeRefToIType; VTableOffset /
+        ///    MethodSlotKeys / ClassSlotRemap carried verbatim).
+        /// naturalAlignment is NOT in the record -- it is RE-DERIVED from the
+        /// resolved own field types (the max natural size, mirroring
+        /// InitializeFields' maxFieldAlignment accumulator), proving the re-
+        /// derivation matches the Cecil-computed ILType.NaturalAlignment. The
+        /// slot-key map is re-derived from each slot method's SignatureString.
+        ///
+        /// DELIBERATELY does NOT install the rebuild on this ILType (D1): in a
+        /// same-AppDomain Cecil-loaded test the Cecil layout is already correct,
+        /// so overwriting it has no functional effect AND would raise a shared-
+        /// mutable-state hazard for zero gain. The rebuild is RETURNED for the
+        /// DEBUG self-check to compare against the Cecil-computed values. The
+        /// Cecil / JIT init path stays byte-identical when this is not exercised
+        /// (Legacy-neutral -- this compiles out of plain Debug and is never
+        /// invoked outside the AOT self-check). Mirrors S1's InitCodeBodyFromNeo
+        /// for the ILMethod, applied to the ILType side.
+        /// </summary>
+        internal static ILRuntime.Runtime.NeoAOT.NeoTypeRebuild RebuildFromNeoRecord(
+            ILType iltype,
+            ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model,
+            ILRuntime.Runtime.NeoAOT.NeoTypeDefRecord rec)
+        {
+            var rb = new ILRuntime.Runtime.NeoAOT.NeoTypeRebuild();
+            if (iltype == null || model == null || model.FieldRefs == null) return rb;
+
+            // ---- instance field layout: carried totals + carried per-field offsets ----
+            int fc = (rec.Fields != null) ? rec.Fields.Length : 0;
+            rb.TotalPrimitiveSize = rec.TotalPrimitiveSize;
+            rb.TotalReferenceCount = rec.TotalReferenceCount;
+            rb.FieldPrimitiveOffsets = new int[fc];
+            rb.FieldReferenceOffsets = new int[fc];
+            for (int i = 0; i < fc; i++)
+            {
+                rb.FieldPrimitiveOffsets[i] = rec.Fields[i].PrimitiveOffset;
+                rb.FieldReferenceOffsets[i] = rec.Fields[i].ReferenceOffset;
+            }
+
+            // ---- naturalAlignment: RE-DERIVED from the resolved own field types
+            // (NOT carried). Each FieldRefIdx -> FieldRefTable -> field type ->
+            // IType -> natural size (primitive size / IL value-type NaturalAlignment
+            // / pointer size 4 for refs). The max over the own fields is the type's
+            // natural alignment. A miss (field type unresolvable) is skipped (the
+            // self-check reports a mismatch if the re-derivation is incomplete). ----
+            var domain = iltype.AppDomain;
+            int maxAlign = 1;
+            for (int i = 0; i < fc; i++)
+            {
+                int frIdx = rec.Fields[i].FieldRefIdx;
+                if (frIdx < 0 || frIdx >= model.FieldRefs.Length) continue;
+                var ftInfo = model.FieldRefs[frIdx].FieldType;
+                IType ft = ResolveNamedIType(domain, ftInfo);
+                if (ft == null) continue;
+                int sz = NaturalSizeOfFieldType(domain, ft);
+                if (sz > maxAlign) maxAlign = sz;
+            }
+            rb.NaturalAlignment = maxAlign;
+
+            // ---- Neo VTable: resolve VTableMethodRefIdxs -> live IMethod[] + re-
+            // derive the slot-key map from each slot's SignatureString. ----
+            var vt = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveVTableFromRecord(
+                iltype, model, rec, out var unresolvedVT);
+            rb.VTable = vt;
+            rb.UnresolvedVTableSlots = unresolvedVT;
+            rb.VTableSlotKeys = new string[vt != null ? vt.Length : 0];
+            if (vt != null)
+            {
+                for (int i = 0; i < vt.Length; i++)
+                    rb.VTableSlotKeys[i] = vt[i] != null ? vt[i].SignatureString : null;
+            }
+
+            // ---- interface offset map: resolve each InterfaceTypeRefIdx + carry
+            // the VTableOffset / MethodSlotKeys / ClassSlotRemap verbatim. ----
+            if (rec.Interfaces != null && rec.Interfaces.Length > 0)
+            {
+                rb.Interfaces = new ILRuntime.Runtime.NeoAOT.NeoTypeRebuild.ResolvedInterfaceEntry[rec.Interfaces.Length];
+                for (int k = 0; k < rec.Interfaces.Length; k++)
+                {
+                    var ie = rec.Interfaces[k];
+                    var it = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(
+                        domain, model, ie.InterfaceTypeRefIdx);
+                    rb.Interfaces[k] = new ILRuntime.Runtime.NeoAOT.NeoTypeRebuild.ResolvedInterfaceEntry
+                    {
+                        InterfaceType = it,
+                        VTableOffset = ie.VTableOffset,
+                        MethodSlotKeys = ie.MethodSlotKeys,
+                        ClassSlotRemap = ie.ClassSlotRemap,
+                    };
+                    if (it == null) rb.UnresolvedInterfaces++;
+                }
+            }
+            return rb;
+        }
+
+        // Resolve a TypeReferencePatchInfo (a field type) to a runtime IType by
+        // name. IL types resolve via LoadedTypes; CLR types via GetType(fullName).
+        // The S3 probe's fields are int / long / string (simple named types), so
+        // the by-name path suffices for the naturalAlignment re-derivation;
+        // array / byref / generic-instance field types are round-2 (a miss is
+        // skipped, reported as an incomplete re-derivation). Returns null on miss.
+        static IType ResolveNamedIType(ILRuntime.Runtime.Enviorment.AppDomain domain,
+            ILRuntime.Hybrid.TypeReferencePatchInfo info)
+        {
+            if (info == null || string.IsNullOrEmpty(info.Name)) return null;
+            IType it;
+            if (domain.LoadedTypes.TryGetValue(info.Name, out it) && it != null) return it;
+            try { return domain.GetType(info.Name); }
+            catch { return null; }
+        }
+
+        // The natural size of a field's type for alignment purposes (mirrors
+        // InitializeFields' per-field contribution to maxFieldAlignment):
+        // primitive -> GetPrimitiveSize; IL value type -> its NaturalAlignment
+        // (recursed); reference / other -> pointer size 4. Floor 1.
+        static int NaturalSizeOfFieldType(ILRuntime.Runtime.Enviorment.AppDomain domain, IType ft)
+        {
+            if (ft == null) return 1;
+            if (ft.IsPrimitive)
+            {
+                int s = domain.GetPrimitiveSize(ft);
+                return s < 1 ? 1 : s;
+            }
+            if (ft.IsValueType && ft is ILType ilvt)
+                return ilvt.NaturalAlignment;
+            return 4;
+        }
+#endif
+
         /// <summary>
         /// 0-based slot of <paramref name="method"/> within its own interface
         /// declaring type, as seen by this implementing type's interface map.

@@ -256,12 +256,13 @@ namespace ILRuntime.Runtime.NeoAOT
             return null;
         }
 
-        // Resolve a TypeRef index to the runtime IType for EH catch-type matching.
-        // IL catch types resolve via LoadedTypes (the S1 probe's catch types); CLR
-        // catch types route through GetType(fullName) (aqname / assembly scan). The
+        // Resolve a TypeRef index to the runtime IType. Used for EH catch-type
+        // matching (S1) + by the S3 ILType rebuild builder for interface TypeRefs
+        // + VTable declaring-type resolution. IL types resolve via LoadedTypes;
+        // CLR types route through GetType(fullName) (aqname / assembly scan). The
         // try-both order is safe and does not depend on the NeoTypeRefKind byte
         // (IL-vs-CLR discrimination robustness is a round-2 concern).
-        static IType ResolveTypeRefToIType(ILRuntime.Runtime.Enviorment.AppDomain appdomain,
+        internal static IType ResolveTypeRefToIType(ILRuntime.Runtime.Enviorment.AppDomain appdomain,
                                            NeoAssemblyModel model, int typeRefIdx)
         {
             if (typeRefIdx < 0 || typeRefIdx >= model.TypeRefs.Length) return null;
@@ -272,6 +273,99 @@ namespace ILRuntime.Runtime.NeoAOT
             if (appdomain.LoadedTypes.TryGetValue(fullName, out it) && it != null) return it;
             try { return appdomain.GetType(fullName); }
             catch { return null; }
+        }
+
+        // ===== Step 25 S3: the ILType layout/VTable rebuild resolution helper.
+        //
+        // Resolve a NeoTypeDefRecord's VTableMethodRefIdxs[] -> the live IMethod[]
+        // (the Neo VTable slot array), via the same-AppDomain maps. Each slot's
+        // MethodRef carries the slot method's DeclaringType -- which for an
+        // INHERITED slot is the base ILType or a CLR type (e.g. System.Object's
+        // virtuals), NOT `iltype`. So the slot is resolved on its declaring type
+        // (resolved by name via LoadedTypes / GetType), falling back to `iltype`
+        // (whose GetMethod walks the full base hierarchy) when the declaring-type
+        // name is absent / unresolvable. This is hierarchy-aware (unlike
+        // MatchMethod, which is own-methods-only and used by the S1 Attach flow
+        // to bind OWN method bodies); VTable slots include inherited base / CLR
+        // slots that own-only matching would miss. A miss is reported via
+        // `unresolved` (a forward signal for sub-surface 2's Cecil-free load,
+        // which needs every slot); the entry is left null. No change to the S1/S2
+        // Attach flow (this helper is driven by the DEBUG self-check, not Attach).
+        internal static IMethod[] ResolveVTableFromRecord(ILType iltype, NeoAssemblyModel model,
+                                                          NeoTypeDefRecord rec, out int unresolved)
+        {
+            unresolved = 0;
+            var idxs = rec.VTableMethodRefIdxs;
+            var vt = new IMethod[idxs != null ? idxs.Length : 0];
+            if (idxs == null || iltype == null || model == null || model.MethodRefs == null)
+                return vt;
+            var appdomain = iltype.AppDomain;
+            for (int i = 0; i < idxs.Length; i++)
+            {
+                int mridx = idxs[i];
+                if (mridx < 0 || mridx >= model.MethodRefs.Length) { unresolved++; continue; }
+                var mr = model.MethodRefs[mridx];
+                if (mr == null || mr.IsGenericInstance) { unresolved++; continue; }
+                int paramCount = mr.Parameters != null ? mr.Parameters.Length : 0;
+                // Resolve the slot's declaring type. Own-probe slots declare on
+                // `iltype`; inherited base-IL / CLR-Object slots declare elsewhere.
+                IType declType = iltype;
+                if (mr.DeclaringType != null && !string.IsNullOrEmpty(mr.DeclaringType.Name)
+                    && mr.DeclaringType.Name != iltype.FullName)
+                {
+                    var dn = mr.DeclaringType.Name;
+                    IType resolved = null;
+                    if (!appdomain.LoadedTypes.TryGetValue(dn, out resolved) || resolved == null)
+                    {
+                        try { resolved = appdomain.GetType(dn); } catch { resolved = null; }
+                    }
+                    if (resolved != null) declType = resolved;
+                }
+                IMethod m = null;
+                try { m = declType.GetMethod(mr.Name, paramCount, false); }
+                catch { m = null; }
+                vt[i] = m;
+                if (m == null) unresolved++;
+            }
+            return vt;
+        }
+    }
+
+    /// <summary>
+    /// Step 25 S3: the rebuilt ILType layout + Neo VTable + interface map, as
+    /// PURE DATA reconstructed from a deserialized NeoTypeDefRecord by
+    /// ILType.RebuildFromNeoRecord. Consumed ONLY by the DEBUG+Neo host-side
+    /// self-check (NeoStep25LoadExecCheck) to compare against the Cecil-computed
+    /// values. The rebuild is NOT installed on a live ILType (D1); this struct
+    /// is the comparison payload. Neo-only (lives under #if ENABLE_NEO_MODE).
+    /// </summary>
+    internal struct NeoTypeRebuild
+    {
+        // Instance field layout (read from the record).
+        public int TotalPrimitiveSize;
+        public int TotalReferenceCount;
+        public int[] FieldPrimitiveOffsets;
+        public int[] FieldReferenceOffsets;
+        // naturalAlignment is NOT carried in the record; RE-DERIVED from the
+        // resolved own field types (max natural size). Proves the re-derivation
+        // matches the Cecil-computed ILType.NaturalAlignment.
+        public int NaturalAlignment;
+        // Neo VTable (VTableMethodRefIdxs resolved to live IMethods) + the slot-
+        // key map re-derived from each slot method's SignatureString.
+        public IMethod[] VTable;
+        public string[] VTableSlotKeys;
+        public int UnresolvedVTableSlots;
+        // Interface offset map (each entry's InterfaceType resolved; VTableOffset
+        // / MethodSlotKeys / ClassSlotRemap carried verbatim from the record).
+        public ResolvedInterfaceEntry[] Interfaces;
+        public int UnresolvedInterfaces;
+
+        public struct ResolvedInterfaceEntry
+        {
+            public IType InterfaceType;     // null = the interface TypeRef did not resolve
+            public int VTableOffset;
+            public string[] MethodSlotKeys;
+            public int[] ClassSlotRemap;
         }
     }
 
