@@ -1,0 +1,25 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "child": "neo-generic-redirect-resolution",
+  "stages": {
+    "propose": { "status": "done", "b1Verdict": "resolve-likely-to-NIE (static). outcome 3 predicted.", "scope": "SHIP deterministic probe + control + verdict docs; DEFER Phase 2 suspend.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-b1" } },
+    "apply": {
+      "status": "done",
+      "outcome": "TEST-ONLY PARTIAL-SHIP (LEAD disposition: ship-as-test-only). The deterministic probe (TC8) DISPROVED outcome 3 and surfaced outcome 2a-DEEP: B1 redirect RESOLUTION is EXONERATED (redirects registered on RedirectMapNeo, TryGetRedirection arity-agnostic+correct, IsCompleted correctly false). The REAL blocker is a MoveNext control-flow bug (hangs after IsCompleted=false, before reaching AwaitUnsafeOnCompleted/GetResult) -- suspend-follow-up scope (neo-step20-async-suspend). Engine byte-identical to HEAD.",
+      "shipped": ["TC8 NeoStep20_TC8_IncompleteAwaitHitsTaggedNIE [Ignored] (hang reproducer)", "TC9 NeoStep20_TC9_SyncControlSkipsAwaitUnsafeOnCompleted (completed Task must NOT reach AwaitUnsafeOnCompleted -- PASSES)", "TC10 NeoStep20_TC10_IncompleteTaskIsCompletedIsFalse (incomplete Task -> IsCompleted==false -- PASSES, isolates B1 from MoveNext)"],
+      "counts": "NeoStep20 12/0 failed/1 ignored; NeoStep 218/0/1 (215 baseline + TC9 + TC10 + TC8-ignored); Legacy-neutral",
+      "filesChanged": ["TestCases/NeoStep20Test.cs", "ILRuntimeTestBase/TestFramework/TestClass3.cs", ".trae/documents/neo-deferred-items.md (B1 exonerated; MoveNext control-flow blocker pinned to suspend follow-up)"],
+      "handoff": { "path": "handoff/implementer-1.md", "reason": "design outcome-3 disproved; real blocker is MoveNext control-flow (suspend-follow-up scope); LEAD disposition = ship-as-test-only (accepted)", "disposition": "ship-as-test-only -- the real engine fix is neo-step20-async-suspend's scope, not this child's" },
+      "worker": { "role": "implementer", "runtime": "claude", "name": "impl-b1", "returnStatus": "HANDOFF (LEAD accepted partial-ship)" }
+    },
+    "verify": { "status": "in_progress" },
+    "review-loop": { "status": "pending" },
+    "ship": { "status": "pending" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "baseline": "NeoStep 218/0/1 @ apply-done; NeoStep20 12/0/1; engine at HEAD 38133af8"
+}

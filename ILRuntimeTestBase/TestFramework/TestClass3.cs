@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using ILRuntime.Other;
 
 namespace ILRuntimeTest.TestFramework
@@ -184,6 +185,46 @@ namespace ILRuntimeTest.TestFramework
         private static int s_asyncVoidCell;
         public static void SetAsyncVoidCell(int v) { s_asyncVoidCell = v; }
         public static int GetAsyncVoidCell() { return s_asyncVoidCell; }
+
+        // ---- Step 20 deterministic-probe host cells (neo-generic-redirect-
+        //      resolution / B1). The probe MUST force an await through
+        //      AwaitUnsafeOnCompleted with no sync-completion race, so the
+        //      awaitable is a TaskCompletionSource-backed Task whose SetResult
+        //      is NEVER called before the assertion (IsCompleted is deterministi-
+        //      cally false). Held on the host so the IL side needs no
+        //      TaskCompletionSource CLR-construction binding (Option A wiring).
+        //      The fault inspectors do the AggregateException unwrap + message
+        //      check host-side (avoids needing Task.Exception/AggregateException
+        //      redirects in the interpreter). ----
+
+        // B1: a permanently-incomplete Task<int> (SetResult never called before
+        // the assertion). NeoStep20_IncompleteAwaitProbe awaits this -> its
+        // TaskAwaiter_T_GetIsCompleted_Neo returns false -> the await falls
+        // through to AwaitUnsafeOnCompleted<TA,TSM>.
+        private static readonly TaskCompletionSource<int> s_incompleteTcs =
+            new TaskCompletionSource<int>();
+        public static Task<int> GetIncompleteTask() { return s_incompleteTcs.Task; }
+
+        // B1 verdict inspectors. Returns 1 iff `ex` is the tagged Neo async-
+        // suspend NIE (outcome 3: the 2-generic-arg redirect resolved on
+        // RedirectMapNeo and dispatched to the tagged deferral).
+        public static int IsTaggedAsyncNIE(Exception ex)
+        {
+            return (ex is NotImplementedException
+                    && ex.Message != null
+                    && ex.Message.Contains("neo-step20-async-suspend")) ? 1 : 0;
+        }
+
+        // B1 verdict inspector for the faulted-task propagation mode: MoveNext's
+        // compiler-lowered try/catch captures the thrown NIE and faults the
+        // returned Task (same path TC6 exercises). Unwraps the AggregateException
+        // and reuses IsTaggedAsyncNIE. Returns 1 iff the inner exception is the
+        // tagged NIE; 0 for not-faulted / wrong-exception / null.
+        public static int IsFaultedWithTaggedAsyncNIE(Task t)
+        {
+            if (t == null || !t.IsFaulted || t.Exception == null) return 0;
+            return IsTaggedAsyncNIE(t.Exception.InnerException);
+        }
 
 
         public void LoadAsset<T>(string name, T obj)

@@ -1099,6 +1099,48 @@ child (no fix exists; the racy probe can't be a regression guard).
 premise); `neo-generic-redirect-resolution` (B1) absorbs the remaining
 async-blocker investigation with a deterministic-probe requirement.
 
+**UPDATE 2026-07-08 (neo-generic-redirect-resolution B1 — PARTIAL: B1
+EXONERATED; real blocker re-isolated to the suspend path):** the deterministic
+`TaskCompletionSource`-style probe (`NeoStep20_TC8_IncompleteAwaitHitsTaggedNIE`,
+backed by `TestCLRBinding.GetIncompleteTask` — a TCS whose `SetResult` is NEVER
+called, so `IsCompleted` is deterministically false) was run on HEAD
+`38133af8`. Verdict: **outcome 2a-DEEP, NOT the predicted outcome 3.** The probe
+does NOT throw the tagged NIE — it HANGS. Two findings:
+(1) **B1 redirect RESOLUTION is EXONERATED.** The custom
+`AwaitUnsafeOnCompleted`/`AwaitOnCompleted` open-def NIE redirects ARE correctly
+registered on `RedirectMapNeo` (17 Await keys confirmed empirically; registrations
+land on the Neo map and persist), and `TryGetRedirection` is arity-agnostic and
+correct (the closed-generic call's `GetGenericMethodDefinition()` handle matches
+the registered open def). `get_IsCompleted` is also correct: the custom
+`TaskAwaiter_T_GetIsCompleted_Neo` returns FALSE for the incomplete Task (proven
+by `NeoStep20_TC10` + a redirect trace). So the design's outcome-3 prediction and
+its proposed fix sites (`TryGetRedirection` / JIT call-operand) do NOT apply; NO
+engine edit was made.
+(2) **The REAL blocker is a MoveNext control-flow bug in the truly-async path.**
+After `get_IsCompleted` returns false, the state machine NEVER reaches the
+`AwaitUnsafeOnCompleted` call (its `Call` handler never fires) AND never reaches
+`GetResult` either — it hangs in a loop/block transition between the `brtrue` and
+either branch. This is suspend-path territory. CAVEAT: this PARTIALLY RE-OPENS
+the 2026-07-07 `neo-async-controlflow-iscompleted` "control-flow is NOT a bug on
+HEAD" conclusion — that conclusion was drawn from a RACY `Task.Delay` dump (and
+possibly a different state-machine shape), which the deterministic TCS probe now
+contradicts. The exact mechanism needs instruction-level tracing (the suspend
+follow-up's first task).
+**Ship state (test-only partial):** TC8 is MARKED `[ILRuntimeTest(Ignored = true)]`
+(the hang-reproducer, excluded from the smoke so it cannot hang the run; un-ignore
+once the control-flow bug is fixed — the redirect already resolves, so the tagged
+NIE will fire). TC9 (sync control) + TC10 (IsCompleted diagnostic) ship as active
+hang-proof guards. The async helper bodies are PRIVATE (harness skips the hanging
+helper). ALL temp engine instrumentation reverted (engine at HEAD).
+**Gates:** NeoStep20 `Ran 12, 0 failed, 1 ignored`; NeoStep `Ran 218, 0 failed, 1
+ignored` (215 baseline + TC9 + TC10 + TC8-ignored); Legacy-neutral (plain `Debug`
+CLI 0 errors; Legacy NeoStep20 `Ran 12, 0 failed, 1 ignored`). NeoOptHardening
+unchanged (no engine edit).
+**Next:** the MoveNext control-flow fix is owned by the `neo-step20-async-suspend`
+resume child (it must land BEFORE the tagged-NIE body is reachable). See
+`openspec/changes/neo-generic-redirect-resolution/{design.md, planning-context.md,
+handoff/implementer-1.md}`.
+
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
 suspected to hit an optimizer temp-renumber quirk (BCP/copy-prop). **OPT-HARDEN

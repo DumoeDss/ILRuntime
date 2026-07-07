@@ -192,30 +192,30 @@ path).
 
 ### Requirement: Neo async AwaitUnsafeOnCompleted is a tagged deferral (synchronous scope boundary)
 
-The Neo `AwaitUnsafeOnCompleted<TA,TSM>` and `AwaitOnCompleted<TA,TSM>` builder
-redirections SHALL be REGISTERED (so a call site resolving to them does not
-crash) but SHALL throw a `NotImplementedException` tagged
-`neo-step20-async-suspend` if reached at runtime. Reaching these redirections
-indicates a genuinely-incomplete awaitable (an await whose awaiter reports
-`IsCompleted == false`), which is the DEFERRED suspend/resumption scope. This
-is the explicit, machine-checkable scope boundary: the synchronous scope is
-correct and complete for sync-completing async; the suspend scope is a
-follow-up.
+The Neo `AwaitUnsafeOnCompleted<TA,TSM>` and `AwaitOnCompleted<TA,TSM>` builder redirections SHALL be REGISTERED on the Neo redirect map (`RedirectMapNeo`) so a closed-generic call site resolving to them dispatches to the registered handler and does not crash; the handlers SHALL throw a `NotImplementedException` tagged `neo-step20-async-suspend` if reached at runtime. Reaching these redirections indicates a genuinely-incomplete awaitable (an await whose awaiter reports `IsCompleted == false`), which is the DEFERRED suspend/resumption scope.
 
-#### Scenario: Incomplete awaiter reaches the tagged deferral
+The closed-generic `AwaitUnsafeOnCompleted<TA,TSM>` (TWO generic arguments) SHALL resolve on `RedirectMapNeo` via the SAME redirect-lookup path as the one-generic-argument `Start<TSM>`: the lookup is arity-agnostic (it branches on `IsGenericMethod && !IsGenericMethodDefinition`, trying `GetGenericMethodDefinition()` first then the closed definition) and SHALL NOT require arity-specific handling for the 2-argument case. The reachability of this tagged deferral SHALL be characterized by a DETERMINISTIC probe (an await whose awaiter is backed by a `TaskCompletionSource`-style awaitable whose completion is NOT signaled before the assertion, so `IsCompleted` is deterministically `false`), NOT by a racy `Task.Delay` probe that may sync-complete.
 
-- **WHEN** an async method awaits an awaitable whose `IsCompleted` is `false`
-  (a genuinely asynchronous operation), triggering `AwaitUnsafeOnCompleted`
-- **THEN** the Neo redirect SHALL throw a `NotImplementedException` whose
-  message references `neo-step20-async-suspend`, and SHALL NOT infinite-loop,
-  silently hang, or produce a wrong result
+This is the explicit, machine-checkable scope boundary: the synchronous scope is correct and complete for sync-completing async; the suspend scope (the body BEHIND this tagged NIE) is a follow-up.
+
+#### Scenario: The 2-generic-argument AwaitUnsafeOnCompleted redirect resolves on RedirectMapNeo (arity-agnostic, PROVEN)
+
+- **WHEN** an async method awaits an awaitable whose `IsCompleted` is deterministically `false` (a `TaskCompletionSource`-backed `Task` whose `SetResult` has NOT been called before the assertion), triggering the closed-generic `AwaitUnsafeOnCompleted<TA,TSM>` call
+- **THEN** the Neo redirect for the 2-generic-argument call SHALL resolve on `RedirectMapNeo` via the SAME arity-agnostic lookup path as the one-generic-argument `Start<TSM>` (the lookup branches on `IsGenericMethod && !IsGenericMethodDefinition`, trying `GetGenericMethodDefinition()` first), and SHALL NOT require arity-specific handling
+- **AND** the awaiter's `get_IsCompleted` SHALL return `false` for the incomplete Task (the discriminator that routes the await toward `AwaitUnsafeOnCompleted`)
+- (PROVEN by code-grounded verification of `CLRMethod.TryGetRedirection` + the redirect registration on `RedirectMapNeo`, plus the `NeoStep20_TC10_IncompleteTaskIsCompletedIsFalse` diagnostic guard that isolates the resolve/IsCompleted conjunct from the deferred reach conjunct.)
+
+#### Scenario: Reaching the tagged NIE without hanging is DEFERRED (the MoveNext control-flow blocker)
+
+- **WHEN** the deterministic incomplete-await probe (a `TaskCompletionSource`-backed `Task`, `SetResult` never called) drives a truly-async await through the Neo state machine
+- **THEN** the state machine SHALL reach the registered `AwaitUnsafeOnCompleted` handler and throw the `NotImplementedException` tagged `neo-step20-async-suspend`, and SHALL NOT infinite-loop or silently hang
+- (DEFERRED: on current HEAD the state machine HANGS after `get_IsCompleted` returns false, before reaching `AwaitUnsafeOnCompleted`/`GetResult` -- a MoveNext control-flow bug owned by the `neo-step20-async-suspend` resume follow-up. The deterministic probe `NeoStep20_TC8_IncompleteAwaitHitsTaggedNIE` is `[Ignored]` as the hang reproducer; it SHALL un-ignore green once the MoveNext control-flow bug is fixed. This conjunct is NOT proven; reaching the tagged NIE is the suspend follow-up's gate.)
 
 #### Scenario: Sync-completing await never reaches AwaitUnsafeOnCompleted
 
 - **WHEN** an async method awaits an awaitable whose `IsCompleted` is `true`
-- **THEN** the C# compiler's lowered `IsCompleted` short-circuit SHALL skip
-  the `AwaitUnsafeOnCompleted` call entirely, and the synchronous scope SHALL
-  complete without invoking the tagged deferral
+- **THEN** the C# compiler's lowered `IsCompleted` short-circuit SHALL skip the `AwaitUnsafeOnCompleted` call entirely, and the synchronous scope SHALL complete without invoking the tagged deferral
+- (Control: proves the deterministic probe is specific to the incomplete-await path. PROVEN by `NeoStep20_TC9_SyncControlSkipsAwaitUnsafeOnCompleted`.)
 
 ### Requirement: Neo async frame-to-heap state-machine hoist primitive
 

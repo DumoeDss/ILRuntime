@@ -104,7 +104,9 @@
     },
     "neo-generic-redirect-resolution": {
       "pipeline": "small-feature", "wave": 3, "scope": "[Step 20 async blocker] (B1) 2-generic-arg redirect (AwaitUnsafeOnCompleted<TA,TSM>) resolution on RedirectMapNeo + confirm AwaitUnsafeOnCompleted_Neo dispatch (hasRedirect=True contradicts the original B1 finding; needs a deterministic TaskCompletionSource-style probe, NOT a racy Task.Delay). Absorbs the disproven neo-async-controlflow-iscompleted investigation (control-flow is correct on HEAD). Then re-attempt the suspend machinery (Phase 2).",
-      "prerequisites": ["neo-step20-async-suspend"], "dependsOn": ["neo-step20-async-suspend"], "status": "pending", "capability": "neo-async"
+      "prerequisites": ["neo-step20-async-suspend"], "dependsOn": ["neo-step20-async-suspend"], "status": "done", "capability": "neo-async",
+      "completedDate": "2026-07-08", "smoke": "TEST-ONLY: NeoStep20 12/0 failed/1 ignored + NeoStep 218/0/1 (engine at HEAD; TC8 [Ignored] hang reproducer + TC9 sync-control + TC10 IsCompleted-false guards); Legacy-neutral",
+      "review": "APPROVE-WITH-FINDINGS (0 Blocker; #1 spec-overclaim FIXED at archive; #2/#3 Minor accepted-known). B1 EXONERATED (2-generic-arg redirect resolves on RedirectMapNeo; TryGetRedirection arity-agnostic). Real blocker = MoveNext control-flow (hangs after IsCompleted=false), pinned to neo-step20-async-suspend resume follow-up."
     },
     "neo-async-controlflow-iscompleted": {
       "pipeline": "small-feature", "wave": 3, "scope": "[DISPROVEN 2026-07-07] the brtrue control-flow bug is NOT present on HEAD (Phase-1 Task.Delay redirect fixed the symptom); the racy Task.Delay probe can't be a regression guard. Closed as no-op; folded into neo-generic-redirect-resolution.",
@@ -177,8 +179,8 @@
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; Minor dead-divide-assert + 3 Minor/Trivial accepted-known). Last numbered AOT-chain step."
     }
   },
-  "runnableFrontier": ["neo-generic-redirect-resolution", "neo-peephole-isinst", "neo-step25-s3-full-decoupling"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation"],
+  "runnableFrontier": ["neo-peephole-isinst", "neo-step25-s3-full-decoupling"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."
