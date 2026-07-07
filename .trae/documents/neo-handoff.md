@@ -3,7 +3,7 @@
 > **Read this FIRST when continuing the ILRuntime Neo work.**
 > Companion to `neo-implementation-steps.md` (the 26-step roadmap) and
 > `neo-deferred-items.md` (the deferred-items resolution map).
-> Last updated: 2026-07-06. Branch: `features/object-model-overhaul`. HEAD `0aafdb34`.
+> Last updated: 2026-07-07. Branch: `features/object-model-overhaul`. HEAD `9e89b05a`.
 > Authoritative current state lives in this file + `neo-deferred-items.md` +
 > the `openspec/specs/` capability specs + `openspec/changes/archive/`, and the
 > portfolio run state in
