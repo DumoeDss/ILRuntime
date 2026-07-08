@@ -1842,19 +1842,31 @@ A Cecil-free-loaded type's static constructor (`.cctor`) SHALL run at Cecil-free
 ### Requirement: The box T; isinst U peephole fusion is deferred behind a dedicated peephole-pass optimizer child (D-PEEP)
 
 The Neo optimizer SHALL NOT fuse the CIL pair `box T; isinst U` (box a value
-type then immediately type-check it) into a single direct check until a
-dedicated additive peephole-pass child lands the prerequisite infrastructure
-(an adjacent-opcode fusion pass with def-use/liveness analysis of the `box`
-dest register + a fused replacement opcode on a standalone `OpCodeR` field).
-(Status: DEFERRED - the prerequisite infrastructure does not exist on HEAD; the
-Step-22 `PatchKind`/`PatchEntry` mechanism is the wrong shape to host it; no
-fix ships. The fusion is a pure optimization: the current two-arm `box;isinst`
-path is functionally correct, so this deferral has no correctness cost.)
+type then immediately type-check it) into a single direct check. The fusion
+remains a deferred optimization: the current two-arm `box;isinst` path is
+functionally correct, and the fusion is gated on a demonstrated hot path that
+actually emits the adjacency, not on missing infrastructure.
 
-The dump-gate on HEAD `70505eba`
-(`openspec/changes/neo-peephole-isinst/design.md` decisions D1-D3) established
-three load-bearing findings a future peephole-pass planner MUST NOT re-derive
-the hard way. (1) The Step-22 `PatchKind` enum
+(Status: DEFERRED - on HEAD `162ce992` the fusion is deferred on ZERO observed
+payoff, not on missing infrastructure. The live-range def-use framework a fusion
+would reuse EXISTS (the Step-17 `addrAlias`/`liveAliases`/`liveAliasMap`
+machinery in `Optimizer.Neo.cs:35-428`), and the fused-opcode encoding is
+available (`Operand` @8 carries T, `Operand2` @12 carries U, both standalone and
+F-8-disjoint from wide-immediates; `Operand3` @16 MUST be avoided as it aliases
+the `OperandDouble` high 4 bytes). A Cecil-based frequency scan of TestCases.dll
++ ILRuntime.dll + ILRuntimeTestBase.dll found 0 adjacent `box;isinst` pairs
+across 1071 boxes and 1568 isinsts: the C# compiler elides the box when the
+source is already `object` (the overwhelmingly common case, e.g. `NeoStep15_
+TC4_BoxedValueTypeIs`) and folds value-type checks via constrained-virtual /
+`Unbox_Any`, so the JIT-time adjacency rate is zero. No fix ships until a real
+hot path that emits the adjacency is demonstrated; this deferral has no
+correctness cost.)
+
+The dump-gate on HEAD `70505eba` (prior child
+`archive/2026-07-08-neo-peephole-isinst/design.md` decisions D1-D3) and the
+re-gate on HEAD `162ce992` (`neo-peephole-pass/design.md` decisions D1-D4)
+establish these load-bearing findings a future peephole-pass planner MUST NOT
+re-derive the hard way. (1) The Step-22 `PatchKind` enum
 (`GenericMethodTemplate.cs:54`: `TypeToken`, `MethodToken`, `IsRefMoveFlag`) and
 `PatchEntry` struct (`:74-81`, keyed by `GenericParamIdx` + `CecilToken`) are a
 generic-method-template T-IDENTITY VALUE-SUBSTITUTION mechanism -- they record
@@ -1864,44 +1876,63 @@ peephole fusion is an OPCODE-STREAM REWRITE (pattern-match the pair, prove the
 remove the `box`); the patch table has no field for "the second opcode of the
 pair" / "the fused replacement" / "the dead-register predicate" and its applier
 (`GenericMethodTemplate.cs:596-604`) has no rewrite logic. (2) NO peephole/
-fusion pass exists in the optimizer (the `RegisterVM/` tree has zero matches
-for `peephole|fuse|fusion|IsinstResult`; the existing passes -- FCP, BCP, ELDC,
+fusion pass fires today (the `RegisterVM/` tree has zero matches for
+`peephole|fuse|fusion|IsinstResult`); the existing passes -- FCP, BCP, ELDC,
 InlineMethod, RegisterCleanup, the Neo back-half `TypeSpecializeNeoOpcodes`/
 `AllocateLocalStackSpaces`/`LowerNeoOffsets` -- do not pattern-match adjacent
-opcodes into a fused form). (3) `box T; isinst U` IS emitted as two adjacent
-register opcodes from the same CIL-translate arm (`JITCompiler.cs:2637-2645`)
-and runs correctly today via two independent `ExecuteNeo` arms (`Box`
-`ILIntepreter.Neo.cs:2660`, `Isinst` `:3072-3096`); copy-propagation can move
-the `box` away from the `isinst`, so a correct fusion pass needs real def-use/
-liveness, not a trivial adjacency peephole.
+opcodes into a fused form. CORRECTION to the prior child: the live-range def-use
+FRAMEWORK such a pass would build on IS now present as the Step-17
+`liveAliases`/`liveAliasMap` machinery (`Optimizer.Neo.cs:126-428` -- a forward
+walk with def/use/kill + an escape predicate + per-instruction live-range
+snapshots that handle eval-stack-register reuse), so the blocker is no longer a
+missing framework; it is the zero observed payoff. (3) `box T; isinst U` IS
+emitted as two adjacent register opcodes from the same CIL-translate arm
+(`JITCompiler.cs:2637-2645`) and runs correctly today via two independent
+`ExecuteNeo` arms (`Box` `ILIntepreter.Neo.cs:2892`, `Isinst` `:3413`); copy-
+propagation can move the `box` away from the `isinst`, so a correct fusion pass
+needs the Step-17-style liveness, not a trivial adjacency peephole. (4) The
+fused check has a real semantic hazard: it MUST answer "is value-type T's
+identity (or its implemented interfaces) assignable to U" -- NOT `obj.GetType()`
+on a non-existent boxed object (a boxed `int` is assignable to `object`/
+`ValueType`/`int`/its interfaces, NOT to `long`).
 
 A future peephole-pass child that lands this fusion SHALL satisfy ALL of: (a)
 it is a NEW additive optimizer pass with adjacent-pattern-match + def-use/
-liveness analysis of the `box` dest register (the fusion is legal ONLY when the
-boxed object is unobserved after the `isinst`); (b) the fused replacement
-opcode's payload lives on a STANDALONE `OpCodeR` field whose byte range does NOT
-alias a wide-immediate field a runtime consumer reads (`OperandLong`/
-`OperandDouble` @12-19, `OperandFloat` @8-11) -- the F-8 / OPT-HARDEN-K1 /
-double-combine OpCodeR-union-aliasing discipline; (c) it MUST NOT be implemented
-as a `PatchKind.IsinstResult` extension to the Step-22 patch table (wrong
-abstraction; see finding 1); (d) it is gated `#if ENABLE_NEO_MODE` (Neo-only)
-and a stash-toggle plain-`Debug` + `useRegister=true` NeoStep-filter run shows
-the SAME pre-existing Legacy failure set; (e) an adversarial equivalence probe
-proves the fused form produces the SAME result as the un-fused `box;isinst` for
-the null case, the wrong-type case, the subclass case, AND the case where the
-boxed object IS observed after the check (fusion correctly declined). The
-canonical `neo-optimizer` "PatchEntry captures only T-identity operand sites"
+liveness analysis of the `box` dest register (reusing the Step-17
+`liveAliases`/`liveAliasMap` machinery), legal ONLY when the boxed object is
+unobserved after the `isinst`; (b) the fused replacement opcode carries the TWO
+type tokens on `Operand` @8 (T) and `Operand2` @12 (U) -- both STANDALONE int
+fields whose byte ranges do NOT alias a wide-immediate field a runtime consumer
+reads (`OperandLong`/`OperandDouble` @12-19, `OperandFloat` @8-11) per the F-8 /
+OPT-HARDEN-K1 / double-combine OpCodeR-union-aliasing discipline; `Operand3`
+@16 MUST NOT be used (it aliases the `OperandDouble` high 4 bytes -- the F-8
+clobber); (c) it MUST NOT be implemented as a `PatchKind.IsinstResult` extension
+to the Step-22 patch table (wrong abstraction; see finding 1); (d) it is gated
+`#if ENABLE_NEO_MODE` (Neo-only) and compiles out under plain `Debug` so a
+stash-toggle plain-`Debug` + `useRegister=true` NeoStep-filter run shows the SAME
+pre-existing Legacy failure set; (e) BEFORE building the pass, the child SHALL
+re-run a Cecil-based adjacency scan on the target workload and document a hot
+path that actually emits `box;isinst` adjacency -- without a demonstrated hit,
+the pass is premature optimization (the canonical workloads at HEAD show 0/1071);
+(f) an adversarial equivalence probe proves the fused form produces the SAME
+result as the un-fused `box;isinst` for the null case, the wrong-type case, the
+subclass case, the boxed-`int`-vs-`long` identity case (finding 4), AND the case
+where the boxed object IS observed after the check (fusion correctly declined).
+The canonical `neo-optimizer` "PatchEntry captures only T-identity operand sites"
 requirement is UNCHANGED and still governs the Step-22 patch table; this
 requirement only records that D-PEEP is not a PatchEntry.
 
-#### Scenario: No box;isinst fusion ships without a peephole-pass child
-- **WHEN** the optimizer runs on HEAD `70505eba` (no peephole-pass child has
-  landed)
+#### Scenario: No box;isinst fusion ships without a demonstrated hot path
+- **WHEN** the optimizer runs on HEAD `162ce992` (no peephole-pass child has
+  landed; the Step-17 live-range framework exists but no fusion pass uses it)
 - **THEN** a CIL `box T; isinst U` sequence MUST execute as two opcodes (a `Box`
   followed by an `Isinst`) with NO fused form emitted, because no fusion pass
   exists in the optimizer
 - **AND** the result MUST be correct (the two-arm path is the only path), so the
   absence of fusion is a perf cost only, not a correctness gap
+- **AND** a Cecil-based adjacency scan over the canonical workloads (TestCases +
+  ILRuntime + ILRuntimeTestBase) MUST show zero adjacent `box;isinst` pairs,
+  confirming the fusion would fire on no path today
 
 #### Scenario: The Step-22 PatchKind is not extended with IsinstResult
 - **WHEN** a future change proposes to fuse `box T; isinst U` by adding an
@@ -1912,577 +1943,14 @@ requirement only records that D-PEEP is not a PatchEntry.
   fusion is an opcode-stream rewrite (delete the `box`, merge into the `isinst`)
   that the patch table's fields and applier cannot express
 - **AND** the future fusion MUST instead be a new additive optimizer pass +
-  a fused opcode on a standalone `OpCodeR` field
+  a fused opcode on standalone `Operand` (T) + `Operand2` (U) fields
+
+#### Scenario: The fused-opcode encoding respects the F-8 union-aliasing discipline
+- **WHEN** a future fusion opcode carries the two type tokens T and U
+- **THEN** T MUST be encoded on `Operand` @8 and U on `Operand2` @12 (both
+  standalone int fields), and `Operand3` @16 MUST NOT be used because it aliases
+  the `OperandDouble` high 4 bytes (the F-8 clobber)
+- **AND** neither field's byte range SHALL overlap a wide-immediate field a
+  runtime consumer reads (`OperandLong`/`OperandDouble` @12-19, `OperandFloat`
+  @8-11)
 
-#### Scenario: A correct fusion requires liveness, not adjacency
-- **WHEN** a future fusion pass considers fusing a `Box` into a following
-  `Isinst`
-- **THEN** the pass MUST prove the `Box` dest register is dead after the
-  `Isinst` (the boxed object is not observed by any later instruction), because
-  copy-propagation can move the `Box` away from the immediately-adjacent
-  `Isinst` and an observed box makes the fusion illegal
-- **AND** a fusion that fires only on trivial adjacency (no liveness) MUST be
-  rejected as incorrect
-
-#### Scenario: A future fused opcode obeys the OpCodeR-union discipline
-- **WHEN** a future fusion lands a fused replacement opcode carrying both the
-  `box` type token T and the `isinst` type token U
-- **THEN** the opcode's payload MUST live on standalone `OpCodeR` fields whose
-  byte ranges do NOT alias `OperandLong`/`OperandDouble` (@12-19) or
-  `OperandFloat` (@8-11)
-- **AND** the pass MUST verify per-opcode-kind disjointness (the F-8
-  `LowerNeoOffsets` `Operand3` @16-clobbers-`OperandDouble` discipline), so the
-  fusion does not reintroduce the OpCodeR-union-aliasing defect class
-
-#### Scenario: The current box;isinst path is correct without fusion
-- **WHEN** an IL method under `ENABLE_NEO_MODE` evaluates `boxedLocal is U` or
-  `( boxedLocal as U )` on a value-type-typed local (the C# compiler emits
-  `box T; isinst U`)
-- **THEN** the result MUST be correct on HEAD without any fusion (null source
-  -> null; matching type -> the reference; non-matching type -> null), proving
-  the fusion is a pure optimization with no correctness gap
-- **AND** the Step-15 `NeoStep15_*` smoke exercising `isinst` MUST stay green
-  (it already covers this shape through the un-fused path)
-
-#### Scenario: Legacy ExecuteR is unaffected
-- **WHEN** the runtime is built WITHOUT `ENABLE_NEO_MODE` and runs the Legacy
-  register VM
-- **THEN** the Legacy NeoStep-filter smoke MUST show the SAME pre-existing
-  failures with and without any future fusion change, because the fusion pass +
-  the fused opcode SHALL be gated `#if ENABLE_NEO_MODE` and compile out of
-  plain `Debug`
-
-#### Scenario: Activation requires the prerequisite child
-- **WHEN** no dedicated peephole-pass optimizer child has landed (the
-  prerequisite -- a new fusion pass + liveness + a standalone-field fused
-  opcode -- does not exist)
-- **THEN** this requirement stays DEFERRED and no fusion code SHALL ship
-- **AND WHEN** a peephole-pass child lands that satisfies conditions (a)-(e)
-  above
-- **THEN** this requirement becomes ACTIVE for the fused shapes that child
-  covers, and the child's adversarial equivalence probe is the gate
-
-
-### Requirement: Standalone AOT CLI registers host CLR reference assemblies with the host CLR
-
-The standalone `ilrt_neoc` precompile CLI SHALL register every reference
-assembly passed on the command line with the host CLR via
-`System.Reflection.Assembly.LoadFrom` (in the file-path `NeoCompiler.Compile`
-overload), so the compile AppDomain's CLR-type fallback
-(`AppDomain.GetType(string)`, the live
-`System.AppDomain.CurrentDomain.GetAssemblies()` scan) resolves host CLR types
-as `CLRType`. This mirrors the in-process runtime model, where a host CLR
-assembly defining a type referenced by the IL (e.g. a CLR enum such as
-`TestCLREnum`) is resident in the host `System.AppDomain` and is found by the
-same fallback without any explicit registration call.
-
-The registration SHALL be best-effort: a reference that cannot be CLR-loaded
-(BCL assembly already loaded, native/ref-only metadata, missing file) SHALL be
-caught and skipped, and resolution SHALL fall back to the existing CLR/BCL
-scan. A failed `LoadFrom` SHALL NOT fatal-abort the compile.
-
-#### Scenario: Input referencing a host CLR enum compiles without a CLR-resolution fatal
-
-- **WHEN** `ilrt_neoc` is run on an input IL assembly whose methods reference a
-  host CLR enum defined in a non-BCL host CLR assembly, AND that host assembly
-  is passed as a reference path
-- **THEN** the compile SHALL resolve the enum's Cecil `TypeReference` token to
-  a `CLRType` (NOT an `ILType`) and SHALL write a valid `.neo` (magic
-  `0x494C524E`) with exit code 0 (clean) or 2 (partial, for unrelated
-  unimplemented-op skips), and SHALL NOT emit `Cannot find Type` on stderr.
-
-#### Scenario: Host CLR ref that cannot be CLR-loaded is skipped, not fatal
-
-- **WHEN** a reference path passed to the CLI is not CLR-loadable (already
-  loaded, ref-only metadata, or missing) AND `Assembly.LoadFrom` throws
-- **THEN** the CLI SHALL catch the exception, skip that reference, and continue
-  compiling without fatal-aborting (exit 1 is reserved for input-load /
-  serializer fatals, not for a skipped reference).
-
-#### Scenario: Host CLR type resolves at .neo load time via the existing CLR path
-
-- **WHEN** a `.neo` produced from a host-CLR-type-referencing input is loaded
-  in an AppDomain where the host CLR assembly is registered
-- **THEN** the `.neo` loader SHALL resolve the host CLR type via
-  `NeoAssemblyLoader.ResolveTypeRefToIType` -> `appdomain.GetType(fullName)`
-  (the same CLR fallback), producing the same `CLRType` the compile recorded,
-  with NO `.neo` format extension required.
-
-### Requirement: Host CLR reference assemblies MUST NOT be registered via the IL LoadAssembly path
-
-The standalone CLI SHALL NOT register a host CLR reference assembly via
-`AppDomain.LoadAssembly` (the IL hotfix load path). `LoadAssembly`-ing a host
-CLR assembly wraps its types as `ILType` in `mapType`, which `AppDomain.GetType
-(string)` returns BEFORE reaching the CLR fallback, shadowing the real CLR type
-with an `ILType`. For a CLR enum this shadow both mis-resolves the type and
-produces a downstream failure during compile.
-
-#### Scenario: Host CLR enum is not shadowed by an ILType wrap
-
-- **WHEN** a host CLR assembly defining a CLR enum is passed as a reference to
-  the CLI
-- **THEN** the CLI SHALL NOT call `AppDomain.LoadAssembly` on it, and the
-  enum's Cecil `TypeReference` SHALL resolve to a `CLRType` (the real CLR
-  enum), so that a method reading the enum after `.neo` load + attach executes
-  the enum equality correctly (the enum value round-trips).
-
-#### Scenario: Removed LoadAssembly-the-ref path regresses no verified scenario
-
-- **WHEN** the prior `LoadAssembly(refStream)` reference loop is replaced by
-  the `Assembly.LoadFrom` registration
-- **THEN** no previously-green self-check or smoke (NeoStep, NeoStep22/23/24/25
-  self-checks) SHALL regress, because the replaced path had no verified
-  coverage (Step-24 V1-B was BCL-refs-only; the ref-`LoadAssembly` path was
-  V1-A-UNVERIFIED).
-
-
-### Requirement: Standalone AOT CLI gracefully skips IL types whose CLR base or interface needs an unregistered CrossBindingAdaptor
-
-The standalone `ilrt_neoc` precompile CLI SHALL NOT fatal-abort when an input
-IL type's CLR-class base or CLR interface needs a `CrossBindingAdaptor` that
-is not registered in the compile AppDomain. The skip SHALL be implemented in
-`NeoCompiler.CompileCore` (the shared core both the file-path
-`Compile(string, IReadOnlyList<string>, Stream)` overload and the host-side
-`Compile(IReadOnlyList<ILType>, Stream)` overload call). The trigger is the
-lazy CLR-base or CLR-interface adaptor resolution that throws
-`TypeLoadException("Cannot find Adaptor for:...")` (the throw sites at
-`ILType.cs:1505` / `:1568` / `:1593`, keyed on `appdomain.CrossBindingAdaptors`).
-Such a type -- whose CLR base or
-CLR interface needs a `CrossBindingAdaptor` that is NOT registered in the
-compile AppDomain (the typical case for a test-harness-specific or
-application-specific adaptor the generic CLI does not carry) -- SHALL be
-SKIPPED at the TYPE level: every method on the type SHALL be omitted from the
-`.neo`, the type SHALL be recorded in the `NeoCompilerResult.Skipped` report
-with a clear type-level display marker, and the compile SHALL continue with
-the survivor subset. The `.neo` SHALL still be written (a valid file with the
-survivor methods, templates, and type defs), and the CLI SHALL return exit
-code `2` (partial) -- NOT exit code `1` (fatal). This is the SAME additive-skip
-contract as the existing per-method try/catch in `CompileCore` (a method that
-throws during compile is recorded as a skip and omitted), lifted from METHOD
-granularity to TYPE granularity.
-
-The skip SHALL be implemented as a per-type PRE-FILTER at the top of
-`CompileCore`: each input type's lazy adaptor resolution SHALL be eagerly
-triggered (by touching the type's `FirstCLRBaseType` and `FirstCLRInterface`
-getters, which drive `InitializeBaseType` / `InitializeInterfaces`) inside a
-per-type try/catch that catches `TypeLoadException`; a type whose init throws
-SHALL be excluded from the survivor list, and ONLY the survivor list SHALL be
-passed to the per-method compile loop AND to `NeoAssemblyWriter.Write`.
-Because the ILType init is memoized (`baseTypeInitialized` /
-`interfaceInitialized`), a survivor's later `BaseType` access -- including
-inside `NeoAssemblyWriter.BuildTypeDefRecord` (`NeoAssemblyWriter.cs:755` /
-`:762`) -- SHALL NOT re-throw. The skip SHALL catch `TypeLoadException` (the
-adaptor-absence exception) specifically; any OTHER exception during type init
-SHALL propagate unchanged (a genuine non-`TypeLoadException` type-init failure
--- e.g. a real `NullReferenceException` from a logic bug -- remains a loud
-fatal, exit 1, not a silent skip).
-
-The pre-filter SHALL ALSO eagerly trigger the type's FIELD init (by touching
-`type.TotalPrimitiveSize`, whose getter calls `ILType.InitializeFields` when
-`fieldMapping == null`) inside the SAME per-type try/catch. An input IL type
-with a field whose type fails to resolve -- e.g. a compiler-generated
-anonymous OPEN generic type definition (`<>f__AnonymousType0`2<j,k>`) whose
-generic-parameter field yields a null field type via `FindGenericArgument`, or
-any type with an otherwise-unresolvable field type -- SHALL be SKIPPED at the
-type level by the SAME mechanism: `ILType.InitializeFields` SHALL throw
-`TypeLoadException("Cannot resolve field type: ...")` (mirroring the adaptor-
-lookup throw sites at `ILType.cs:1505` / `:1568` / `:1593`) when a field's
-resolved type is null, INSTEAD of null-dereferencing; the pre-filter's
-`TypeLoadException` catch then records the skip and the `.neo` is still
-written for the survivor subset (exit 2). An unresolvable field type is a
-LOAD failure (a `TypeLoadException`), in the same category as the adaptor
-absence -- it is NOT a "non-adaptor type-init failure" that must stay fatal.
-The `InitializeFields` TLE throw SHALL be `#if ENABLE_NEO_MODE`-gated (it
-sits inside the same Neo block that already gated the null-deref), so Legacy
-is byte-identical.
-
-A method with no Cecil body -- a delegate's `Invoke` / `BeginInvoke` /
-`EndInvoke` (runtime-implemented), or any abstract / extern / PInvoke method
-(`MethodDefinition.HasBody == false`) -- has no IL to AOT-compile. The
-CompileCore per-method loop SHALL silently omit such methods (mirroring the
-`IsGenericInstance` silent-skip), so they never reach
-`NeoAssemblyWriter.CompileFresh` (whose JIT would null-deref the absent body).
-This is a PRE-COMPILE filter, not a broadened catch: a body-bearing method
-whose JIT throws is still recorded as a per-method skip, and a genuine
-`CompileFresh` bug on a body-bearing method still stays a loud fatal.
-
-The CLI SHALL NOT couple, reference, or register any test-harness-specific
-adaptor (the adaptors `ILRuntimeHelper.Init` registers in
-`ILRuntimeTestBase/Adapters/helper.cs:22-29`, or any application-specific
-adaptor). The generic compile tool SHALL be robust to the ABSENCE of any
-adaptor it does not ship: a type needing such an adaptor is SKIPPED, never
-resolved, by this mechanism.
-
-#### Scenario: Full TestCases.dll compiles to a valid .neo with no adaptor fatal
-
-- **WHEN** `ilrt_neoc TestCases.dll out.neo <refs>` is run on the full
-  `TestCases.dll` (which contains IL types inheriting harness-adaptor CLR
-  classes such as `TestClass2`, `TestClass3`, `TestClass4`,
-  `ClassInheritanceTest`, `ClassInheritanceTest2<T>`, and `IDisposable`) and
-  the host CLR assembly is passed as a reference
-- **THEN** the CLI SHALL write a valid `out.neo` (magic `0x494C524E`) and
-  return exit code `0` (clean) or `2` (partial)
-- **AND** the CLI SHALL NOT emit `Cannot find Adaptor` as a FATAL on stderr
-  (the `ilrt_neoc: FATAL: serializer failure: Cannot find Adaptor for:...`
-  line that occurs on HEAD before this change SHALL NOT appear)
-- **AND** every IL type whose CLR base/interface needs an unregistered
-  adaptor SHALL appear in the skip report (a `SKIP (type) <FullName>:
-  TypeLoadException: Cannot find Adaptor for:...` line per skipped type)
-
-#### Scenario: An adaptor-requiring IL type is skipped at the type level, not fatal
-
-- **WHEN** the input contains an IL type `X` whose non-generic CLR base is a
-  class `B` for which NO `CrossBindingAdaptor` is registered in the compile
-  AppDomain (the `TestClass2` shape), alongside other IL types that have no CLR
-  base (or a built-in-adaptor CLR base)
-- **THEN** the compile SHALL skip `X` entirely: NO method of `X` SHALL appear
-  in the `.neo` `MethodDefTable`, NO template of `X` SHALL appear in the
-  `TemplateTable`, and NO `NeoTypeDefRecord` for `X` SHALL be emitted
-- **AND** `X` SHALL be recorded in `NeoCompilerResult.Skipped` with a type-
-  level display marker (e.g. `(type) <X.FullName>`) and the
-  `TypeLoadException` message
-- **AND** the other (resolvable) IL types SHALL compile and be emitted
-  normally (the skip is scoped to the adaptor-requiring type, not contagious)
-- **AND** `NeoCompilerResult.IsComplete` SHALL be `false`, driving exit code
-  `2` (the `.neo` is written; the run is partial)
-
-#### Scenario: The generic-instance CLR-base adaptor case is also skipped
-
-- **WHEN** the input contains an IL type whose base is a GENERIC-INSTANCE CLR
-  class needing an adaptor (e.g. `class X : ClassInheritanceTest2<X>`, the
-  `ILType.cs:1568` throw site) and no matching adaptor construction is
-  registered
-- **THEN** the compile SHALL skip the type (record it in `Skipped`, omit its
-  methods/templates/type-def, continue with survivors, exit `2`) -- NOT fatal
-
-#### Scenario: The CLR-interface adaptor case is also skipped
-
-- **WHEN** the input contains an IL type that IMPLEMENTS a CLR interface for
-  which no adaptor is registered (the `ILType.cs:1505` throw site)
-- **THEN** the compile SHALL skip the type (record it in `Skipped`, omit its
-  methods/templates/type-def, continue with survivors, exit `2`) -- NOT fatal
-
-#### Scenario: A type whose CLR base resolves via a built-in adaptor is NOT skipped
-
-- **WHEN** the input contains an IL type `class X : System.Exception` (or
-  `class Y : System.Attribute`) and the compile AppDomain is constructed via
-  `new AppDomain()` (whose ctor registers `Adapters.ExceptionAdaptor` at
-  `AppDomain.cs:244` and `Adapters.AttributeAdapter` at `AppDomain.cs:237`)
-- **THEN** the pre-filter's eager `FirstCLRBaseType` access SHALL find the
-  built-in adaptor in `appdomain.CrossBindingAdaptors` and SUCCEED
-- **AND** the type SHALL NOT be skipped -- its methods SHALL be compiled and
-  emitted (a built-in-adaptor type resolves TODAY; this change preserves that)
-- **AND** no additional built-in adaptor registration SHALL be added by this
-  change (the ctor's registration is the single source)
-
-#### Scenario: A type with an unresolvable field type is skipped, not fatal (A2 closure)
-
-- **WHEN** the input contains an IL type with a field whose type fails to
-  resolve in the compile AppDomain -- e.g. a compiler-generated anonymous OPEN
-  generic type definition (`<>f__AnonymousType0`2<j,k>`) whose generic-
-  parameter field yields a null field type via `FindGenericArgument`, or any
-  type whose `appdomain.GetType(field.FieldType)` returns null
-- **THEN** `ILType.InitializeFields` SHALL throw `TypeLoadException("Cannot
-  resolve field type: ...")` (mirroring the adaptor-lookup throw sites)
-  INSTEAD of null-dereferencing the field type
-- **AND** the pre-filter (which eagerly touches `type.TotalPrimitiveSize`,
-  triggering `InitializeFields`) SHALL catch that `TypeLoadException` and
-  record the type as a type-level skip
-- **AND** the compile SHALL write the `.neo` for the survivor subset and
-  return exit `2` (partial) -- NOT exit `1` (fatal) on a `NullReferenceException`
-- **AND** the `InitializeFields` TLE throw SHALL be `#if ENABLE_NEO_MODE`-gated
-  (Legacy byte-identical under plain `Debug`)
-
-#### Scenario: A method with no Cecil body is silently omitted, not fatal (A3 extension)
-
-- **WHEN** the input contains a method with `MethodDefinition.HasBody == false`
-  -- a delegate's `Invoke` / `BeginInvoke` / `EndInvoke` (runtime-implemented),
-  or an abstract / extern / PInvoke method
-- **THEN** the CompileCore per-method loop SHALL silently omit it (it has no
-  IL to AOT-compile), so it never reaches `NeoAssemblyWriter.CompileFresh`
-  (whose JIT would null-deref the absent body)
-- **AND** the `.neo` loader's existing additive JIT fallback SHALL handle it
-  at load time
-- **AND** this SHALL be a pre-compile filter (a body-bearing method whose JIT
-  throws is still recorded as a per-method skip; a genuine `CompileFresh` bug
-  on a body-bearing method stays a loud fatal)
-
-#### Scenario: A genuine non-TypeLoadException type-init failure stays a loud fatal, not a silent skip
-
-- **WHEN** a type's lazy init throws an exception that is NEITHER an adaptor-
-  absence `TypeLoadException` NOR a field-type-resolution `TypeLoadException`
-  -- i.e. a genuine non-`TypeLoadException` failure (e.g. a real
-  `NullReferenceException` from a compile-tool LOGIC bug, not an
-  unresolvable-type load failure)
-- **THEN** the pre-filter SHALL NOT catch it (the catch is scoped to
-  `TypeLoadException`); it SHALL propagate to `CompileCore`'s outer wrapper
-  and surface as `ilrt_neoc: FATAL: ...` (exit `1`)
-- **AND** the skip report SHALL NOT contain a spurious entry for it (a real
-  bug is not masked as a graceful skip)
-- **NOTE** an unresolvable field type (an open-generic definition's generic-
-  parameter field, or any field whose `appdomain.GetType` returns null) is a
-  LOAD failure: `ILType.InitializeFields` throws `TypeLoadException` for it
-  (mirroring the adaptor-lookup sites), so the pre-filter DOES skip it (exit
-  2). It is NOT an example of this "stays fatal" scenario -- only a non-TLE
-  failure stays fatal.
-
-#### Scenario: No test-harness-specific adaptor is coupled into the generic CLI
-
-- **WHEN** the change is built and the `ILRuntimeNeoCompiler` project's
-  references are inspected
-- **THEN** the project SHALL NOT reference `ILRuntimeTestBase` or any
-  test-framework assembly
-- **AND** no `RegisterCrossBindingAdaptor` call for a test-harness-specific
-  adaptor (`TestClass2Adapter`, `TestClass3Adaptor`, `TestClass4Adaptor`,
-  `ClassInheritanceTestAdaptor`, `ClassInheritanceTest2Adaptor`,
-  `InterfaceTestAdaptor`, `IDisposableAdapter`,
-  `IAsyncStateMachineClassInheritanceAdaptor`) SHALL be added to `NeoCompiler`
-  or the CLI
-- **AND** the robustness SHALL come entirely from the graceful-SKIP mechanism
-  (a type needing such an adaptor is skipped), NOT from coupling the adaptor
-
-#### Scenario: The skip is purely compile-side; the .neo loader is unchanged
-
-- **WHEN** a `.neo` produced by this change (a partial `.neo` missing the
-  adaptor-requiring types) is loaded by `NeoAssemblyLoader.Attach`
-- **THEN** the loader SHALL behave exactly as before this change: it SHALL
-  attach every method def it can bind and SKIP every method/type it cannot
-  bind (the existing additive load contract)
-- **AND** no `.neo` format change, no `NeoAssemblyLoader` change, no
-  `NeoAssemblyWriter` change, and no `AppDomain` change SHALL be introduced by
-  this requirement. (The ONE `ILType` change in scope is the Neo-gated
-  `InitializeFields` field-type `TypeLoadException` throw described above; no
-  other `ILType` change. The loader is unchanged -- the throw is a compile-time
-  load failure that drives a type-skip, not a loader behavior.)
-
-#### Scenario: Legacy ExecuteR is unaffected
-
-- **WHEN** the runtime is built WITHOUT `ENABLE_NEO_MODE` and the Legacy
-  register VM runs the NeoStep-filter smoke
-- **THEN** the smoke SHALL show the SAME pre-existing Legacy failure set with
-  and without this change (stash-toggle proof), because the pre-filter and the
-  `MakeTypeSkip` helper are inside `NeoCompiler.cs` (gated `#if
-  ENABLE_NEO_MODE`, compiles out under plain `Debug`), AND the
-  `ILType.InitializeFields` field-type `TypeLoadException` throw is inside the
-  SAME `#if ENABLE_NEO_MODE` block that already gated the null-deref -- so
-  plain `Debug` is byte-identical (the plain-`Debug` ILRuntime build is 0
-  errors; the null-fieldType path was already latent in Legacy and is not
-  reached by the Neo-only AOT CLI)
-
-#### Scenario: The host-side Compile overload gets the skip for free
-
-- **WHEN** the host-side `NeoCompiler.Compile(IReadOnlyList<ILType>, Stream)`
-  overload is invoked (the V1-A self-check path)
-- **THEN** it SHALL route through the SAME `CompileCore` pre-filter, so an
-  adaptor-requiring type in the explicit type set is skipped (recorded in
-  `Skipped`, omitted, exit-2-equivalent) with NO separate edit
-
-
-### Requirement: A `.neo` loads into a FRESH Cecil-free ILRuntime AppDomain and executes correctly via ExecuteNeo (S3-2 capstone)
-
-The runtime SHALL provide a Neo-only `AppDomain.LoadNeoAssembly(NeoAssemblyModel
-model, IReadOnlyList<string> hostClrRefPaths)` entry that loads a `.neo` into the
-calling AppDomain WITHOUT reading any Cecil `ModuleDefinition`. The fresh
-AppDomain's `mapType` / `mapTypeToken` / `mapMethod` SHALL be populated PURELY
-from the `.neo` tables + the host CLR refs (via `Assembly.LoadFrom`, the S3-5
-pattern). A method invoked on a Cecil-free ILType SHALL execute via `ExecuteNeo`
-and yield the correct result, exercising field read + virtual dispatch +
-interface dispatch on the Cecil-free type.
-
-#### Scenario: A Cecil-free load builds live ILTypes from NeoTypeDefRecords
-- **WHEN** `LoadNeoAssembly(model, hostClrRefPaths)` is called on a fresh
-  AppDomain
-- **THEN** the loader SHALL NOT call `ModuleDefinition.ReadModule` (no Cecil
-  stream) + SHALL NOT add to `loadedModules`
-- **AND** for each `NeoTypeDefRecord` in `model.TypeDefs`, the loader SHALL build
-  a live `ILType` via a Neo-only factory that sets the instance layout
-  (`totalPrimitiveSize`, `totalReferenceCnt`, per-field `fieldOffsets`,
-  `fieldTypes`, `fieldMapping`), the re-derived `naturalAlignment`, the Neo VTable
-  (from `VTableMethodRefIdxs` resolved to live `IMethod[]`), and the interface map
-  (from `Interfaces[]`) DIRECTLY
-- **AND** each Cecil-free ILType SHALL be registered in `mapType[fullName]` +
-  `mapTypeToken[freshHash]`
-- **AND** a Cecil-free ILType's Cecil-reading properties (`TypeDefinition`,
-  `TypeReference`, `GenericParameters`, etc.) SHALL throw a descriptive
-  `NotSupportedException` when accessed (NEVER silently return null/wrong)
-
-#### Scenario: A two-pass build resolves intra-.neo base + interface references
-- **WHEN** a `.neo` declares a type whose base type or interface is ANOTHER type
-  in the same `.neo`
-- **THEN** the loader SHALL build all `.neo` ILTypes in a first pass (registered
-  in `mapType` by FullName) + resolve base/interface by NAME in a second pass
-- **AND** a base/interface type NOT in the `.neo` SHALL resolve by name via the
-  host CLR fallback (`GetType(string)`, post `Assembly.LoadFrom`)
-
-#### Scenario: The capstone executes correctly on a Cecil-free AppDomain
-- **WHEN** the S3 probe (`TestCases.NeoStep25S3Probe`, 3 instance fields of
-  differing widths + a base-virtual override + an interface impl) is compiled in
-  AppDomain A, loaded Cecil-free into a fresh AppDomain B, and a method invoked
-- **THEN** the invocation SHALL return the known-expected value
-- **AND** field read, virtual dispatch, and interface dispatch SHALL all execute
-  on the Cecil-free ILType
-
-#### Scenario: A green smoke does NOT prove the Cecil-free load (adversarial gate)
-- **WHEN** the Cecil-free load is validated
-- **THEN** a body-mutation cell SHALL mutate a `Ldc_I4` constant in an
-  INDEPENDENT `model2`'s `NeoExecuteBody` BEFORE load + assert the Cecil-free
-  execution yields the MUTATED value (not the Cecil/JIT value)
-- **AND** a layout-mutation cell SHALL mutate a `PrimitiveOffset` in `model2`'s
-  `Fields[]` BEFORE load + assert the Cecil-free ILType's `fieldOffsets` reflects
-  the mutation (not Cecil's)
-- **AND** a Cecil-free load that secretly fell back to Cecil or used the
-  compile-AppDomain's maps SHALL fail BOTH mutation cells
-
-### Requirement: The .neo records compile-time identity hashes per reference entry for cross-AppDomain re-registration (APPROACH 1, sub-surface 3)
-
-The `.neo` format SHALL carry a parallel `int[]` of compile-time identity hashes
-alongside the TypeRef and MethodRef tables, recorded at serialize time (a
-`.neo` Version bump). The Cecil-free loader SHALL re-register each resolved ref
-under the recorded hash so the identity-hash token operands baked into the
-deserialized `OpCodeR[]` bodies resolve in the fresh AppDomain. This SHALL NOT
-mutate the bodies and SHALL NOT change `GetHashCode` semantics.
-
-#### Scenario: The TypeRef + MethodRef tables carry recorded identity hashes
-- **WHEN** a `.neo` is serialized after Cecil-load + force-compile in the
-  compiling AppDomain
-- **THEN** each TypeRef entry SHALL carry the compile-time identity hash of the
-  resolved `IType` (`t.GetHashCode()`, the value `GetTypeTokenHashCode` stores
-  at `ILMethod.cs:1250`), or -1 for an unresolved/skip entry
-- **AND** each MethodRef entry SHALL carry the compile-time identity hash of the
-  resolved `IMethod` (`m.GetHashCode()`), or -1
-- **AND** the `.neo` Version SHALL be bumped (the reader SHALL reject a prior-
-  Version `.neo` for the Cecil-free load via a Version guard)
-
-#### Scenario: The Cecil-free loader re-registers resolved refs under recorded hashes
-- **WHEN** the Cecil-free loader resolves a ref by NAME (IL via the `.neo` TypeDef
-  table; CLR via `GetType(string)` post `Assembly.LoadFrom`)
-- **AND** the recorded hash for that ref is != -1
-- **THEN** the loader SHALL register the resolved live object in `mapTypeToken`
-  (for a type) or `mapMethod` (for a method) under the RECORDED hash
-- **AND** the deserialized `OpCodeR[]` token operands (baked with the compile-time
-  hash) SHALL resolve in the fresh AppDomain via `GetType(int)` / `GetMethod(int)`
-
-#### Scenario: Same-AppDomain loads ignore the recorded hashes
-- **WHEN** a V2 `.neo` (with recorded hashes) is loaded same-AppDomain via the
-  S1/S2/S3-partial `NeoAssemblyLoader.Attach` path
-- **THEN** the recorded-hash arrays SHALL be IGNORED (the live maps resolve the
-  bodies naturally)
-- **AND** the same-AppDomain S1/S2/S3-partial behavior SHALL be unchanged
-
-#### Scenario: String-token + switch-target hashes need no recording
-- **WHEN** a deserialized body's ldstr token or switch-target hash is resolved in
-  the fresh AppDomain
-- **THEN** the string interner SHALL be content-keyed (stable across AppDomains,
-  no recording needed) for ldstr
-- **AND** the switch-target hashes SHALL be body-local (carried verbatim in
-  `SwitchTargets`, rebuilt by `RebuildSwitchTargetsFromNeo`, no cross-AppDomain
-  concern)
-- **AND** the static-field token path SHALL be unexercised by the capstone
-  (SEQUENCE with sub-surface 4)
-
-### Requirement: Host CLR reference assemblies are registered via Assembly.LoadFrom on the Cecil-free load side (reuses the S3-5 pattern)
-
-The Cecil-free loader SHALL register host CLR reference assemblies via
-`System.Reflection.Assembly.LoadFrom(path)` (best-effort try/catch), so
-`AppDomain.GetType(string)`'s live `System.AppDomain.CurrentDomain.
-GetAssemblies()` CLR fallback resolves host CLR types as `CLRType`. The loader
-SHALL NOT `LoadAssembly(refStream)` the host CLR refs (which would shadow CLR
-types as `ILType`, the S3-5 Q1.2 finding).
-
-#### Scenario: Host CLR refs resolve as CLRType on the Cecil-free side
-- **WHEN** `LoadNeoAssembly` is called with `hostClrRefPaths`
-- **THEN** each path SHALL be registered via `Assembly.LoadFrom(path)` (best-
-  effort try/catch; a BCL/already-loaded/unresolvable ref is skipped, never fatal)
-- **AND** a CLR type referenced by the `.neo` SHALL resolve via `GetType(string)`
-  as a `CLRType` (NOT a shadow `ILType`)
-- **AND** the loader SHALL NOT call `LoadAssembly(refStream)` for a host CLR ref
-
-### Requirement: A Cecil-free-loaded type's static constructor runs at load and its static fields read back the .cctor-set values (S3-4 capstone)
-
-The Cecil-free loader SHALL seed a type's static constructor (`.cctor`) so a
-static field the `.cctor` writes reads back the `.cctor`-set value (not the
-default). The `.cctor` body is already in the `.neo` MethodDef table (the `.cctor`
-is a non-generic method, force-compiled + serialized like any other); the
-`NeoTypeDefRecord.StaticCtorMethodRefIdx` (recorded at serialize) points at it. The
-loader SHALL run each Cecil-free type's `.cctor` via `appdomain.Invoke(cctor, null,
-null)` AFTER the bodies are bound by `Attach` + AFTER the cross-AppDomain hash
-re-registration (so the `.cctor`'s own Stsfld token operands resolve). This SHALL
-be additive + Neo-only; the Cecil-ctor path's `.cctor` handling is UNCHANGED.
-
-#### Scenario: The .neo carries a per-static-field layout array
-- **WHEN** a `.neo` is serialized for a type that declares static fields
-- **THEN** the `NeoTypeDefRecord` SHALL carry a `StaticFields[]` array parallel to
-  the instance `Fields[]`, each entry holding the static field's `FieldRefIdx`
-  (name + type + IsStatic) + its `PrimitiveOffset` + `ReferenceOffset`
-- **AND** the `.neo` Version SHALL be bumped (V2 -> V3); the Cecil-free loader
-  SHALL reject a prior-Version `.neo` for the static-field path via a Version guard
-- **AND** a type with NO static fields SHALL carry an empty `StaticFields[]`
-
-#### Scenario: The Cecil-free factory installs the static-field layout
-- **WHEN** `ILType.CreateFromNeoRecord` builds a Cecil-free ILType
-- **THEN** the factory SHALL install `staticFieldOffsets[]` + `staticFieldTypes[]`
-  + `staticFieldMapping{}` from the `StaticFields[]` record (by name + per-field
-  offsets), mirroring the instance-layout install
-- **AND** the factory SHALL record the `.cctor` ILMethod (from
-  `StaticCtorMethodRefIdx` / the `.cctor` name) as the type's `staticConstructor`
-  with `staticConstructorCalled == false`
-- **AND** the Stsfld / Ldsfld baked token (the static-field index) SHALL resolve
-  via the installed `staticFieldMapping` UNCHANGED (no token-encoding change)
-
-#### Scenario: The static-instance ctor is Cecil-free-safe
-- **WHEN** an `ILTypeStaticInstance` is constructed for a Cecil-free ILType
-- **THEN** the ctor SHALL NOT read `type.TypeDefinition.Fields` (which is NULL on
-  a Cecil-free type)
-- **AND** the ctor SHALL size its `byte[]` Primitives + `AutoList` from the type's
-  static totals + locate each field via the installed `staticFieldOffsets`
-- **AND** the ctor SHALL skip the Cecil `InitialValue` byte-blob replay (a `.neo`
-  carries no raw initial-value blobs; the `.cctor` is the initializer)
-
-#### Scenario: The loader seeds the .cctor at Cecil-free load
-- **WHEN** `LoadNeoAssembly` finishes building + binding the bodies of a Cecil-free
-  type whose `StaticCtorMethodRefIdx != -1`
-- **THEN** the loader SHALL invoke the `.cctor` via `appdomain.Invoke(cctor, null,
-  null)` (the SAME call the Legacy lazy path uses)
-- **AND** the invoke SHALL be best-effort (a throwing `.cctor` is recorded as a
-  skip, never fatal; the static state is left at default)
-- **AND** a type whose `StaticCtorMethodRefIdx == -1` SHALL be skipped (no `.cctor`)
-
-#### Scenario: The capstone reads the .cctor-set static value
-- **WHEN** a probe declaring a `static int` field + a `.cctor` that sets it to a
-  known non-zero constant + a `ReadStatic()` reader is compiled, Cecil-free-loaded,
-  and `ReadStatic()` invoked
-- **THEN** the result SHALL equal the `.cctor`-set constant (NOT the default zero)
-
-#### Scenario: A green smoke does NOT prove the .cctor seeding (adversarial gate)
-- **WHEN** the `.cctor` seeding is validated
-- **THEN** a body-mutation cell SHALL mutate the `.cctor` body's stored constant
-  (a `Ldc_I4` `TokenInteger` / the stored operand) in an INDEPENDENT `model2`'s
-  `NeoExecuteBody` BEFORE `LoadNeoAssembly` + assert the Cecil-free read yields the
-  MUTATED constant
-- **AND** a Cecil-free load that secretly re-read Cecil's `.cctor`, or that never
-  ran the `.cctor` (a default-zero read), SHALL fail the mutation cell
-
-### Requirement: Same-AppDomain loads ignore the new static-field layout array (additive + backward-compatible)
-
-The new `StaticFields[]` array + the `.neo` Version bump SHALL be additive: the
-same-AppDomain S1/S2/S3 path SHALL ignore `StaticFields[]` (the Cecil
-`InitializeFields` provides the static offsets). A V2 `.neo` SHALL remain valid
-same-AppDomain. The Cecil ctor + ALL lazy inits SHALL be UNCHANGED. The stale
-`.cctor` suppression on the Cecil-path lazy `StaticInstance` getter SHALL NOT be
-lifted by S3-4 (S3-4 seeds ONLY the Cecil-free path explicitly at `LoadNeoAssembly`).
-
-#### Scenario: The same-AppDomain path ignores StaticFields[]
-- **WHEN** a V3 `.neo` (with `StaticFields[]`) is loaded same-AppDomain via the
-  S1/S2/S3-partial `NeoAssemblyLoader.Attach` path
-- **THEN** the `StaticFields[]` array SHALL be IGNORED (the Cecil `InitializeFields`
-  provides `staticFieldOffsets` naturally)
-- **AND** the same-AppDomain S1/S2/S3 behavior SHALL be unchanged
-
-#### Scenario: The Cecil-path .cctor suppression is untouched
-- **WHEN** a Cecil-loaded Neo type's `StaticInstance` is first accessed
-- **THEN** S3-4 SHALL NOT change the existing `#if ENABLE_NEO_MODE` suppression at
-  the lazy `StaticInstance` getter / `InitializeMethods` (Legacy-neutral safety)
-- **AND** the `.cctor` seeding SHALL apply ONLY to the Cecil-free `LoadNeoAssembly`
-  path
-
-*Step-25 / Step-26 partial-ship scope note.* The S1 requirements (non-generic methods, same-AppDomain), the S2 requirements (generic-instantiation-at-load), the Step-26 requirements (benchmark self-check + single-threaded contract), the S3-partial requirement (ILType layout + Neo VTable rebuild), the S3-5 requirement (host CLR ref registration), the STEP-25-CLR-ADAPTOR requirement (standalone CLI robust on arbitrary assemblies), and the S3-2 requirement above (a `.neo` loads + executes in a FRESH Cecil-free `new AppDomain()` via NAME-based APPROACH-1 cross-AppDomain token re-resolution) are SHIPPED. The Cecil-free load + the cross-AppDomain re-resolution (S3 sub-surfaces 2 + 3) shipped TOGETHER (D-GATE 1: they are inseparable). DEFERRED follow-up scopes (the canonical spec does NOT describe these as met): the S3-2 sequenced follow-ons -- static `.cctor` seeding + per-static-field offsets (sub-surface 4), CLR base/interface resolution on the Cecil-free path (needs a CrossBindingAdaptor), generic-method/type instances on the Cecil-free path (S2 T-identity-token), cross-PROCESS load; the D-PEEP `box;isinst` peephole fusion; the Neo debugger variable inspection (`neo-debugger-neo-frame`); the F-4 reflection-on-Neo field-read family (paths #1/#2/#4 SHIPPED; #3 instance-method re-entry SHIPPED via `neo-f4-parametrized-run-entry`); and the F-13 nested-Run/ExecuteNeo re-entrancy. The S1 loader consumes `NeoAssemblyModel.MethodDefs`; S2 consumes the `TemplateTable`; S3-partial rebuilds ILType layout + VTable from the `TypeDefTable`; S3-5 registers host CLR refs; STEP-25-CLR-ADAPTOR makes the standalone CLI robust; S3-2 adds the Cecil-free `AppDomain.LoadNeoAssembly` + the `.neo` v2 NAME-based token-binding tables. The Step-26 benchmark self-check measures interpreter throughput; it does NOT assert a Neo-vs-Legacy ratio threshold.
