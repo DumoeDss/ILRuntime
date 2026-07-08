@@ -2608,6 +2608,27 @@ namespace ILRuntime.CLR.TypeSystem
             int referenceOffset = 0;
             int staticPrimitiveOffset = 0;
             int staticReferenceOffset = 0;
+            // neo-f4-surfaced-gaps Gap B root cause: a Neo flat instance lays
+            // ALL fields (own + inherited-from-IL-base) into ONE Primitives[]
+            // + ONE ManagedObjects[], but the offset accumulators below started
+            // at 0 -- so a derived IL type's TotalPrimitiveSize/
+            // TotalReferenceCount counted ONLY its own fields, allocating an
+            // instance too small for the inherited fields. The stfld/ldfld on
+            // an inherited field then indexed ManagedObjects past the end (the
+            // F-4 surfaced `new Derived(string):base(msg)` ctor stfld NRE).
+            // Mirror Legacy's flat TotalFieldCount (which accumulates the IL
+            // base): prepend the IL base type's already-flat totals so this
+            // type's own field region starts AFTER the inherited region, and
+            // GetFieldOffset (which recurses into the base for idx <
+            // FieldStartIndex, returning the base's own 0-based offsets) stays
+            // consistent -- the base region occupies [0..baseTotal) in BOTH the
+            // base's local view and this type's flat view. Neo-only; Legacy
+            // byte-identical (the Legacy arm below is unchanged).
+            if (BaseType is ILType baseIlTypeForLayout)
+            {
+                primitiveOffset = baseIlTypeForLayout.TotalPrimitiveSize;
+                referenceOffset = baseIlTypeForLayout.TotalReferenceCount;
+            }
             // Step 12: track the max natural alignment over this type's
             // instance fields. Starts at 1 (the alignment of an empty / byte-
             // only struct) and is raised by each field per its natural size.

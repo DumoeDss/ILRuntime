@@ -538,6 +538,78 @@ namespace TestCases
         }
 
         // ====================================================================
+        // neo-f4-surfaced-gaps DUMP-GATE probes (FAIL-on-HEAD -> PASS-after).
+        //
+        // Two SMALL pre-existing Neo gaps surfaced by the F-4 work; each is
+        // exercised here by an adversarial probe. Both are tagged so a future
+        // worker reading the result knows which gate fired.
+        // ====================================================================
+
+        // GAP A -- op_Equality null-operand. `t == null` on a System.Type
+        // lowers to Type.op_Equality(t, null); the autogen
+        // System_Type_Binding.op_Equality_1_Neo reads BOTH operands via
+        // ILIntepreter.ReadNeoReference, and a NULL operand is the Neo null
+        // sentinel (-1), so mStack[-1] -> ArgumentOutOfRangeException. On HEAD
+        // this probe returns -96 (caught AoRE); after the ReadNeoReference
+        // null-sentinel fix it returns 9 (t is non-null, so t == null is false).
+        public static int NeoStep14_ILEx_GapA_TypeOpEqualityNull()
+        {
+            try
+            {
+                MyEx e = new MyEx("gap-a-msg");
+                Type t = e.GetType();
+                // The `t == null` is the load-bearing op_Equality-with-null-operand.
+                if (t == null)
+                    return -10; // t is null (unexpected)
+                return 9;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return -96; // the gap: mStack[-1] AoRE in op_Equality_Neo
+            }
+            catch (Exception)
+            {
+                return -97; // any other failure
+            }
+        }
+
+        // GAP B -- `new MyEx(string)` ctor string-arg mis-route. The string
+        // ctor arg should reach the Msg field; on HEAD the newobj-arg marshal
+        // mis-routes so Msg holds the ILTypeInstance (`this`), not the string.
+        // The field is read off the recovered ILTypeInstance via the indexer
+        // (path #4, which works on HEAD), so the probe isolates the ctor WRITE.
+        // On HEAD ReadFieldStringMatch returns 0 (Msg holds `this`, not a
+        // string) -> -10; after the fix it returns 1 (Msg == "ctor-msg") -> 9.
+        // (Rigorous: a DISTINCT string rules out coincidence; the base-ctor
+        // chain `DerivedEx(msg):base(msg)` exercises the :base(msg) arg pass.)
+        public static int NeoStep14_ILEx_GapB_NewobjStringArg()
+        {
+            // neo-f4-surfaced-gaps Gap B gate. Root cause (re-characterized at
+            // implement time): the F-4 finding's hypothesis ("the plain ctor
+            // stores `this` into Msg") was STALE -- `new MyEx("ctor-msg")`
+            // already sets Msg correctly on HEAD. The REAL surfaced bug is that
+            // a Neo flat instance of a DERIVED IL type was allocated too small:
+            // `DerivedEx.TotalReferenceCount` counted ONLY DerivedEx's own
+            // fields (none), NOT the inherited `MyEx.Msg`, so the instance's
+            // ManagedObjects had 0 slots and the `:base(msg)` ctor's
+            // `Msg = msg` stfld NREd (ManagedObjects[0] on a null list). On HEAD
+            // this probe throws (NRE); after the ILType.InitializeFields
+            // base-field accumulation fix both the plain + the derived chain
+            // set Msg correctly.
+            MyEx a = new MyEx("ctor-msg");
+            ILTypeInstance ilia = ((CrossBindingAdaptorType)(object)a).ILInstance;
+            int ma = NeoF4ReflectionProbe.ReadFieldStringMatch(ilia, "Msg", "ctor-msg");
+            if (ma != 1) return -10 - ma;
+
+            DerivedEx b = new DerivedEx("derived-msg");
+            ILTypeInstance ilib = ((CrossBindingAdaptorType)(object)b).ILInstance;
+            int mb = NeoF4ReflectionProbe.ReadFieldStringMatch(ilib, "Msg", "derived-msg");
+            if (mb != 1) return -20 - mb;
+
+            return 9;
+        }
+
+        // ====================================================================
         // F-4 #3 / NEO-RUN-PARAMETRIZED + F-12 / NEO-RUN-REF-RETURN gates.
         //
         // Both gates are exercised HOST-SIDE by

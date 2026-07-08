@@ -124,7 +124,15 @@ namespace ILRuntime.Runtime.Intepreter
         {
             int idx = *(int*)(frameBase + curPrim);
             curPrim += 4;
-            return mStack[idx];
+            // neo-f4-surfaced-gaps Gap A: the autogen Neo CLR bindings (e.g.
+            // System_Type_Binding.op_Equality_1_Neo) read BOTH operands via
+            // this helper. A NULL operand is the Neo null sentinel (-1); the
+            // unguarded `mStack[idx]` indexed mStack[-1] -> ArgumentOutOfRangeException.
+            // Apply the established null-sentinel convention (the `(idx >= 0) ?
+            // mStack[idx] : null` form used at CLRMethod.Invoke's Neo arg read
+            // and Ldelem_Ref's null encoding) so a null operand yields null
+            // before indexing. Neo-only helper; Legacy byte-identical.
+            return idx >= 0 ? mStack[idx] : null;
         }
 
         // ---- Step 13b (D4): CLR value-type read/write helpers ----
