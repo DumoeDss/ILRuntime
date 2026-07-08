@@ -667,7 +667,8 @@ namespace ILRuntime.Runtime.Intepreter
         // not need it for inlined targets.
         unsafe bool NeoRunDelegateTargetOnThis(ILMethod target, ILTypeInstance instance,
             byte* targetBase, int thisSlotShift, byte* callerFrameBase,
-            AutoList mStack, byte* retDstPtr, int targetRetRefBase, out bool unhandledException)
+            AutoList mStack, byte* retDstPtr, int targetRetRefBase, ref int callerOwnedRefSlot,
+            out bool unhandledException)
         {
             byte* dTargetBase = targetBase + thisSlotShift;
 
@@ -682,14 +683,38 @@ namespace ILRuntime.Runtime.Intepreter
                     mStack[thisIdx] = instance;
             }
 
-            // Re-base frame-native byref param offsets so they resolve to the
-            // caller's frame cell from the target's (higher) frame base. The rebase
-            // is undone after the run so a multicast re-invocation of the SAME
-            // targetBase does not compound the subtraction.
+            // F-7 / F-7B: marshal a frame-native byref param so the target's
+            // stind/ldind land back in the caller's frame. Two channels:
+            //
+            //  * F-7 primitive/value-byref (`!IsByRefOfReference`): re-base the
+            //    byref's OFFSET by the frame distance so objectIndex==-1 resolution
+            //    against the target's (higher) frame base yields the caller's cell.
+            //    The write-back is flat BYTES (no mStack index) -> survives the
+            //    callee pop byte-for-byte. Undone after the run for multicast.
+            //
+            //  * F-7B reference-byref (`IsByRefOfReference`, e.g. `ref string`):
+            //    the referent is an mStack OBJECT. The relativization alone is a
+            //    DANGLING-INDEX trap: the callee's stind.ref would write the NEW
+            //    object's CALLEE-frame mStack index into the caller cell, and the
+            //    callee's Ret pop (`mStack.RemoveRange(frameRefBase, ...)`) would
+            //    then delete that index. PROMOTE the referent into a CALLER-OWNED
+            //    mStack slot (reserved here, BEFORE the callee reserves, so it sits
+            //    BELOW the callee's frameRefBase and survives the pop) and rewrite
+            //    the byref to an mStack-object shape `(callerSlot, off|flag)`. The
+            //    `Stind_Ref`/`Ldind_Ref` caller-owned-slot arms then read+write the
+            //    object THROUGH that stable slot -- the same lifetime guarantee the
+            //    single-reference RETURN promotion (`Ret` arm) already provides.
+            //    The caller-owned slot is reserved ONCE per delegate-Invoke (shared
+            //    across the multicast chain via `callerOwnedRefSlot`, last write
+            //    wins -- D3), and the byref rewrite is restored after each run so a
+            //    multicast re-invocation sees a stable, non-compounding byref.
             var tParams = target.Parameters;
             var tParamInfos = target.CompiledFrame.ParamInfos;
             int rebasedSlotOff = -1;   // at most one byref param per delegate signature
             int rebasedOrigOff = 0;
+            int promotedSlotOff = -1;  // F-7B: the reference-byref slot rewritten to mStack-object form
+            int promotedOrigObjIdx = -1;
+            int promotedOrigOff = 0;
             if (tParams != null && tParamInfos != null)
             {
                 long frameDist = dTargetBase - callerFrameBase; // target base is ABOVE caller
@@ -705,17 +730,76 @@ namespace ILRuntime.Runtime.Intepreter
                     if (slot.Size != 8) continue; // byref Ref Slot is 8 bytes
                     int objIdx = *(int*)(dTargetBase + slot.Offset + 0);
                     if (objIdx != -1) continue; // mStack-object byref: absolute, no rebase
-                    rebasedOrigOff = *(int*)(dTargetBase + slot.Offset + 4);
-                    *(int*)(dTargetBase + slot.Offset + 4) = rebasedOrigOff - (int)frameDist;
-                    rebasedSlotOff = slot.Offset;
+                    int origOff = *(int*)(dTargetBase + slot.Offset + 4);
+
+                    // F-7B (D2): gate the promotion on a REFERENCE-typed referent.
+                    // The byref's ElementType is the de-byref'd referent type
+                    // (ILType sets byRefType.elementType = this at construction).
+                    // Primitive/value byrefs keep the F-7 byte-relativization path.
+                    IType elemType = pt.ElementType;
+                    bool isRefByref = elemType != null && !elemType.IsPrimitive && !elemType.IsValueType;
+                    if (isRefByref)
+                    {
+                        // Reserve the caller-owned mStack slot ONCE (shared across the
+                        // multicast chain). Initialized with the byref's CURRENT
+                        // referent: the caller cell at callerFrameBase+origOff holds
+                        // the referent's mStack index; copy that object into the
+                        // caller-owned slot so the READ path observes the entry value.
+                        if (callerOwnedRefSlot < 0)
+                        {
+                            callerOwnedRefSlot = mStack.Count;
+                            mStack.Add(null);
+                        }
+                        int callerSrcIdx = *(int*)(callerFrameBase + origOff);
+                        mStack[callerOwnedRefSlot] = callerSrcIdx >= 0 ? mStack[callerSrcIdx] : null;
+
+                        // Rewrite the byref to the caller-owned mStack-object shape:
+                        // objectIndex = callerOwnedRefSlot (the stable slot the callee
+                        // pop does NOT touch), offset = NeoF10ByrefOffsetFlag (the
+                        // high-bit discriminator marking the caller-owned-slot shape;
+                        // disjoint from real field hashes / array indices / Primitives
+                        // offsets). The Stind_Ref/Ldind_Ref caller-owned-slot arms
+                        // dispatch on this flag.
+                        *(int*)(dTargetBase + slot.Offset + 0) = callerOwnedRefSlot;
+                        *(int*)(dTargetBase + slot.Offset + 4) = JITCompiler.NeoF10ByrefOffsetFlag;
+                        promotedSlotOff = slot.Offset;
+                        promotedOrigObjIdx = objIdx;   // always -1 (frame-native)
+                        promotedOrigOff = origOff;
+                    }
+                    else
+                    {
+                        // F-7 primitive/value-byref relativization (UNCHANGED).
+                        *(int*)(dTargetBase + slot.Offset + 4) = origOff - (int)frameDist;
+                        rebasedOrigOff = origOff;
+                        rebasedSlotOff = slot.Offset;
+                    }
                     break; // a delegate signature has at most one byref per slot; first suffices
                 }
             }
 
             bool ok = InvokeNeoCallTarget(target, false, dTargetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException);
 
-            // Undo the rebase so the raw caller-relative offset is restored for any
-            // re-invocation (multicast) of the same targetBase.
+            // F-7B (D1): after a reference-byref target runs, the caller cell MUST
+            // reflect the LAST write. The caller-owned slot holds the surviving
+            // object; stamp the caller-owned slot index into the caller cell so the
+            // caller's subsequent `s` read resolves to it (the cell now points at a
+            // caller-region slot, surviving the callee pop -- parity with the
+            // single-reference RETURN promotion). For multicast, this also feeds
+            // the NEXT target's read (the byref is restored below, then the next
+            // run re-promotes and reads the caller cell, which still points at this
+            // slot -- last object wins, D3).
+            if (promotedSlotOff >= 0)
+            {
+                *(int*)(callerFrameBase + promotedOrigOff) = callerOwnedRefSlot;
+                // Restore the raw frame-native byref in targetBase for a multicast
+                // re-invocation of the same targetBase (idempotent rewrite, D3/2.6).
+                *(int*)(dTargetBase + promotedSlotOff + 0) = promotedOrigObjIdx;
+                *(int*)(dTargetBase + promotedSlotOff + 4) = promotedOrigOff;
+            }
+
+            // Undo the primitive/value-byref rebase so the raw caller-relative
+            // offset is restored for any re-invocation (multicast) of the same
+            // targetBase.
             if (rebasedSlotOff >= 0)
                 *(int*)(dTargetBase + rebasedSlotOff + 4) = rebasedOrigOff;
 
@@ -2541,9 +2625,13 @@ namespace ILRuntime.Runtime.Intepreter
                                             if (dAdapter.Method is ILMethod dTargetIlm)
                                             {
                                                 int headShift = dTargetIlm.HasThis ? 0 : 4;
+                                                // F-7B: caller-owned mStack slot for a reference-byref,
+                                                // reserved ONCE and shared across the multicast chain
+                                                // (last write wins, D3). -1 = not yet reserved.
+                                                int f7bCallerOwnedRefSlot = -1;
                                                 if (!NeoRunDelegateTargetOnThis(dTargetIlm, dAdapter.Instance,
                                                     targetBase, headShift, frameBase, mStack,
-                                                    retDstPtr, targetRetRefBase, out unhandledException))
+                                                    retDstPtr, targetRetRefBase, ref f7bCallerOwnedRefSlot, out unhandledException))
                                                     return null;
 
                                                 // D3: multicast next-chain. Each subsequent IL target re-
@@ -2560,7 +2648,7 @@ namespace ILRuntime.Runtime.Intepreter
                                                         int nShift = nIlm.HasThis ? 0 : 4;
                                                         if (!NeoRunDelegateTargetOnThis(nIlm, nAdapter.Instance,
                                                             targetBase, nShift, frameBase, mStack,
-                                                            retDstPtr, targetRetRefBase, out unhandledException))
+                                                            retDstPtr, targetRetRefBase, ref f7bCallerOwnedRefSlot, out unhandledException))
                                                             return null;
                                                         nxt = nAdapter.Next;
                                                     }
@@ -3930,6 +4018,18 @@ namespace ILRuntime.Runtime.Intepreter
                                     {
                                         *(int*)(frameBase + off) = vIdx;
                                     }
+                                    else if ((off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+                                    {
+                                        // F-7B: caller-owned-mStack-slot byref (a cross-frame
+                                        // reference-byref promoted in NeoRunDelegateTargetOnThis).
+                                        // objIdx is the stable caller-owned slot; store the
+                                        // NEW object there directly. The slot sits below the
+                                        // callee's frameRefBase, so the write survives the
+                                        // callee Ret pop. (NeoRunDelegateTargetOnThis re-stamps
+                                        // the caller cell to objIdx after the run; here we just
+                                        // land the object in the surviving slot.)
+                                        mStack[objIdx] = vIdx >= 0 ? mStack[vIdx] : null;
+                                    }
                                     else if (mStack[objIdx] is Array cArr)
                                     {
                                         cArr.SetValue(vIdx >= 0 ? mStack[vIdx] : null, off);
@@ -3959,6 +4059,23 @@ namespace ILRuntime.Runtime.Intepreter
                                         {
                                             dstIdx = frameRefBase + ip->Operand3;
                                             mStack[dstIdx] = mStack[srcIdx];
+                                            *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                        }
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
+                                    }
+                                    else if ((off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+                                    {
+                                        // F-7B: caller-owned-mStack-slot byref (a cross-frame
+                                        // reference-byref promoted in NeoRunDelegateTargetOnThis).
+                                        // objIdx is the stable caller-owned slot holding the
+                                        // referent object; materialize it into the callee's dest
+                                        // ref slot for the READ path.
+                                        object elem = mStack[objIdx];
+                                        if (elem != null)
+                                        {
+                                            dstIdx = frameRefBase + ip->Operand3;
+                                            mStack[dstIdx] = elem;
                                             *(int*)(frameBase + ip->DstOffset) = dstIdx;
                                         }
                                         else

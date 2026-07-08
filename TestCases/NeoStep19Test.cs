@@ -263,6 +263,55 @@ namespace TestCases
             }
         }
 
+        // F-7B probe: ref string WRITE-BACK where the callee REASSIGNS the
+        // referent (`s = s + "!"`). The new string object is created inside the
+        // CALLEE's frame ref region; the caller must observe the NEW object
+        // ("abc!") after the call, NOT a dangling mStack index. This is the
+        // ref-type-byref-writeback binding probe for F-7B.
+        public static int AppendBang(ref string s)
+        {
+            s = s + "!";
+            return s.Length;
+        }
+
+        public static void NeoStep19_ByRef_StringWriteBack()
+        {
+            NeoStep19RefStringDelegate d = AppendBang;
+            string s = "abc";
+            int r = d(ref s);
+            // r == 4 (length of "abc!") AND s == "abc!" (the caller observes the
+            // callee-created object). A dangling mStack index makes `s` garbage /
+            // throws IndexOutOfRange in a later CLR string binding.
+            if (r != 4 || s != "abc!")
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // F-7B multicast-with-ref-string adversarial (D3): a void-returning
+        // ref-string delegate with TWO targets that each reassign the referent.
+        // AppendBang -> AppendQ over "abc" yields "abc!?" (last write wins; each
+        // target sees the prior target's object via the shared caller-owned mStack
+        // slot reserved once in NeoRunDelegateTargetOnThis). Verifies the promotion
+        // is idempotent across the multicast chain AND that the last object
+        // survives the FINAL callee pop.
+        public delegate void NeoStep19RefStringVoidDelegate(ref string s);
+        public static void AppendBangV(ref string s) { s = s + "!"; }
+        public static void AppendQ(ref string s) { s = s + "?"; }
+
+        public static void NeoStep19_ByRef_StringMulticastWriteBack()
+        {
+            NeoStep19RefStringVoidDelegate d = AppendBangV;
+            d += AppendQ;
+            string s = "abc";
+            d(ref s);
+            // "abc" -> "abc!" (AppendBangV) -> "abc!?" (AppendQ, last wins).
+            if (s != "abc!?")
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
         // F-7 probe 4: multicast with a byref param -> each target sees the
         // prior target's mutation and writes back to the same caller cell.
         // Bump(+10) then Double(*2) over v==5 -> ((5+10)*2)==30.
