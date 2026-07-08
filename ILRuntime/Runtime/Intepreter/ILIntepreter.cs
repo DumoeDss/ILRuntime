@@ -109,27 +109,98 @@ namespace ILRuntime.Runtime.Intepreter
             stack.ResetValueTypePointer();
             bool unhandledException;
 #if ENABLE_NEO_MODE
-            // Step 6 entry shim: only no-arg static methods are expected here
-            // (NeoStep6 smoke). The Neo call convention lands in Step 8.
+            // Parametrized host re-entry: marshal `instance` (slot-0 `this`) +
+            // `p` (the param region) into the Neo callee frame, then read the
+            // return with type discrimination. This mirrors
+            // `DelegateAdapter.NeoInvokeSub` (the Step-19 CLR->IL callback
+            // arg-marshal, the established pattern) verbatim. The ONE divergence
+            // from NeoInvokeSub: `Run` builds the frame on the CURRENT
+            // interpreter's stack (it IS the pooled interpreter -- its caller
+            // `AppDomain.Invoke` already did RequestILIntepreter and frees it in
+            // a finally), so `Run` MUST NOT do its own Request/FreeILIntepreter
+            // (that would double-pool / leak). NeoInvokeSub does its own pair
+            // because it is a CLR->IL delegate callback, not a pooled entry.
+            // Closes F-4 #3 (instance-method re-entry has a `this`) + F-12
+            // (a reference-type return is boxed, not read via the primitive
+            // fallback in NeoBoxReturnValue).
             ref readonly var nf = ref method.CompiledFrame;
-            
-            byte* neoFrame = (byte*)esp;
-            esp += (nf.TotalStructSize / sizeof(StackObject)) + 1;
-            
-            int retSize = nf.ReturnPrimitiveSize;
-            byte* retDst = (byte*)esp;
-            esp += (retSize / sizeof(StackObject)) + 1;
-            
-            int retRefBase = stack.ManagedStack.Count;
-            if (nf.ReturnRefCount > 0)
+            var paramInfos = nf.ParamInfos;
+            int paramCnt = method.ParameterCount;
+            bool hasThis = method.HasThis;
+
+            // Build the Neo frame at StackBase (the current interpreter's base).
+            byte* frameBase = (byte*)stack.StackBase;
+            byte* espLocal = frameBase;
+            int frameSize = nf.TotalStructSize;
+            byte* newEsp = espLocal + frameSize;
+
+            // Zero the locals primitive region (mirrors ExecuteNeo's own zeroing
+            // + NeoInvokeSub:1039-1040).
+            if (nf.LocalsPrimitiveSize > 0)
+                System.Runtime.CompilerServices.Unsafe.InitBlock(frameBase + nf.ParamPrimitiveSize, 0, (uint)nf.LocalsPrimitiveSize);
+            // Ref-init the unassigned ref-typed local slots (NeoInvokeSub:1043-1052).
+            var localInfos = nf.LocalInfos;
+            var localIsRef = nf.LocalIsReference;
+            if (localInfos != null && localIsRef != null)
             {
-                for (int i = 0; i < nf.ReturnRefCount; i++)
-                    stack.ManagedStack.Add(null);
+                for (int i = 0; i < localInfos.Length; i++)
+                {
+                    if (localIsRef[i])
+                        *(int*)(frameBase + localInfos[i].Offset) = -1;
+                }
             }
-            ExecuteNeo(method, neoFrame, retDst, retRefBase, out unhandledException);
-            
+
+            // Managed-stack reservation for this frame's reference slots
+            // (NeoInvokeSub:1055-1057) -- the FULL callee frame ref region, not
+            // just the return ref slots.
+            int frameRefBase = mStack.Count;
+            for (int i = 0; i < nf.TotalRefSize; i++)
+                mStack.Add(null);
+
+            // Marshal `this` (slot 0) for an instance method (NeoInvokeSub:1059-
+            // 1065). Unwrap the CLR adaptor bridge + null-check, matching the
+            // Legacy Run arm below (HasThis branch).
+            int argIdx = 0;
+            if (hasThis)
+            {
+                object thisObj = instance;
+                if (thisObj is CrossBindingAdaptorType cbat)
+                    thisObj = cbat.ILInstance;
+                if (thisObj == null)
+                    throw new NullReferenceException("instance should not be null!");
+                DelegateAdapter.WriteNeoCallSlot(paramInfos[0], frameBase, mStack, frameRefBase, thisObj);
+                argIdx = 1; // slot 0 consumed
+            }
+            // Marshal each CLR param into its param-region slot
+            // (NeoInvokeSub:1068-1073).
+            for (int i = 0; i < paramCnt; i++)
+            {
+                object arg = (p != null && i < p.Length) ? p[i] : null;
+                DelegateAdapter.WriteNeoCallSlot(paramInfos[argIdx], frameBase, mStack, frameRefBase, arg);
+                argIdx++;
+            }
+
+            // Return slot (NeoInvokeSub:1075-1081).
+            int retSize = nf.ReturnPrimitiveSize;
+            int retRefCount = nf.ReturnRefCount;
+            byte* retDst = newEsp;
+            int retRefBase = mStack.Count;
+            for (int i = 0; i < retRefCount; i++)
+                mStack.Add(null);
+
+            ExecuteNeo(method, frameBase, retDst, retRefBase, out unhandledException);
+
+            // Return-read with type discrimination (NeoInvokeSub:1087-1097). The
+            // F-12 fix: a reference-type return is read as the mStack reference
+            // index at retDst, NOT via NeoBoxReturnValue's primitive fallback
+            // (which reinterprets those 4 bytes as an int).
             object result = null;
-            if (method.ReturnType != domain.VoidType && retSize > 0)
+            if (!method.ReturnType.IsValueType && method.ReturnType != domain.VoidType && retSize > 0)
+            {
+                int retIdx = *(int*)retDst;
+                result = (retIdx >= 0) ? mStack[retIdx] : null;
+            }
+            else if (method.ReturnType != domain.VoidType && retSize > 0)
             {
                 result = NeoBoxReturnValue(method.ReturnType, retDst, retSize);
             }

@@ -237,6 +237,39 @@ namespace TestCases
             {
                 get { return Msg; }
             }
+            // F-4 #3 instance-method-under-test: reads the IL-declared Msg field
+            // (so the override runs with the right `this` -- on HEAD, Run drops
+            // `instance`, this NREs on the field access; after the fix it returns
+            // the override's value). Returns the field's length as a primitive
+            // (avoids the reference-return path, which is exercised separately by
+            // the F-12 probe).
+            public int GetCode()
+            {
+                return Msg.Length;
+            }
+        }
+
+        // F-12 / NEO-RUN-REF-RETURN: a PARAMETERLESS IL method returning a
+        // REFERENCE type (string). Invoked via the public AppDomain.Invoke -> Run
+        // path. On HEAD Run reads this via NeoBoxReturnValue (primitives only) ->
+        // the raw mStack index as an int (0); after the fix Run's reference-return
+        // branch boxes the string.
+        public static string EchoRef()
+        {
+            return "hi";
+        }
+
+        // F-4 #3 host-side target: construct a MyEx with a known Msg via the
+        // default ctor + a direct field assignment (the workaround for the known
+        // `new MyEx(string)` ctor string-arg mis-route), and return it. The host
+        // self-check (NeoF4ParamRunCheck) invokes this to obtain an instance, then
+        // re-invokes the instance GetCode() via the PUBLIC AppDomain.Invoke ->
+        // Run path -- proving the parametrized Run marshals slot-0 `this`.
+        public static MyEx BuildF4Ex()
+        {
+            MyEx e = new MyEx();
+            e.Msg = "f4code";
+            return e;
         }
 
         public class DerivedEx : MyEx
@@ -503,5 +536,25 @@ namespace TestCases
                 }
             }
         }
+
+        // ====================================================================
+        // F-4 #3 / NEO-RUN-PARAMETRIZED + F-12 / NEO-RUN-REF-RETURN gates.
+        //
+        // Both gates are exercised HOST-SIDE by
+        // `NeoF4ParamRunCheck.Run(appdomain)` (CLI hook `NeoF4ParamRun`), NOT as
+        // IL test methods here. Reason: the F-4 #3 / F-12 scenarios are HOST -> IL
+        // re-entry actions (`appdomain.Invoke(...)` called from CLR), and driving
+        // them from WITHIN an IL method would NEST `domain.Invoke` (-> a second
+        // `Run` -> a second `ExecuteNeo`) inside an in-flight `ExecuteNeo`. That
+        // nested-ExecuteNeo shape hits a PRE-EXISTING Neo re-entrancy corruption
+        // (the outer frame's instruction pointer runs off the end of its body ->
+        // garbage opcode; reproduced with the OLD parameterless-only Run shim
+        // too, so it is NOT the parametrized-Run change). The host-side check
+        // invokes `Run` exactly ONCE per cell (no nesting), so it isolates the
+        // parametrized-Run machinery cleanly. The IL-side targets used by the
+        // host check are: `EchoRef` (F-12 reference return), `BuildF4Ex` +
+        // `MyEx.GetCode` (F-4 #3 instance-method re-entry). See
+        // `NeoF4ParamRunCheck.cs` + this change's design.md addendum.
+        // ====================================================================
     }
 }

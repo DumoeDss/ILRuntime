@@ -232,6 +232,27 @@ namespace ILRuntimeTestCLI
             // RATIO is computed by the separate runner script
             // (scripts/run-neo-bench.{ps1,sh}); the self-check does NOT assert
             // a ratio (this host is not the perf baseline host).
+            if (nameFilter == "NeoF4ParamRun")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoF4ParamRunCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoF4 parametrized-Run: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoF4ParamRun threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             if (nameFilter == "NeoStep26Bench")
             {
                 int failed;
