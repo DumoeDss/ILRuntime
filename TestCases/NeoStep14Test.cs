@@ -259,6 +259,50 @@ namespace TestCases
             return "hi";
         }
 
+        // TEMP F-13 probes. F13_Inner is the inner IL method the nested redirect
+        // re-invokes; NeoStep14_F13_NestedInvokeProbe is the outer IL method that
+        // calls a CLR bridge (whose redirect nests appdomain.Invoke) then returns
+        // 13. Removed before ship.
+        public static int F13_Inner()
+        {
+            int x = 5;
+            int y = x + 2;
+            return y;
+        }
+
+        public static int NeoStep14_F13_NestedInvokeProbe()
+        {
+            int before = 1;
+            // The CLR bridge; its redirect nests appdomain.Invoke(F13_Inner).
+            int nested = ILRuntimeTest.TestFramework.NeoF13Bridge.NestedInvoke();
+            int after = before + nested;
+            // F13_Inner returns 7; before=1 -> after=8 -> return 13.
+            if (after == 8)
+                return 13;
+            return after;
+        }
+
+        // The EXACT F-4 #3 / F-13 shape: catch an IL exception, THEN invoke via
+        // appdomain.Invoke (nested inside the catch handler). This is the shape
+        // that originally hit the -97 corruption. Throws + catches a MyEx, then
+        // calls the nested-Invoke bridge inside the catch.
+        public static int NeoStep14_F13_NestedInCatchProbe()
+        {
+            try
+            {
+                int z = 0;
+                int _ = 1 / z; // raises DivideByZeroException (native fault, no CLR newobj)
+            }
+            catch (Exception)
+            {
+                int nested = ILRuntimeTest.TestFramework.NeoF13Bridge.NestedInvoke();
+                if (nested == 7)
+                    return 13;
+                return nested;
+            }
+            return -3;
+        }
+
         // F-4 #3 host-side target: construct a MyEx with a known Msg via the
         // default ctor + a direct field assignment (the workaround for the known
         // `new MyEx(string)` ctor string-arg mis-route), and return it. The host
