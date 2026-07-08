@@ -639,6 +639,128 @@ namespace ILRuntime.Runtime.Intepreter
             throw new NotImplementedException("Unknown method type in Neo mode.");
         }
 
+        // F-7B-SIB (IL-direct-Call byref ABI): the runtime mirror of
+        // NeoRunDelegateTargetOnThis's two byref channels, specialized for a
+        // NON-inlined direct `Call` to an IL method. A direct Call's targetBase
+        // IS the callee frame base (no delegate-adapter `this` shift; params sit
+        // where the callee layout placed them). The byref params were copied
+        // VERBATIM into targetBase (an IL callee's byref is unflagged in the
+        // NeoCallParamMap, so CopyNeoCallArguments copies the 8-byte Ref Slot
+        // raw -- the delegate path's identical premise). A frame-native byref's
+        // offset is CALLER-frame-relative; the callee's stind/ldind resolve
+        // objectIndex==-1 against the CALLEE's (higher) frame base, so the raw
+        // offset addresses the wrong cell. Two channels (mirroring the delegate
+        // path, ILIntepreter.Neo.cs:686-807):
+        //
+        //  * F-7 primitive/value-byref: re-base the offset by the frame distance
+        //    so the callee's deref lands in the caller cell. The write-back is
+        //    flat BYTES (no mStack index) -> survives the callee Ret pop. Undone
+        //    after the run so a re-read of targetBase (e.g. the snapshot write-
+        //    back) sees the original caller-relative offset.
+        //
+        //  * F-7B reference-byref (`ref string` / `ref <class>`): PROMOTE the
+        //    referent into a CALLER-owned mStack slot (reserved here, BEFORE the
+        //    callee reserves its frameRefBase, so the slot sits BELOW the callee's
+        //    region and survives the callee Ret pop) and rewrite the byref to the
+        //    mStack-object shape `(callerSlot, NeoF10ByrefOffsetFlag)`. The
+        //    Stind_Ref/Ldind_Ref caller-owned-slot arms (ILIntepreter.Neo.cs:4021,
+        //    :4067) read+write through that stable slot -- the same lifetime
+        //    guarantee the single-reference RETURN promotion provides. After the
+        //    run, the caller cell is stamped to the caller-owned slot index.
+        //
+        // A direct Call has a SINGLE invocation (no multicast chain), so the
+        // caller-owned slot is a local (not cross-invocation shared), and the
+        // rebase/rewrite undo is once-per-call. The bookkeeping for the post-run
+        // stamp + undo is returned via the out params; the caller performs them
+        // after InvokeNeoCallTarget returns. Returns true if at least one byref
+        // param was touched (so the caller knows to run the post-pass); false
+        // (with all out params inert) for a byref-less call -- a no-op fast path.
+        unsafe bool NeoPreCallByrefFixup(ILMethod target, byte* targetBase, byte* callerFrameBase,
+            AutoList mStack, out int promotedSlotOff, out int promotedOrigObjIdx, out int promotedOrigOff,
+            out int promotedCallerSlot, out int rebasedSlotOff, out int rebasedOrigOff)
+        {
+            promotedSlotOff = -1;
+            promotedOrigObjIdx = -1;
+            promotedOrigOff = 0;
+            promotedCallerSlot = -1;
+            rebasedSlotOff = -1;
+            rebasedOrigOff = 0;
+
+            var tParams = target.Parameters;
+            var tParamInfos = target.CompiledFrame.ParamInfos;
+            if (tParams == null || tParamInfos == null)
+                return false;
+
+            long frameDist = targetBase - callerFrameBase; // target base is ABOVE caller
+            int firstParam = target.HasThis ? 1 : 0;
+            int nParams = tParams.Count;
+            bool touched = false;
+            for (int p = 0; p < nParams; p++)
+            {
+                int slotIdx = firstParam + p;
+                if (slotIdx >= tParamInfos.Length) break;
+                var pt = tParams[p];
+                if (pt == null || !pt.IsByRef) continue;
+                var slot = tParamInfos[slotIdx];
+                if (slot.Size != 8) continue; // byref Ref Slot is 8 bytes
+                int objIdx = *(int*)(targetBase + slot.Offset + 0);
+                if (objIdx != -1) continue; // mStack-object byref: absolute, no rebase
+                int origOff = *(int*)(targetBase + slot.Offset + 4);
+
+                // F-7B (D2): gate the promotion on a REFERENCE-typed referent
+                // (mirrors NeoRunDelegateTargetOnThis:739-740). The byref's
+                // ElementType is the de-byref'd referent type. Primitive/value
+                // byrefs keep the F-7 byte-relativization path.
+                IType elemType = pt.ElementType;
+                bool isRefByref = elemType != null && !elemType.IsPrimitive && !elemType.IsValueType;
+                if (isRefByref)
+                {
+                    // Reserve the caller-owned mStack slot. It sits at the CURRENT
+                    // mStack.Count, BEFORE InvokeNeoCallTarget -> the callee's
+                    // ExecuteNeo reserves its frameRefBase ABOVE it, so the slot
+                    // survives the callee Ret pop. Seed it with the byref's CURRENT
+                    // referent (the caller cell at callerFrameBase+origOff holds the
+                    // referent's mStack index) so the READ path observes the entry
+                    // value.
+                    promotedCallerSlot = mStack.Count;
+                    mStack.Add(null);
+                    int callerSrcIdx = *(int*)(callerFrameBase + origOff);
+                    mStack[promotedCallerSlot] = callerSrcIdx >= 0 ? mStack[callerSrcIdx] : null;
+
+                    // Rewrite the byref to the caller-owned mStack-object shape:
+                    // objectIndex = promotedCallerSlot, offset = NeoF10ByrefOffsetFlag
+                    // (the high-bit discriminator the Stind_Ref/Ldind_Ref arms
+                    // dispatch on). Disjoint from real field hashes / array indices
+                    // / Primitives offsets.
+                    *(int*)(targetBase + slot.Offset + 0) = promotedCallerSlot;
+                    *(int*)(targetBase + slot.Offset + 4) = JITCompiler.NeoF10ByrefOffsetFlag;
+                    promotedSlotOff = slot.Offset;
+                    promotedOrigObjIdx = objIdx; // always -1 (frame-native)
+                    promotedOrigOff = origOff;
+                }
+                else
+                {
+                    // F-7 primitive/value-byref relativization (UNCHANGED from
+                    // the delegate path). The callee's deref at the rebased offset
+                    // resolves to callerFrameBase + origOff (the caller cell); the
+                    // mutation lands in-frame and survives the callee pop as flat
+                    // bytes.
+                    *(int*)(targetBase + slot.Offset + 4) = origOff - (int)frameDist;
+                    rebasedOrigOff = origOff;
+                    rebasedSlotOff = slot.Offset;
+                }
+                touched = true;
+                // One byref param per direct Call is the common case (and the only
+                // case the delegate-Invoke sibling and all current tests exercise);
+                // the first byref suffices. A multi-byref direct call
+                // (`Foo(ref int a, ref int b)`) would need per-slot bookkeeping --
+                // recorded as a sequencing note (the delegate path has the same
+                // one-byref limitation).
+                break;
+            }
+            return touched;
+        }
+
         // F-7 (NEO-DELEGATE-REFOUT): run ONE IL delegate target on THIS interpreter
         // (same-frame fast path) with its bound `instance`, returning false on an
         // unhandled target exception. The delegate-Invoke callvirt marshaled the
@@ -2346,8 +2468,51 @@ namespace ILRuntime.Runtime.Intepreter
                                             byRefSnap = snap;
                                     }
 
+                                    // F-7B-SIB: for a NON-inlined direct Call to an IL method, a
+                                    // byref param's 8-byte Ref Slot was copied VERBATIM into
+                                    // targetBase (the IL callee's byref is unflagged in the map, so
+                                    // CopyNeoCallArguments copied it raw). Re-base/promote it so the
+                                    // callee's stind/ldind resolve to the CALLER's frame cell (the
+                                    // F-7/F-7B delegate-path mirror). A direct Call to a CLR method,
+                                    // or an IL method with no byref param, is a no-op (the helper
+                                    // returns false). NOTE: this runs ONLY for a non-inlined Call --
+                                    // an inlined direct target is folded by the JIT inliner and never
+                                    // reaches this opcode (the Step-17 inlined-byref cases are
+                                    // byte-identical, unaffected).
+                                    int f7bPromotedSlotOff = -1, f7bPromotedOrigObjIdx = -1, f7bPromotedOrigOff = 0;
+                                    int f7bPromotedCallerSlot = -1, f7bRebasedSlotOff = -1, f7bRebasedOrigOff = 0;
+                                    bool f7bTouched = false;
+                                    if (targetMethod is ILMethod f7bIlm)
+                                    {
+                                        f7bTouched = NeoPreCallByrefFixup(f7bIlm, targetBase, frameBase, mStack,
+                                            out f7bPromotedSlotOff, out f7bPromotedOrigObjIdx, out f7bPromotedOrigOff,
+                                            out f7bPromotedCallerSlot, out f7bRebasedSlotOff, out f7bRebasedOrigOff);
+                                    }
+
                                     if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
                                         return null;
+
+                                    if (f7bTouched)
+                                    {
+                                        // F-7B: after a reference-byref target runs, stamp the caller
+                                        // cell with the caller-owned slot index so the caller's
+                                        // subsequent read resolves to the surviving object (the slot
+                                        // sits below the callee's frameRefBase and survived the Ret
+                                        // pop). Restore the raw frame-native byref in targetBase
+                                        // (idempotent; a direct Call has one invocation, so no
+                                        // multicast re-invocation, but the restore keeps targetBase
+                                        // consistent for any downstream read).
+                                        if (f7bPromotedSlotOff >= 0)
+                                        {
+                                            *(int*)(frameBase + f7bPromotedOrigOff) = f7bPromotedCallerSlot;
+                                            *(int*)(targetBase + f7bPromotedSlotOff + 0) = f7bPromotedOrigObjIdx;
+                                            *(int*)(targetBase + f7bPromotedSlotOff + 4) = f7bPromotedOrigOff;
+                                        }
+                                        // F-7: undo the primitive/value-byref rebase so targetBase
+                                        // holds the original caller-relative offset again.
+                                        if (f7bRebasedSlotOff >= 0)
+                                            *(int*)(targetBase + f7bRebasedSlotOff + 4) = f7bRebasedOrigOff;
+                                    }
 
                                     // Step 13 Area 4b: propagate a value-type instance `this`
                                     // mutation (ctor / mutating instance method) back to the

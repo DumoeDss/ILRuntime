@@ -368,6 +368,94 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // ===== F-7B-SIB triage probes (DIRECT Call_IL ref-type byref write-back) =====
+        // The delegate path (F-7B) is green via the caller-owned mStack slot promotion.
+        // The DIRECT Call_IL/CopyNeoCallThisBack sibling has the SAME dangling-index
+        // mechanism, but the Neo trivial inliner folds small direct targets, so the
+        // byref write-back normally stays in-frame. These probes defeat the inliner to
+        // force a real cross-frame Call_IL and reach (or fail to reach) the gap.
+
+        // Defeat condition 1: an exception handler. The inliner gate
+        // (`JITCompiler.cs:2958`) requires `!hasExceptionHandler`. A try/catch body
+        // is NEVER inlined.
+        public static int AppendBangBig(ref string s)
+        {
+            try
+            {
+                s = s + "!";
+                return s.Length;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
+        public static void NeoStep19_SIB_DirectCall_TryCatch()
+        {
+            string s = "abc";
+            int r = AppendBangBig(ref s);
+            // F-7B-SIB REACHED: caller observes the NEW object ("abc!"). If the gap
+            // reproduces, `s` is a dangling mStack index -> garbage or a later throw.
+            if (r != 4 || s != "abc!")
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // Defeat condition 2: instruction count above the inliner threshold
+        // (`Optimizer.MaximalInlineInstructionCount == 20`, `JITCompiler.cs:2968`).
+        // A body with > 20 IL instructions is NOT inlined. The local churn below
+        // inflates the body past the threshold.
+        public static int AppendBangLong(ref string s)
+        {
+            int a0 = 0, a1 = 1, a2 = 2, a3 = 3, a4 = 4;
+            int a5 = 5, a6 = 6, a7 = 7, a8 = 8, a9 = 9;
+            int a10 = a0 + a1 + a2 + a3 + a4;
+            int a11 = a5 + a6 + a7 + a8 + a9;
+            int a12 = a10 + a11;
+            s = s + "!";
+            if (a12 == 45 && a11 == 35) return s.Length;
+            return a12;
+        }
+
+        public static void NeoStep19_SIB_DirectCall_BigBody()
+        {
+            string s = "abc";
+            int r = AppendBangLong(ref s);
+            if (r != 4 || s != "abc!")
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // F-7B-SIB scope discriminator: a non-inlinable DIRECT call with a
+        // PRIMITIVE ref param (`ref int`). If this ALSO fails, the gap is the
+        // BROADER "IL-direct-call byref offset is never rebased across frames"
+        // bug (the callee derefs a caller-relative offset against its own
+        // frameBase). If it PASSES while the ref-string probes fail, the gap is
+        // the F-7B-SIB reference-specific dangling-index mechanism alone.
+        public static void BumpIntBig(ref int x)
+        {
+            try
+            {
+                x = x + 10;
+            }
+            catch
+            {
+            }
+        }
+
+        public static void NeoStep19_SIB_DirectCall_PrimitiveRef()
+        {
+            int v = 5;
+            BumpIntBig(ref v);
+            if (v != 15)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
     }
 
     // Helper for TC7: an instance with a Target list field, so a delegate over

@@ -735,6 +735,9 @@ the ABI itself. The detailed newobj-side construction contract is owned by the
 ### Requirement: Cross-frame reference-byref write-back lifetime
 
 A frame-native byref (`objectIndex == -1`) with a reference-type referent SHALL NOT leave a dangling callee-frame mStack index in an outer frame's cell when the byref crosses a frame boundary (the callee runs in a nested `ExecuteNeo` whose `frameBase`/`frameRefBase` differ from the byref's owning frame).
+This SHALL hold for BOTH cross-frame channels: the delegate-Invoke channel
+(`NeoRunDelegateTargetOnThis` -> nested `ExecuteNeo`) AND the direct-`Call`
+channel (`Call` -> `InvokeNeoCallTarget` -> nested `ExecuteNeo`).
 The written-back reference object SHALL be PROMOTED into an mStack slot owned by
 the frame that observes the byref (the caller frame, i.e. a slot at index
 `< caller frameRefBase`), and the caller's frame cell SHALL end up holding an
@@ -745,7 +748,8 @@ frame ref region.
 This requirement is the byref-channel analog of the single-reference RETURN
 promotion (`ExecuteNeo` `Ret` arm copies `mStack[retSrcIdx]` into the
 caller-supplied `retRefBase` slot before the pop). A reference-byref
-write-back SHALL enjoy the same lifetime guarantee.
+write-back SHALL enjoy the same lifetime guarantee on BOTH the delegate and
+the direct-`Call` channels.
 
 Rationale: the Neo per-frame mStack reservation + `Ret`-arm truncation
 (`mStack.RemoveRange(frameRefBase, ...)`) is a load-bearing invariant for the
@@ -755,62 +759,68 @@ dangling, and a subsequent dereference (e.g. a CLR binding reading
 `mStack[<dead index>]`) throws `Index out of range`. Primitive-byref
 write-backs are unaffected (the value is flat bytes, no mStack index).
 
-#### Scenario: reference-byref write-back of a callee-created object
+#### Scenario: reference-byref write-back via a direct Call (not delegate-Invoke)
 
-- WHEN an IL method obtains a frame-native byref to a reference-typed local
-  (e.g. `string s = "abc"; ... ref s`), passes that byref across a frame
-  boundary to a callee that REASSIGNS the referent (`s = s + "!"`), the callee
-  returns, and the caller reads the local
+- WHEN an IL method passes a `ref string` (or `ref <class>`) local to a
+  NON-inlined IL-method direct `Call`, the callee REASSIGNS the referent
+  (`s = s + "!"`), and the callee returns
 - THEN the caller's local SHALL hold the callee-created object (e.g.
-  `s == "abc!"`), the local's mStack index SHALL resolve to a slot below the
-  callee's `frameRefBase` (i.e. the index survived the callee pop), and the
-  read SHALL NOT throw `Index out of range`
+  `s == "abc!"`), the object SHALL be PROMOTED into a caller-owned mStack slot
+  below the callee's `frameRefBase`, and the read SHALL NOT throw
+  `Index out of range` -- the SAME lifetime guarantee the delegate-Invoke
+  channel already provides
 
-#### Scenario: reference-byref READ then WRITE across a frame
+### Requirement: IL-direct-Call byref ABI across a frame boundary
 
-- WHEN a callee first READS a reference-typed byref (e.g. returns
-  `s.Length`) and a SEPARATE call WRITEs a new object through the byref
-- THEN the read path SHALL observe the object present at call entry, and the
-  write path SHALL promote the new object into the caller-owned slot; the two
-  paths SHALL be consistent (the caller-owned slot is the single source of
-  truth for the byref referent across the call)
+A ref or out parameter of an IL-method callee invoked via a DIRECT Call SHALL
+be passed across the frame boundary as a byref that resolves to the CALLER
+frame when the callee dereferences it. The callee stind/ldind resolution of
+a frame-native byref SHALL address the caller frame cell, not the callee
+frame at a caller-relative offset. The byref offset SHALL be rebased by the
+frame distance so the deref lands in the caller cell, and the write-back
+SHALL propagate the possibly-mutated referent back to that caller cell.
 
-#### Scenario: primitive-byref write-back is unaffected
+The Neo trivial inliner folds small direct targets so that an inlined byref
+never crosses a frame. This requirement governs the NON-inlined case where a
+target body has an exception handler, is virtual, or exceeds the inline
+instruction-count threshold, forcing a real cross-frame Call. The byref ABI
+SHALL be correct in that case.
 
-- WHEN a callee writes a primitive value (`ref int`, `out int`, `ref long`,
-  `ref float`, `ref double`) through a cross-frame frame-native byref
-- THEN the write-back SHALL store flat bytes directly into the caller's frame
-  cell (no mStack index, no promotion), matching the F-7 primitive-byref
-  behavior byte-for-byte; the primitive value SHALL be observable after the
-  call with NO dangling index
+Rationale: the IL-direct-Call byref channel is currently un-rebased and
+un-flagged. The optimizer flags a byref param for a CLR callee but not for an
+IL callee, so CopyNeoCallArguments copies the caller 8-byte Ref Slot verbatim
+into the callee param slot at a caller-relative offset, and
+CopyNeoCallThisBack skips the un-flagged slot. The callee then dereferences
+the caller-relative offset against its own frameBase, landing in the wrong
+cell. The gap is masked today only by the inliner folding every small IL-byref
+target. A non-inlinable probe reaches the gap for both primitive and reference
+referents.
 
-## MODIFIED Requirements
+#### Scenario: primitive ref param write-back across a non-inlined direct Call
 
-### Requirement: stind / ldind / stobj / ldobj dispatch
+- WHEN an IL method passes a `ref int` (or `ref long` / `ref float` / `ref
+  double` / `out int`) local to a NON-inlined IL-method direct `Call`, the
+  callee reassigns the referent (`x = x + 10`), and the callee returns
+- THEN the caller's local SHALL hold the reassigned primitive value (e.g.
+  `v == 15`), the byref offset SHALL have been rebased by the frame distance so
+  the callee's deref resolved to the caller cell, and the write-back SHALL
+  propagate flat bytes into the caller cell (no mStack index, no promotion)
 
-The `stind`/`ldind`/`stobj`/`ldobj` dispatch over a Ref Slot SHALL handle a
-reference-typed frame-native byref that crosses a frame boundary by addressing
-a CALLER-OWNED mStack slot for the object, so that a write stores the object
-into a slot the callee pop does not delete and a read observes a stable index.
-The dispatch SHALL distinguish this cross-frame reference-byref shape from the
-existing mStack-object field-address shape (a byref whose `objectIndex >= 0`
-and whose `offset` is a field hash or a Primitives byte offset) via an
-encoding discriminator disjoint from real field hashes and Primitives offsets
-(e.g. a high-bit flag on the `offset` half, mirroring the F-10
-`NeoF10ByrefOffsetFlag` discriminator idiom). Primitive and value-type
-frame-native byrefs SHALL keep their existing dispatch UNCHANGED.
+#### Scenario: reference ref param write-back across a non-inlined direct Call
 
-#### Scenario: stind_ref write through a cross-frame reference byref
+- WHEN an IL method passes a `ref string` (or `ref <class>`) local to a
+  NON-inlined IL-method direct `Call`, the callee REASSIGNS the referent
+  (`s = s + "!"`), and the callee returns
+- THEN the caller's local SHALL hold the callee-created object (e.g.
+  `s == "abc!"`), the object SHALL be PROMOTED into a caller-owned mStack slot
+  (at index `< callee frameRefBase`) so the index survives the callee's `Ret`
+  pop, and the read SHALL NOT throw `Index out of range` or `NullReference`
 
-- WHEN a `stind.ref` executes on a reference-typed byref that was converted
-  to the cross-frame caller-owned-slot form before a nested `ExecuteNeo`
-- THEN the stored value's object SHALL be copied into the caller-owned mStack
-  slot and the caller's frame cell SHALL hold the caller-owned slot index;
-  the stored index SHALL be valid after the nested frame's `Ret` pop
+#### Scenario: inlined direct Call byref is unaffected
 
-#### Scenario: ldind_ref read through a cross-frame reference byref
-
-- WHEN a `ldind.ref` executes on the same cross-frame reference-byref form
-- THEN the read SHALL observe the object in the caller-owned mStack slot,
-  materializing it into the callee's dest ref slot for the callee's use,
-  WITHOUT introducing a dangling index into the caller cell
+- WHEN an IL-method direct `Call` target is FOLDED by the trivial inliner
+  (no exception handler, non-virtual, within the instruction-count threshold)
+- THEN the byref SHALL stay in-frame (same-frame dispatch), the call SHALL
+  produce NO cross-frame byref, and the existing Step-17 byref behavior
+  (`Increment`/`AddInto`/`Produce`) SHALL be byte-identical (full `NeoStep`
+  smoke stays green)
