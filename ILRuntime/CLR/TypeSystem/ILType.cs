@@ -2230,6 +2230,15 @@ namespace ILRuntime.CLR.TypeSystem
                         staticFieldDefinitions[idxStatic] = field;
 #if ENABLE_NEO_MODE
                         var staticFieldType = staticFieldTypes[idxStatic];
+                        // Step 25 CLR-adaptor (A2 field-init-NRE closure, static
+                        // sibling): same null-fieldType guard as the instance-
+                        // field path below -- a static field whose type fails to
+                        // resolve yields null here, and staticFieldType.IsPrimitive
+                        // would NRE. Throw TypeLoadException (mirroring :1505/:1568/
+                        // :1593) so the NeoCompiler.CompileCore pre-filter skips the
+                        // type gracefully. Neo-only (Legacy byte-identical).
+                        if (staticFieldType == null)
+                            throw new TypeLoadException("Cannot resolve static field type '" + field.FieldType.FullName + "' for type '" + FullName + "'");
                         if (staticFieldType.IsPrimitive)
                         {
                             staticFieldOffsets[idxStatic] = new ILTypeFieldOffset()
@@ -2289,6 +2298,25 @@ namespace ILRuntime.CLR.TypeSystem
                     }
 
 #if ENABLE_NEO_MODE
+                    // Step 25 CLR-adaptor (A2 field-init-NRE closure): a field
+                    // whose type fails to resolve yields a null fieldType here --
+                    // either FindGenericArgument on an OPEN generic definition
+                    // (genericArguments is null -> yields null for a generic-
+                    // parameter field, e.g. compiler-generated anonymous types
+                    // like <>f__AnonymousType0`2<j,k>) OR appdomain.GetType
+                    // returning null for an unresolvable field type. Without this
+                    // guard, fieldType.IsPrimitive below NREs on the null during
+                    // NeoAssemblyWriter.BuildTypeDef (type.TotalPrimitiveSize),
+                    // fatal-aborting the standalone ilrt_neoc AOT CLI (exit 1).
+                    // Mirroring the adaptor-lookup throw sites at :1505/:1568/:1593,
+                    // throw TypeLoadException (a LOAD failure) so the existing
+                    // NeoCompiler.CompileCore pre-filter's TypeLoadException catch
+                    // skips the type gracefully (exit 2). Neo-only: under plain
+                    // Debug this block compiles out, so Legacy is byte-identical
+                    // (the null-fieldType path was already latent there and is NOT
+                    // reached by the AOT CLI, which is Neo-only).
+                    if (fieldType == null)
+                        throw new TypeLoadException("Cannot resolve field type '" + field.FieldType.FullName + "' for type '" + FullName + "'");
                     if (fieldType.IsPrimitive)
                     {
                         fieldOffsets[idx - FieldStartIndex] = new ILTypeFieldOffset()

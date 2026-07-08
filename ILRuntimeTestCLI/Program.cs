@@ -182,7 +182,48 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
-            // Step 26 host-side Neo-vs-Legacy benchmark self-check (the
+            // Step 25 CLR-adaptor host-side self-check: the standalone-AOT-CLI
+            // robustness gate for IL types whose CLR base/interface needs a
+            // CrossBindingAdaptor the generic compile AppDomain does NOT register.
+            // Drives the FILE-PATH NeoCompiler.Compile on NeoClrProbe.dll (which
+            // carries an ExceptionProbe : System.Exception -> built-in adaptor,
+            // and an AdaptorProbe : TestClass2 -> harness adaptor, skipped) with
+            // ILRuntimeTestBase.dll as the ref. Asserts: no fatal, a valid .neo,
+            // AdaptorProbe reported as a (type) TypeLoadException skip,
+            // ExceptionProbe resolved + emitted (built-in adaptor preserved).
+            if (nameFilter == "NeoStep25ClrAdaptor")
+            {
+                int failed;
+                try
+                {
+                    // Locate NeoClrProbe.dll + ILRuntimeTestBase.dll relative to
+                    // the TestCases.dll path (mirrors NeoStep25S3ClrEnum).
+                    string testCasesDir = System.IO.Path.GetDirectoryName(path);
+                    string repoRoot = testCasesDir;
+                    for (int i = 0; i < 4 && repoRoot != null; i++)
+                        repoRoot = System.IO.Path.GetDirectoryName(repoRoot);
+                    string probeDll = System.IO.Path.Combine(
+                        repoRoot ?? "", "NeoClrProbe", "bin", "Debug", "netstandard2.1", "NeoClrProbe.dll");
+                    string testBaseDll = System.IO.Path.Combine(testCasesDir, "ILRuntimeTestBase.dll");
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25ClrAdaptorCheck.Run(
+                        probeDll, testBaseDll);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 CLR-adaptor: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed. Compile: {r.TypesCompiled} types / {r.MethodsCompiled} methods / {r.TemplatesCaptured} templates / {r.SkippedCount} skipped.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                    foreach (var s in r.Skipped)
+                        Console.WriteLine($"  SKIP: {s}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25ClrAdaptor threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // perf-validation capstone; the LAST numbered AOT-chain step).
             // Drives 5 bench workloads via appdomain.Invoke, host-times each
             // with a real Stopwatch, asserts each returned its expected

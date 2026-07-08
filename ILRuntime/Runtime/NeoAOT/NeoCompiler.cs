@@ -218,7 +218,61 @@ namespace ILRuntime.Runtime.NeoAOT
             var methods = new List<ILMethod>();
             var templates = new List<GenericMethodTemplate>();
 
+            // ===== Per-TYPE pre-filter (Step 25 CLR-adaptor TRUE COMPLETION):
+            // eagerly trigger the lazy CLR-base/interface adaptor resolution
+            // BEFORE the per-method compile loop AND BEFORE serialization. An IL
+            // type whose CLR base or CLR interface needs a CrossBindingAdaptor
+            // that is NOT registered in the compile AppDomain throws
+            // TypeLoadException here -- the throw sites at ILType.cs:1505 (CLR
+            // interface), :1568 (generic-instance CLR base), :1593 (non-generic
+            // CLR base). Catching it at the TYPE level lets us drop the WHOLE
+            // type cleanly: the type is excluded from BOTH the per-method loop
+            // AND NeoAssemblyWriter.Write (whose TypeDef emission at
+            // NeoAssemblyWriter.cs:755/:762 also touches BaseType and would re-
+            // fire the lazy resolution). The ILType init is MEMOIZED
+            // (baseTypeInitialized / interfaceInitialized), so a survivor's later
+            // BaseType access does NOT re-throw. Only TypeLoadException is caught
+            // (the adaptor-absence exception); any OTHER init failure stays a
+            // loud fatal (it propagates to the NeoCompilerFatal wrapper -> exit
+            // 1), not a silent skip. Types whose CLR base resolves via a BUILT-IN
+            // adaptor (ExceptionAdaptor / AttributeAdapter, registered by the
+            // AppDomain ctor) are found here and SUCCEED -- they are NOT skipped.
+            // (Design D1/D2.) =====
+            var compilableTypes = new List<ILType>();
             foreach (var type in inputTypes)
+            {
+                if (type == null) continue;
+                try
+                {
+                    _ = type.FirstCLRBaseType;   // triggers InitializeBaseType (sites 1568/1593)
+                    _ = type.FirstCLRInterface;  // triggers InitializeInterfaces (site 1505;
+                                                 // also reads BaseType internally at :1510)
+                    // A2 field-init-NRE closure: also trigger FIELD init now. A
+                    // type whose field type fails to resolve (e.g. a compiler-
+                    // generated anonymous OPEN generic definition like
+                    // <>f__AnonymousType0`2<j,k>, whose generic-parameter field
+                    // yields a null fieldType via FindGenericArgument) throws
+                    // TypeLoadException in ILType.InitializeFields (the Neo-gated
+                    // null-fieldType guard at ILType.cs, mirroring the adaptor
+                    // sites). Triggering it HERE -- via TotalPrimitiveSize, whose
+                    // getter calls InitializeFields when fieldMapping==null --
+                    // fires the TLE inside this try, so the existing
+                    // TypeLoadException catch skips the type cleanly instead of
+                    // NRE-ing later during NeoAssemblyWriter.BuildTypeDef
+                    // (type.TotalPrimitiveSize at NeoAssemblyWriter.cs:756).
+                    _ = type.TotalPrimitiveSize;  // triggers InitializeFields (field-type resolution)
+                    compilableTypes.Add(type);
+                }
+                catch (TypeLoadException ex)
+                {
+                    result.Skipped.Add(MakeTypeSkip(type, ex));   // harness-adaptor skip
+                }
+            }
+
+            // compilableTypes (the survivors) replaces inputTypes for BOTH the
+            // per-method loop AND Write. A skipped type's methods are never
+            // enumerated, never force-compiled, and never serialized.
+            foreach (var type in compilableTypes)
             {
                 if (type == null) continue;
                 // GetMethods(): all non-ctor methods. GetConstructors(): instance
@@ -239,6 +293,23 @@ namespace ILRuntime.Runtime.NeoAOT
                     // Generic INSTANCES are runtime artifacts (created on demand);
                     // they are neither definitions to template nor methods to emit.
                     if (ilm.IsGenericInstance) continue;
+
+                    // A method with no Cecil body -- a delegate's Invoke/
+                    // BeginInvoke/EndInvoke (runtime-implemented), an abstract/
+                    // extern/PInvoke method -- has NO IL to AOT-compile.
+                    // ILMethod.InitCodeBody guards `if (def.HasBody)`, so for
+                    // these BodyRegister returns null WITHOUT throwing, the
+                    // per-method force-compile below silently admits them to
+                    // methods[], and NeoAssemblyWriter.CompileFresh's JIT later
+                    // NREs on the null body (JITCompiler.Compile :360). Omit them
+                    // here (mirrors the IsGenericInstance silent skip): the .neo
+                    // loader's additive JIT fallback handles them at load time.
+                    // (A2-extension: null-body-method CompileFresh NRE. This is a
+                    // pre-compile filter, NOT a broadened catch -- a method WITH a
+                    // body whose JIT NREs still throws in the force-compile try
+                    // below and is recorded as a skip; a genuine CompileFresh bug
+                    // on a body-bearing method still stays a loud fatal.)
+                    if (ilm.Definition != null && !ilm.Definition.HasBody) continue;
 
                     if (ilm.GenericParameterCount > 0)
                     {
@@ -272,9 +343,13 @@ namespace ILRuntime.Runtime.NeoAOT
             // force-compiled cleanly above, so Write's CompileFresh re-compiles
             // deterministically (Step-23 self-check relies on the same determinism).
             var writer = new NeoAssemblyWriter();
-            writer.Write(inputTypes, methods.ToArray(), templates.ToArray(), outputStream);
+            writer.Write(compilableTypes.ToArray(), methods.ToArray(), templates.ToArray(), outputStream);
 
-            result.TypesCompiled = inputTypes.Length;
+            // TypesCompiled is the EMITTED count (the survivor subset), consistent
+            // with MethodsCompiled / TemplatesCaptured being emitted counts. A
+            // harness-adaptor-requiring type that was pre-filtered out is NOT
+            // counted here -- it is in result.Skipped (drives exit 2).
+            result.TypesCompiled = compilableTypes.Count;
             result.MethodsCompiled = methods.Count;
             result.TemplatesCaptured = templates.Count;
         }
@@ -342,6 +417,33 @@ namespace ILRuntime.Runtime.NeoAOT
             catch
             {
                 display = method != null ? (method.Name ?? "?") : "?";
+            }
+            return new MethodSkip
+            {
+                MethodDisplay = display,
+                ExceptionType = ex != null ? ex.GetType().Name : "?",
+                Message = ex != null ? ex.Message : "",
+            };
+        }
+
+        // A TYPE-level skip (a whole IL type omitted because its lazy CLR-base /
+        // CLR-interface adaptor resolution threw TypeLoadException in the
+        // CompileCore pre-filter). Mirrors MakeSkip, but MethodDisplay is a clear
+        // type-level marker -- "(type) <FullName>" -- so the CLI's existing
+        // "SKIP <display>: <ex>: <msg>" printer (Program.cs, UNCHANGED) renders a
+        // type skip distinctly from a per-method skip. Reuses the existing
+        // NeoCompilerResult.Skipped list + the IsComplete -> exit-2 path, so NO
+        // CLI change is needed (Design D2 + OQ1 default).
+        static MethodSkip MakeTypeSkip(ILType type, Exception ex)
+        {
+            string display;
+            try
+            {
+                display = "(type) " + (type.FullName ?? "?");
+            }
+            catch
+            {
+                display = "(type) ?";
             }
             return new MethodSkip
             {

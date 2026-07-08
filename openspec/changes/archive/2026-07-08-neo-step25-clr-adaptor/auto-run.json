@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-step25-clr-adaptor",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner", "runtime": "claude", "name": "plan-clradapt" } },
+    "apply": {
+      "status": "in_progress",
+      "outcome": "Adaptor fix SHIPPED + green (Cannot find Adaptor:TestClass2 fatal GONE; pre-filter skips harness-adaptor types; NeoStep25ClrAdaptor 7/7; NeoStep 219/0/0; NeoStep25S3ClrEnum 7/7; Legacy-neutral). HANDOFF: a NEW distinct gap A2 (NEO-AOT-FIELDINIT-NRE) blocks the full-TestCases exit-0/2 goal -- ILType.InitializeFields NREs on a compiler-generated anonymous open-generic type whose field-type GetType returns null.",
+      "leadDecision": "Option 2 -- CLOSE A2 NOW via the clean fix (make ILType.InitializeFields throw TypeLoadException when GetType returns null -> the existing pre-filter skips it; preserves the narrow-TLE invariant; no broadened catch). The full-TestCases CLI robustness is the change's real-usability goal.",
+      "worker": { "role": "implementer", "runtime": "claude", "name": "impl-clradapt", "returnStatus": "HANDOFF (A2 surfaced)" }
+    },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": ["A2/NEO-AOT-FIELDINIT-NRE: ILType.InitializeFields NRE on anonymous open-generic field-type null -> blocks full-TestCases CLI exit-0/2. FIX: throw TypeLoadException on null GetType -> pre-filter skips."],
+  "baseline": "NeoStep 219/0/0; NeoStep25ClrAdaptor 7/7; NeoStep25S3ClrEnum 7/7"
+}
