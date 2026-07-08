@@ -396,7 +396,50 @@ namespace ILRuntime.Runtime.Intepreter
                         throw new TypeLoadException();
                 }
 #else
-                return null;
+                // F-4 / NEO-IL-EX-FIELDACCESS path #4 (Neo): read an IL-declared
+                // field off a Neo ILTypeInstance through the cross-binding-adaptor
+                // forward path / host reflection. Under the Neo object model the
+                // instance stores fields as byte[] Primitives (fields, sized to
+                // type.TotalPrimitiveSize) + AutoList ManagedObjects (managedObjs,
+                // sized to type.TotalReferenceCount), NOT a StackObject[] -- so the
+                // Legacy byte-length gate (fields.Length == TotalFieldCount) does
+                // NOT apply. Gate IL-field vs CLR-inherited by the field INDEX
+                // (the exact analogue of the Legacy gate; out-of-range -> the
+                // FirstCLRBaseType CLR-inherited branch, byte-identical to Legacy).
+                if (index < type.TotalFieldCount && index >= 0)
+                {
+                    ILTypeFieldOffset off = type.GetFieldOffset(index);
+                    IType ft = type.GetField(index, out ILRuntime.Mono.Cecil.FieldReference _);
+                    if (ft.IsPrimitive)
+                    {
+                        return ReadNeoPrimitive(fields, off.PrimitiveOffset, ft, type.AppDomain);
+                    }
+                    else if (ft.IsValueType && ft is ILType)
+                    {
+                        // IL value-type field: spans both the primitive and the
+                        // reference sub-regions (ILType.cs:2334-2348 allocates it
+                        // across both). Reconstruction off the split storage is not
+                        // supported here -- throw a TAGGED NIE so a caller sees the
+                        // real reason instead of wrong data. Rare for the caught-
+                        // exception shape (primitive/string fields dominate).
+                        throw new NotImplementedException("Neo ILTypeInstance indexer: IL-value-type field reconstruction not supported (field " + index + " of " + type.FullName + ")");
+                    }
+                    else
+                    {
+                        // Reference / enum (boxed) / CLR-struct (F-10 boxed) field.
+                        return managedObjs != null ? managedObjs[off.ReferenceOffset] : null;
+                    }
+                }
+                else
+                {
+                    if (Type.FirstCLRBaseType != null && Type.FirstCLRBaseType is Enviorment.CrossBindingAdaptor)
+                    {
+                        CLRType clrType = type.AppDomain.GetType(((Enviorment.CrossBindingAdaptor)Type.FirstCLRBaseType).BaseCLRType) as CLRType;
+                        return clrType.GetFieldValue(index, clrInstance);
+                    }
+                    else
+                        throw new TypeLoadException();
+                }
 #endif
             }
             set
@@ -443,9 +486,128 @@ namespace ILRuntime.Runtime.Intepreter
                     else
                         throw new TypeLoadException();
                 }
+#else
+                // F-4 path #4 (Neo set arm, mirrors the get arm). Write the
+                // value into the Neo split storage. The Legacy clone prelude is
+                // engine-agnostic and retained.
+                value = ILIntepreter.CheckAndCloneValueType(value, type.AppDomain);
+                if (index < type.TotalFieldCount && index >= 0)
+                {
+                    ILTypeFieldOffset off = type.GetFieldOffset(index);
+                    IType ft = type.GetField(index, out ILRuntime.Mono.Cecil.FieldReference _);
+                    if (ft.IsPrimitive)
+                    {
+                        if (value != null)
+                            WriteNeoPrimitive(fields, off.PrimitiveOffset, ft, value, type.AppDomain);
+                        else
+                            WriteNeoPrimitiveDefault(fields, off.PrimitiveOffset, ft, type.AppDomain);
+                    }
+                    else if (ft.IsValueType && ft is ILType)
+                    {
+                        throw new NotImplementedException("Neo ILTypeInstance indexer: IL-value-type field write not supported (field " + index + " of " + type.FullName + ")");
+                    }
+                    else
+                    {
+                        // Reference / enum (boxed) / CLR-struct (F-10 boxed).
+                        if (managedObjs != null)
+                            managedObjs[off.ReferenceOffset] = value;
+                    }
+                }
+                else
+                {
+                    if (Type.FirstCLRBaseType != null && Type.FirstCLRBaseType is Enviorment.CrossBindingAdaptor)
+                    {
+                        CLRType clrType = type.AppDomain.GetType(((Enviorment.CrossBindingAdaptor)Type.FirstCLRBaseType).BaseCLRType) as CLRType;
+                        clrType.SetFieldValue(index, ref clrInstance, value);
+                    }
+                    else
+                        throw new TypeLoadException();
+                }
 #endif
             }
         }
+#if ENABLE_NEO_MODE
+        // F-4 path #4 helpers: read/write a Neo primitive field out of / into the
+        // byte[] Primitives region, keyed by the AppDomain primitive singletons
+        // (the SAME reference-identity comparison the storage allocator at
+        // ILType.cs:2300 uses, so the width/encoding is guaranteed consistent).
+        // Mirrors the Ldfld_*/Stfld_* arms at ILIntepreter.Neo.cs:2753-2860.
+        private static object ReadNeoPrimitive(byte[] prim, int offset, IType fieldType, Enviorment.AppDomain domain)
+        {
+            if (fieldType == domain.IntType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<int>(ref prim[offset]);
+            if (fieldType == domain.LongType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<long>(ref prim[offset]);
+            if (fieldType == domain.ShortType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<short>(ref prim[offset]);
+            if (fieldType == domain.ByteType)
+                return prim[offset];
+            if (fieldType == domain.SByteType)
+                return (sbyte)prim[offset];
+            if (fieldType == domain.UShortType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<ushort>(ref prim[offset]);
+            if (fieldType == domain.UIntType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<uint>(ref prim[offset]);
+            if (fieldType == domain.ULongType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<ulong>(ref prim[offset]);
+            if (fieldType == domain.FloatType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<float>(ref prim[offset]);
+            if (fieldType == domain.DoubleType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<double>(ref prim[offset]);
+            if (fieldType == domain.BoolType)
+                return prim[offset] != 0;
+            if (fieldType == domain.CharType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<char>(ref prim[offset]);
+            if (fieldType == domain.IntPtrType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<System.IntPtr>(ref prim[offset]);
+            // Unknown primitive IType (should not happen: the allocator only
+            // routes the singletons above into the Primitives region). Surface it
+            // rather than return wrong data.
+            throw new NotImplementedException("Neo ILTypeInstance indexer: unsupported primitive field type " + fieldType.FullName);
+        }
+
+        private static void WriteNeoPrimitive(byte[] prim, int offset, IType fieldType, object value, Enviorment.AppDomain domain)
+        {
+            if (fieldType == domain.IntType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (int)value);
+            else if (fieldType == domain.LongType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (long)value);
+            else if (fieldType == domain.ShortType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (short)value);
+            else if (fieldType == domain.ByteType)
+                prim[offset] = (byte)value;
+            else if (fieldType == domain.SByteType)
+                prim[offset] = (byte)(sbyte)value;
+            else if (fieldType == domain.UShortType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (ushort)value);
+            else if (fieldType == domain.UIntType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (uint)value);
+            else if (fieldType == domain.ULongType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (ulong)value);
+            else if (fieldType == domain.FloatType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (float)value);
+            else if (fieldType == domain.DoubleType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (double)value);
+            else if (fieldType == domain.BoolType)
+                prim[offset] = (bool)value ? (byte)1 : (byte)0;
+            else if (fieldType == domain.CharType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (char)value);
+            else if (fieldType == domain.IntPtrType)
+                System.Runtime.CompilerServices.Unsafe.WriteUnaligned(ref prim[offset], (System.IntPtr)value);
+            else
+                throw new NotImplementedException("Neo ILTypeInstance indexer: unsupported primitive field type " + fieldType.FullName);
+        }
+
+        private static void WriteNeoPrimitiveDefault(byte[] prim, int offset, IType fieldType, Enviorment.AppDomain domain)
+        {
+            // null primitive write -> zero the width (matching the Ldfld default
+            // for a never-assigned field). The width comes from the allocator's
+            // GetPrimitiveSize.
+            int sz = domain.GetPrimitiveSize(fieldType);
+            for (int i = 0; i < sz; i++)
+                prim[offset + i] = 0;
+        }
+#endif
 #if !ENABLE_NEO_MODE
         public unsafe void AssignFieldNoClone(int index, object value)
         {

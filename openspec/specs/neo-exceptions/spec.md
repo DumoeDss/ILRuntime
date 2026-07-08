@@ -361,3 +361,56 @@ behavior (the new branch is unreachable for CLRType catch clauses).
   (or exact-equality in explicit-match mode) logic, byte-for-byte unchanged,
   regardless of whether the engine is Neo or Legacy -- no behavioral regression
   for any existing CLRType-catch test.
+
+### Requirement: ILTypeInstance field indexer reads IL-declared fields under Neo
+
+Under `ENABLE_NEO_MODE`, the `ILTypeInstance.this[int index]` indexer `get` SHALL
+return the value of the IL-declared field at `index`, reading from the Neo object
+model (`byte[] Primitives` for primitive/enum fields; `AutoList ManagedObjects`
+for reference fields and boxed CLR-struct fields), and SHALL NOT return `null` for
+a populated field. The indexer is the standard CLR-side bridge for reading an
+IL-declared field off a recovered `ILTypeInstance` (a direct cast to the IL type
+is impossible -- the two are unrelated CLR types -- so field read-off a recovered
+instance goes through the indexer; this is the path generated
+cross-binding-adaptor property forwarders and host reflection use).
+
+The indexer `get` SHALL gate IL-field vs CLR-inherited by
+`index >= 0 && index < type.TotalFieldCount` (the analogue of the Legacy
+`index < fields.Length` gate; under Neo `fields` is the primitive BYTE array, so
+the byte-length MUST NOT be used as the field-count gate), resolve the field
+offset via `type.GetFieldOffset(index)` and the field type via
+`type.GetField(index, ...)` (both recurse through the IL base-type chain), and
+dispatch on the field's TypeForCLR: primitive fields SHALL be read from
+`Primitives` at the field's `PrimitiveOffset` by width and boxed; enum fields
+SHALL be read as the underlying primitive and boxed as the enum; reference fields
+SHALL be read from `ManagedObjects[ReferenceOffset]`; CLR-struct fields of an IL
+instance (the `neo-clrstruct-field-of-il` layout, stored boxed at
+`ManagedObjects[ReferenceOffset]`) SHALL be returned from that slot. An index in
+the CLR-inherited range SHALL fall through to the existing `FirstCLRBaseType`
+branch (`clrType.GetFieldValue(index, clrInstance)`), byte-identical to Legacy.
+An IL value-type field (reconstruction required) SHALL throw a TAGGED
+`NotImplementedException` rather than return wrong data (accepted-known edge;
+rare for exception types). The `set` arm SHALL mirror `get` for the supported
+shapes. The Legacy `get`/`set` arms (the `StackObject[] fields` path) SHALL be
+byte-for-byte unchanged.
+
+#### Scenario: Reading an IL-declared field off a caught exception via the indexer
+- **WHEN** an IL method under `ENABLE_NEO_MODE` catches an IL-defined exception,
+  recovers its `ILTypeInstance` via the `CrossBindingAdaptorType.ILInstance`
+  bridge, and reads an IL-declared reference/primitive field through the
+  `ILTypeInstance` indexer
+- **THEN** the indexer SHALL return the field's actual value (the value the
+  constructor / field-set stored), and SHALL NOT return `null` for a populated
+  non-null field
+- (On HEAD `b0041e74` the indexer `get` returns `null` unconditionally under
+  `ENABLE_NEO_MODE`. ADVERSARIAL PROBE: `NeoStep14_ILEx_IndexerFieldRead` -- throw
+  `new MyEx("idx-msg")`, recover `ili`, read the `Msg` field through a bound CLR
+  helper via `ili[fieldIndex]`, assert the value equals `"idx-msg"`.)
+
+## NOTES (F-4 / NEO-IL-EX-FIELDACCESS resolution 2026-07-08, apply overturned the design's #2 verdict)
+
+- **Path #1 (`((CrossBindingAdaptorType)e).ILInstance` callvirt-on-CLR-interface):** ALREADY WORKS on HEAD (probe-confirmed; returns a non-null ILTypeInstance). The prior F-4 characterization that this throws `InvalidCastException` is STALE -- an intervening change (Step 19/20 cross-binding + callvirt-CLR dispatch) closed it. No engine edit; a documentation correction.
+- **Path #2 (`e.GetType()`):** ALREADY WORKS on HEAD via the reflection fallback (the prior `-96` symptom was `Type.op_Equality` hitting a separate null-operand autogen-binding gap, NOT GetType). A Neo `ObjectGetType_Neo` redirect was prototyped then REMOVED -- it does not fire (a `typeof(object).GetMethod("GetType")` vs `typeof(Exception).GetMethod("GetType")` MethodInfo key-mismatch) and the fallback already works. The F-4 spec-delta "SHALL register ObjectGetType_Neo" requirement is NOT merged -- it would record a non-existent fix. The op_Equality null-operand gap is recorded separately (a general Neo autogen-binding follow-up).
+- **Path #4 (`ILTypeInstance.this[index]` indexer):** SHIPPED (the load-bearing fix) -- see the "ILTypeInstance field indexer reads IL-declared fields under Neo" requirement above. Stash-toggle-confirmed (HEAD returned null/the wrong value; with-fix returns the field value).
+- **Path #3 (`appdomain.Invoke(instanceMethod, e)` instance re-entry):** REMAINS DEFERRED (the parametrized-Run ABI extension; also F-12 / STEP-25-PARTIAL). NOT unblocked by `neo-async-movenext-fix` (which routes through DriveMoveNextCore + a fresh interpreter calling ExecuteNeo directly, NOT the public Run). Tracked as follow-on child `neo-f4-parametrized-run-entry` (the LEAD SHALL drive it next under the TRUE-COMPLETION mandate). Reading an IL instance METHOD off a caught exception stays blocked until then; reading the IL TYPE (#2) and IL-declared FIELDS (#4) are closed.
+- **Two NEW pre-existing gaps surfaced + sequenced:** (a) the op_Equality null-operand autogen-binding gap; (b) `new MyEx("...")` string-arg-to-IL-exception-ctor stores `this` into the string field instead of the arg. Both recorded in `.trae/documents/neo-deferred-items.md`.

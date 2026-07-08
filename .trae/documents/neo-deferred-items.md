@@ -76,7 +76,7 @@ Insert these into the roadmap ordering:
 | Q-VT-NEWOBJ | IL value-type `newobj` (real, non-inlined) + `call VT ctor` via ldloca | Step 18 | **RESOLVED in [VT-THIS-ADDR]** | RESOLVED 2026-07-05: inline-stfld owner-type clobber fix + D1 Newobj-dest typing + Newobj temp sizing + copy-back runtime branch | fixed; full NeoStep smoke 99/99 |
 | F-2 / INLINER-REFONLY-VT | ref-only VT (prim-size 0) local `new S(refArgs)` mis-compiles: inlined `stfld.ref.inline` writes don't survive to the following in-frame `ldfld.ref` read | neo-vt-this-addr re-review (F-1 probe) | **future** (fold into K2-FAM bridge or [OPT-HARDEN-3]) | JITCompiler inliner ref-fold over a 0-prim-size VT local | pre-existing (latent) |
 | F-3 / NEO-BYREF-THIS | `new ClrStruct(args)` + `local.VTMethod()` (CLR/IL struct instance method via byref-`this`) hit a pre-existing reflection gap (`CLRMethod.Invoke` read the byref `this` as a 4-byte mStack index; the byref `this` is an 8-byte Ref Slot from `ldloca`) | neo-opt-harden-2 re-review | **RESOLVED for direct `call` (neo-step13-area4); `callvirt`/`constrained.callvirt` still Step 17 D-CONSTRAINED** | `CopyNeoCallArguments` derefs byref sources at the copy site; `this` slot holds flat bytes; `CopyNeoCallThisBack` propagates mutations | pre-existing; direct-`call` shape closed 2026-07-05 (6/9 probes FAIL-on-HEAD) |
-| F-4 / NEO-IL-EX-FIELDACCESS | Reading IL-declared fields/methods off a CAUGHT IL exception via the adaptor bridge is broken on Neo (4 broken read paths: `((CrossBindingAdaptorType)e).ILInstance` callvirt-on-CLR-interface -> InvalidCastException; `e.GetType()` callvirt.clr -> NIE; `appdomain.Invoke` instance-method -> NRE under ENABLE_NEO_MODE; `ILTypeInstance.this[index]` indexer -> null under ENABLE_NEO_MODE) | neo-il-exception-throw apply (OQ1/OQ2) | **future** (Step 13 Area 4 / cross-binding-adaptor follow-up) | Neo callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry + `ILTypeInstance` Neo indexer | pre-existing (NOT introduced; surfaces only because IL exceptions can now be thrown + caught); workaround `e is MyEx` (isinst) |
+| F-4 / NEO-IL-EX-FIELDACCESS | Reading IL-declared fields/methods off a CAUGHT IL exception via the adaptor bridge is broken on Neo (4 read paths: #1 bridge, #2 `e.GetType()`, #3 `appdomain.Invoke`, #4 `ILTypeInstance.this[index]`) | neo-il-exception-throw apply (OQ1/OQ2) | **PARTIALLY RESOLVED (neo-f4-reflection-on-neo 2026-07-08)**: #1+#2 NO-OP (already worked; doc STALE), #4 RESOLVED (Neo indexer get/set arms), #3 SEQUENCED (parametrized-Run follow-on child) | `ILTypeInstance` Neo indexer (path #4 only -- the real fix); #2/#3 untouched | pre-existing; NeoStep 221/0/0; 2 NEW gaps sequenced (op_Equality null-operand + newobj string-arg) |
 | Q-STRUCT | struct-local + field-mutation + element-read temp-renumber | Step 16 | **deferred** | not reproducible on HEAD (probes pass); suspect `Optimizer.BCP.cs:97-141` | pre-existing (unconfirmed) |
 | F-5 / NEO-CALLARG-BOXED-SRC | boxed-source branch of `CopyNeoCallArguments` (`ILIntepreter.Neo.cs:295-300`) mis-copies a boxed `this` (would read an mStack field offset as a struct address); UNREACHABLE today (boxed `this` only via `constrained.callvirt` = Step 17 NIE); also `CopyNeoCallThisBack` comment claims ctor coverage but the newobj path does not invoke it | neo-step13-area4 review (Finding M2) | **RESOLVED (neo-step17-completion)** | the box-once BYPASSES CopyNeoCallArguments; the wrong defensive CopyBlock replaced with a tagged NIE-guard + CopyNeoCallThisBack comment tightened | latent dead-branch (closed 2026-07-05) |
 | F-6 / NEO-VT-FLDADDR | `ldflda`-on-in-frame-VT mis-reads: the Ldflda arm reads the operand slot as an mStack objIdx; an in-frame VT slot holds flat bytes -> garbage. There is NO `Ldflda_Inline`. Any IL-struct method taking a field address (`field.ToString()`, `ref field`, `fixed`) is broken on Neo REGARDLESS of constrained | neo-step17-completion apply (the IL-struct ToString probe) | **RESOLVED 2026-07-06 (neo-vt-ldflda-inline)** | marker stamp (`Operand4` bit 0x1 in `TypeSpecializeNeoOpcodes case Ldflda:`) + 3-way runtime dispatch (marker + leading-int: `-1` -> frame-native; else marker -> flat-bytes shape 3; else -> heap/CLR). Neo-only, Legacy-neutral. NeoStep 154/154. CLR-object-field `ldflda` coverage gap deferred to `neo-step17-stobj-refloop` (F-R2) | pre-existing (NOT introduced; surfaced when the IL-struct ToString probe hit it) |
@@ -561,13 +561,44 @@ known-good on the `Adapter`. The `MyEx` class retains its `Msg` field +
 `Message` override on the throw side; forwarding will activate once the
 callvirt/indexer gaps close.
 
-The reviewer did NOT ship a failing test for the broken read paths (would
-regress the smoke for an out-of-scope bug). **Resolution:** future -- route to
-Step 13 Area 4 (CLR binding codegen overhaul + cross-binding-adaptor
-completion) or a dedicated cross-binding-adaptor follow-up. The fix touches
-Neo callvirt-on-CLR-interface + `appdomain.Invoke` instance-method re-entry +
-`ILTypeInstance` Neo indexer (all independent mechanisms; a single follow-up
-likely closes all four for the caught-exception shape).
+**RESOLVED 2026-07-08 (neo-f4-reflection-on-neo, scope-aware dump-gate).** Each
+of the 4 read paths was re-probed on HEAD with the probe confounds removed; the
+dump decided SHIP vs NO-OP vs SEQUENCE per path (design.md section 0/7):
+1. **Bridge** -- WORKS on HEAD (no-op; the doc `InvalidCastException`
+   characterisation was STALE -- an intervening callvirt-CLR-dispatch change
+   closed it). No fix.
+2. **`e.GetType()`** -- WORKS on HEAD (no-op; STALE). The original `-96` was NOT
+   GetType -- it was `Type.op_Equality` (`t != null`) hitting a SEPARATE
+   `ReadNeoReference` null-operand gap (the autogen `op_Equality_1_Neo` indexes
+   `mStack[-1]` for a null operand). With the confound removed, GetType returns
+   the caught Adapter's CLR type via the reflection fallback. No fix. NOTE: a
+   Neo `Object.GetType` redirect was prototyped then REMOVED -- it does NOT fire
+   (the redirect map is keyed by the `Object`-declared MethodInfo, but the JIT
+   resolves `Object.GetType` on an IL exception to the `System.Exception`-
+   declared MethodInfo, a distinct object/MethodHandle per .NET reflection, so
+   `TryGetRedirection` misses). Recorded for a future worker wanting the IL
+   projection from GetType (would need a normalized map key).
+3. **`appdomain.Invoke(instanceMethod, e)`** -- SEQUENCED to follow-on child
+   `neo-f4-parametrized-run-entry` (parametrized-Run ABI extension; the public
+   `Run`/`Invoke` re-entry never marshals `instance`/`p` under
+   `ENABLE_NEO_MODE`). `neo-async-movenext-fix` did NOT unblock it.
+4. **`ILTypeInstance.this[index]` indexer** -- SHIP: the ONLY real fix landed.
+   Replaced the Neo `get` `return null` with a Neo `get` arm gated on
+   `index < type.TotalFieldCount`, dispatching on the field IType (primitive ->
+   `Primitives[PrimitiveOffset]`; reference/enum/CLR-struct ->
+   `ManagedObjects[ReferenceOffset]`; IL-value-type -> tagged NIE), mirrored in
+   `set`. Added `ReadNeoPrimitive`/`WriteNeoPrimitive`/`WriteNeoPrimitiveDefault`
+   helpers (keyed on the AppDomain primitive singletons -- the SAME identity the
+   storage allocator uses). Probe `NeoStep14_ILEx_IndexerFieldRead` FAIL-on-HEAD
+   (`-9`, null) -> PASS-after (`9`); stash-toggle confirmed load-bearing.
+
+NeoStep smoke 221/0/0 (was 219; +2 probes); Legacy-neutral (plain Debug = 0
+errors). Two NEW pre-existing gaps discovered during apply (design.md section 8),
+both SEQUENCED: (a) `op_Equality` null-operand gap (general Neo -- affects any
+`t == null` on Type/String); (b) `new MyEx(string)` ctor stores `this` into the
+string field instead of the arg (newobj-arg passing for CLR-adaptor-base IL
+types) -- the indexer probe works around it via a direct field assignment.
+
 
 ### F-5 / NEO-CALLARG-BOXED-SRC — boxed-source branch of CopyNeoCallArguments (latent dead-branch; -> RESOLVED neo-step17-completion)
 **RESOLVED 2026-07-05 (neo-step17-completion).** When the Constrained arm landed,

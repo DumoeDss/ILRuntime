@@ -1,4 +1,7 @@
 using System;
+using ILRuntime.Runtime.Enviorment;
+using ILRuntime.Runtime.Intepreter;
+using ILRuntimeTest.TestFramework;
 
 namespace TestCases
 {
@@ -419,6 +422,86 @@ namespace TestCases
             }
 
             return (ilHit == 1 && clrHit == 1) ? 9 : -4;
+        }
+
+        // ====================================================================
+        // F-4 / NEO-IL-EX-FIELDACCESS probes (reflection-read off a caught Neo
+        // ILTypeInstance). Path #1 (CrossBindingAdaptorType.ILInstance bridge)
+        // already works on HEAD; these exercise path #2 (Object.GetType) and
+        // path #4 (the ILTypeInstance Neo field indexer).
+        // ====================================================================
+
+        // 3.9 F-4 path #2: e.GetType() on the caught object (the adaptor's CLR
+        // Adapter view) must return the IL type's CLR projection -- on HEAD this
+        // throws ArgumentOutOfRangeException (no Neo redirect for Object.GetType;
+        // the autogen reader mis-reads the reference `this`). After the Neo
+        // ObjectGetType redirect it returns a non-null Type assignable from the
+        // IL catch type's CLR projection.
+        public static int NeoStep14_ILEx_GetType()
+        {
+            try
+            {
+                throw new MyEx("gettype-msg");
+            }
+            catch (MyEx e)
+            {
+                try
+                {
+                    var t = e.GetType();
+                    // Use ReferenceEquals (not `t == null`, which lowers to
+                    // Type.op_Equality -- a separate pre-existing ReadNeoReference
+                    // null-operand gap that would confound this probe).
+                    if (ReferenceEquals(t, null))
+                        return -10;
+                    return 9;
+                }
+                catch (Exception)
+                {
+                    return -96;
+                }
+            }
+        }
+
+        // 3.10 F-4 path #4: read an IL-declared string field off a recovered
+        // ILTypeInstance through the Neo indexer (the cross-binding-adaptor
+        // forward path). The bridge recovery (path #1) is done in pure CLR via
+        // the NeoF4ReflectionProbe host helper so the probe exercises exactly
+        // the indexer. On HEAD the Neo indexer `get` is `return null` so the
+        // read yields null -> assertion FAILs; after the fix it PASSes.
+        public static int NeoStep14_ILEx_IndexerFieldRead()
+        {
+            // Construct with the default ctor, then assign Msg via a direct
+            // field write (stfld.ref from a local string -- the standard
+            // reference-field assignment path), so the probe exercises the
+            // indexer read against a known-good stored value. (Using the
+            // string-param ctor would route through newobj-arg passing, a
+            // separate concern from the indexer.)
+            MyEx toThrow = new MyEx();
+            toThrow.Msg = "idx-msg";
+            try
+            {
+                throw toThrow;
+            }
+            catch (MyEx e)
+            {
+                try
+                {
+                    // Path #1 (works on HEAD): recover the IL view via the
+                    // CrossBindingAdaptorType.ILInstance bridge.
+                    ILTypeInstance ili = ((CrossBindingAdaptorType)(object)e).ILInstance;
+                    // Path #4 (the indexer): read the IL-declared Msg field and
+                    // compare in pure CLR (avoids the IL string-op_Equality gap).
+                    int m = NeoF4ReflectionProbe.ReadFieldStringMatch(ili, "Msg", "idx-msg");
+                    // 1 = match (PASS). Other codes surface the specific failure.
+                    if (m == 1)
+                        return 9;
+                    return -10 - m;
+                }
+                catch (Exception)
+                {
+                    return -97;
+                }
+            }
         }
     }
 }
