@@ -110,12 +110,31 @@ namespace ILRuntime.Runtime.NeoAOT
                     throw new NeoCompilerFatal("failed to load input assembly: " + ex.Message, ex);
                 }
 
-                // LoadAssembly each IL reference the AppDomain cannot already resolve.
-                // V1 heuristic (D7): a ref that fails to load as IL (e.g. a CLR dll
-                // the AppDomain rejects) is skipped in a try/catch -- the CLR fallback
-                // resolves its types at JIT time. Ref types are compiled-against but
-                // filtered out of the output by the module filter (CompileCore only
-                // emits types in the input module).
+                // Register each reference assembly with the HOST CLR so the
+                // AppDomain's CLR-type fallback (GetType(string) -> the live
+                // System.AppDomain.CurrentDomain.GetAssemblies() scan) resolves the
+                // ref's types as CLRType. This mirrors the in-process runtime model,
+                // where a host CLR assembly referenced by the IL (e.g. one defining a
+                // CLR enum like ILRuntimeTest.TestFramework.TestCLREnum) is resident
+                // in the host System.AppDomain and is found by the same fallback
+                // WITHOUT any explicit registration call. WITHOUT this, a Cecil
+                // TypeReference to a host CLR type fatal-aborts at AppDomain.cs:1409
+                // (the Step-24 TestCLREnum gap).
+                //
+                // We MUST NOT appdomain.LoadAssembly(refStream) here: that loads the
+                // ref as IL and wraps its types as ILType in mapType, which
+                // GetType(string) returns BEFORE the CLR fallback -- shadowing the
+                // real CLR type and producing a downstream NullReferenceException
+                // (reproduced on HEAD: the naive LoadAssembly-the-ref path gets past
+                // every TestCLREnum reference but NREs later). A ref is registered by
+                // exactly ONE path: the CLR side (Assembly.LoadFrom), never the IL
+                // side. (Multi-hotfix-assembly cross-refs -- where a ref's types
+                // SHOULD be ILType -- are a separate, already-deferred V1 scenario.)
+                //
+                // Best-effort: a ref already loaded / ref-only metadata / a missing
+                // file throws (FileLoadException / FileNotFoundException) -- caught,
+                // and resolution falls back to the existing CLR/BCL scan + the Cecil
+                // resolver set up above. A failed LoadFrom never fatal-aborts.
                 if (referenceAssemblyPaths != null)
                 {
                     foreach (var rp in referenceAssemblyPaths)
@@ -123,14 +142,13 @@ namespace ILRuntime.Runtime.NeoAOT
                         if (string.IsNullOrEmpty(rp) || !File.Exists(rp)) continue;
                         try
                         {
-                            using (var rs = File.OpenRead(rp))
-                            {
-                                appdomain.LoadAssembly(rs);
-                            }
+                            System.Reflection.Assembly.LoadFrom(rp);
                         }
                         catch (Exception)
                         {
-                            // A ref that fails to load as IL is silently skipped.
+                            // BCL / already-loaded / ref-only-metadata / unresolvable
+                            // ref -- best-effort skip; resolution falls back to the
+                            // existing CLR/BCL scan.
                         }
                     }
                 }

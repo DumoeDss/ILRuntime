@@ -161,6 +161,12 @@
       "completedDate": "2026-07-08", "smoke": "NeoStep20 13/0/0 (TC8 truly-async suspend+resume + TC11 nested-sync-after-suspend, both stash-proven) + NeoStep 219/0/0 + NeoStep25LoadExec 28/28; Legacy-neutral (Legacy NeoStep20 13/0/0). THE #1 real usability gap -- FIXED.",
       "review": "APPROVE-WITH-FINDINGS round 0 -> round 1 fixed both MEDIUM findings (A: unconditional _currentAsyncContext one-line stash-proven; B: multi-Task fail-LOUD tagged NIE). Single-await truly-async done; multi-await + custom-awaiter + nested-call-in-resume deferred (sequenced). Option B generic zero-fill deferred (C)."
     },
+    "neo-step25-s3-clr-registration": {
+      "pipeline": "small-feature", "wave": "completion-2", "scope": "[TRUE COMPLETION] S3-5: standalone AOT CLI registers host CLR refs via Assembly.LoadFrom (NOT LoadAssembly, which shadows CLR as ILType). TestCLREnum gap FIXED.",
+      "prerequisites": ["neo-step25-runtime-loader"], "dependsOn": ["neo-step25-runtime-loader"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-08", "smoke": "NeoStep25S3ClrEnum 7/7 (CLI no-fatal + enum round-trips CLRType) + NeoStep 219/0/0 + NeoStep25LoadExec 28/28 + standalone CLI exit 0 valid .neo; Legacy-neutral. Surfaced NEW gap STEP-25-CLR-ADAPTOR (CLI registers no CrossBindingAdaptors -> full-TestCases fatals on TestClass2).",
+      "review": "LEAD adaptive-verify (LOW-risk CLI-side fix, falsifiable success criterion). TestCLREnum gap closed; STEP-25-CLR-ADAPTOR logged as a new child."
+    },
     "neo-opportunistic-cleanup": {
       "pipeline": "small-feature", "wave": 4, "scope": "[N-CGTUN + N-TC2] cgt-un comment nit + Step14 TC2 tighten",
       "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-type-checks",
@@ -209,8 +215,8 @@
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; Minor dead-divide-assert + 3 Minor/Trivial accepted-known). Last numbered AOT-chain step."
     }
   },
-  "runnableFrontier": ["neo-step25-s3-clr-registration", "neo-f11-eager-compile-cache", "neo-f12-run-ref-return", "neo-step25-s3-cecil-free-load", "neo-step25-s3-cross-appdomain", "neo-step25-s3-ccctor", "neo-debugger-neo-frame", "neo-f4-reflection-on-neo", "neo-peephole-pass", "neo-f9-inlined-return-move", "neo-f7-delegate-byref", "neo-f2-refonly-vt-inliner"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling", "neo-peephole-isinst", "neo-async-movenext-fix"],
+  "runnableFrontier": ["neo-f11-eager-compile-cache", "neo-f12-run-ref-return", "neo-step25-s3-cecil-free-load", "neo-step25-s3-cross-appdomain", "neo-step25-s3-ccctor", "neo-step25-clr-adaptor", "neo-debugger-neo-frame", "neo-f4-reflection-on-neo", "neo-peephole-pass", "neo-f9-inlined-return-move", "neo-f7-delegate-byref", "neo-f2-refonly-vt-inliner"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling", "neo-peephole-isinst", "neo-async-movenext-fix", "neo-step25-s3-clr-registration"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

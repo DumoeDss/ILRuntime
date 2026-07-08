@@ -1955,4 +1955,77 @@ requirement only records that D-PEEP is not a PatchEntry.
   covers, and the child's adversarial equivalence probe is the gate
 
 
-*Step-25 / Step-26 partial-ship scope note.* The S1 requirements (non-generic methods, same-AppDomain), the S2 requirements (generic-instantiation-at-load for the no-T-identity-token slice), the Step-26 requirements (benchmark self-check + single-threaded contract), and the S3-partial requirement (ILType layout + Neo VTable rebuild from a `.neo` `NeoTypeDefRecord`, same-AppDomain, proven by structural-equivalence + a load-bearing mutation cell, NOT installed on a live `ILType`) are SHIPPED. DEFERRED follow-up scopes (the canonical spec does NOT describe these as met): the S3 remainder -- Cecil-free AppDomain load (sub-surface 2), cross-AppDomain token-hash re-resolution APPROACH 1 (sub-surface 3), static `.cctor` seeding (sub-surface 4), full CLR aqname / host-CLR-assembly registration (sub-surface 5); the D-PEEP `box;isinst U` peephole fusion (needs a dedicated peephole-pass + liveness child; the Step-22 `PatchKind` is the wrong shape); the Neo debugger variable inspection (`neo-debugger-neo-frame`); and the F-4 reflection-on-Neo field-read family. The S1 loader consumes `NeoAssemblyModel.MethodDefs`; the S2 loader additionally consumes the `TemplateTable` (no-T-identity-token generic definitions, skipping T-identity-token / try-catch / unresolvable-VariableTypes records to JIT); the S3-partial additionally rebuilds ILType layout + VTable from the `TypeDefTable` as a DEBUG completeness proof (the Cecil init path stays the only init path). None performs cross-AppDomain hash re-resolution (S3 sub-surface 3). The Step-26 benchmark self-check measures interpreter throughput on a fixed workload and asserts measurement correctness; it does NOT assert a Neo-vs-Legacy ratio threshold (the ratio is reported by the separate runner script across two CLI invocations).
+### Requirement: Standalone AOT CLI registers host CLR reference assemblies with the host CLR
+
+The standalone `ilrt_neoc` precompile CLI SHALL register every reference
+assembly passed on the command line with the host CLR via
+`System.Reflection.Assembly.LoadFrom` (in the file-path `NeoCompiler.Compile`
+overload), so the compile AppDomain's CLR-type fallback
+(`AppDomain.GetType(string)`, the live
+`System.AppDomain.CurrentDomain.GetAssemblies()` scan) resolves host CLR types
+as `CLRType`. This mirrors the in-process runtime model, where a host CLR
+assembly defining a type referenced by the IL (e.g. a CLR enum such as
+`TestCLREnum`) is resident in the host `System.AppDomain` and is found by the
+same fallback without any explicit registration call.
+
+The registration SHALL be best-effort: a reference that cannot be CLR-loaded
+(BCL assembly already loaded, native/ref-only metadata, missing file) SHALL be
+caught and skipped, and resolution SHALL fall back to the existing CLR/BCL
+scan. A failed `LoadFrom` SHALL NOT fatal-abort the compile.
+
+#### Scenario: Input referencing a host CLR enum compiles without a CLR-resolution fatal
+
+- **WHEN** `ilrt_neoc` is run on an input IL assembly whose methods reference a
+  host CLR enum defined in a non-BCL host CLR assembly, AND that host assembly
+  is passed as a reference path
+- **THEN** the compile SHALL resolve the enum's Cecil `TypeReference` token to
+  a `CLRType` (NOT an `ILType`) and SHALL write a valid `.neo` (magic
+  `0x494C524E`) with exit code 0 (clean) or 2 (partial, for unrelated
+  unimplemented-op skips), and SHALL NOT emit `Cannot find Type` on stderr.
+
+#### Scenario: Host CLR ref that cannot be CLR-loaded is skipped, not fatal
+
+- **WHEN** a reference path passed to the CLI is not CLR-loadable (already
+  loaded, ref-only metadata, or missing) AND `Assembly.LoadFrom` throws
+- **THEN** the CLI SHALL catch the exception, skip that reference, and continue
+  compiling without fatal-aborting (exit 1 is reserved for input-load /
+  serializer fatals, not for a skipped reference).
+
+#### Scenario: Host CLR type resolves at .neo load time via the existing CLR path
+
+- **WHEN** a `.neo` produced from a host-CLR-type-referencing input is loaded
+  in an AppDomain where the host CLR assembly is registered
+- **THEN** the `.neo` loader SHALL resolve the host CLR type via
+  `NeoAssemblyLoader.ResolveTypeRefToIType` -> `appdomain.GetType(fullName)`
+  (the same CLR fallback), producing the same `CLRType` the compile recorded,
+  with NO `.neo` format extension required.
+
+### Requirement: Host CLR reference assemblies MUST NOT be registered via the IL LoadAssembly path
+
+The standalone CLI SHALL NOT register a host CLR reference assembly via
+`AppDomain.LoadAssembly` (the IL hotfix load path). `LoadAssembly`-ing a host
+CLR assembly wraps its types as `ILType` in `mapType`, which `AppDomain.GetType
+(string)` returns BEFORE reaching the CLR fallback, shadowing the real CLR type
+with an `ILType`. For a CLR enum this shadow both mis-resolves the type and
+produces a downstream failure during compile.
+
+#### Scenario: Host CLR enum is not shadowed by an ILType wrap
+
+- **WHEN** a host CLR assembly defining a CLR enum is passed as a reference to
+  the CLI
+- **THEN** the CLI SHALL NOT call `AppDomain.LoadAssembly` on it, and the
+  enum's Cecil `TypeReference` SHALL resolve to a `CLRType` (the real CLR
+  enum), so that a method reading the enum after `.neo` load + attach executes
+  the enum equality correctly (the enum value round-trips).
+
+#### Scenario: Removed LoadAssembly-the-ref path regresses no verified scenario
+
+- **WHEN** the prior `LoadAssembly(refStream)` reference loop is replaced by
+  the `Assembly.LoadFrom` registration
+- **THEN** no previously-green self-check or smoke (NeoStep, NeoStep22/23/24/25
+  self-checks) SHALL regress, because the replaced path had no verified
+  coverage (Step-24 V1-B was BCL-refs-only; the ref-`LoadAssembly` path was
+  V1-A-UNVERIFIED).
+
+
+*Step-25 / Step-26 partial-ship scope note.* The S1 requirements (non-generic methods, same-AppDomain), the S2 requirements (generic-instantiation-at-load for the no-T-identity-token slice), the Step-26 requirements (benchmark self-check + single-threaded contract), the S3-partial requirement (ILType layout + Neo VTable rebuild from a `.neo` `NeoTypeDefRecord`), and the S3-5 requirement above (standalone AOT CLI registers host CLR reference assemblies via `Assembly.LoadFrom`, NOT `LoadAssembly`) are SHIPPED. DEFERRED follow-up scopes (the canonical spec does NOT describe these as met): the S3 remainder -- Cecil-free AppDomain load (sub-surface 2), cross-AppDomain token-hash re-resolution APPROACH 1 (sub-surface 3), static `.cctor` seeding (sub-surface 4); the standalone-CLI CLR cross-binding adaptor registration (`STEP-25-CLR-ADAPTOR` -- the CLI registers no `CrossBindingAdaptor`s, so a full-TestCases standalone compile fatals on a CLR-class base like `TestClass2`; distinct from S3-5 which an enum needs no adaptor); the D-PEEP `box;isinst` peephole fusion (needs a dedicated peephole-pass + liveness child); the Neo debugger variable inspection (`neo-debugger-neo-frame`); and the F-4 reflection-on-Neo field-read family. The S1 loader consumes `NeoAssemblyModel.MethodDefs`; the S2 loader additionally consumes the `TemplateTable`; the S3-partial additionally rebuilds ILType layout + VTable from the `TypeDefTable` as a DEBUG completeness proof; S3-5 additionally registers host CLR refs with the host CLR (load-side already worked via `GetType(fullName)`). None performs cross-AppDomain hash re-resolution (S3 sub-surface 3). The Step-26 benchmark self-check measures interpreter throughput on a fixed workload and asserts measurement correctness; it does NOT assert a Neo-vs-Legacy ratio threshold.

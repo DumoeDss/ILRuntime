@@ -138,6 +138,50 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 25 S3-5 host-side self-check: the standalone-AOT-CLI host-CLR-
+            // registration gate. Drives the FILE-PATH NeoCompiler.Compile (the
+            // Assembly.LoadFrom fix) on TestCases.dll + ILRuntimeTestBase.dll ref,
+            // then loads + invokes the CLR-enum probe -> the enum round-trips
+            // (proves CLRType, not an ILType shadow).
+            if (nameFilter == "NeoStep25S3ClrEnum")
+            {
+                int failed;
+                try
+                {
+                    // The dedicated probe assembly (NeoClrProbe.dll) is the FOCUSED
+                    // input for the host-CLR-registration proof. Locate it relative to
+                    // the TestCases.dll path: TestCases.dll lives at
+                    // <repo>/TestCases/bin/Debug/netstandard2.1/TestCases.dll, so the
+                    // repo root is 4 dirs above its directory; NeoClrProbe.dll is at
+                    // <repo>/NeoClrProbe/bin/Debug/netstandard2.1/NeoClrProbe.dll.
+                    // ILRuntimeTestBase.dll is a project-ref of TestCases -> copied
+                    // next to TestCases.dll in its bin output dir (the host CLR ref).
+                    string testCasesDir = System.IO.Path.GetDirectoryName(path);
+                    string repoRoot = testCasesDir;
+                    for (int i = 0; i < 4 && repoRoot != null; i++)
+                        repoRoot = System.IO.Path.GetDirectoryName(repoRoot);
+                    string probeDll = System.IO.Path.Combine(
+                        repoRoot ?? "", "NeoClrProbe", "bin", "Debug", "netstandard2.1", "NeoClrProbe.dll");
+                    string testBaseDll = System.IO.Path.Combine(testCasesDir, "ILRuntimeTestBase.dll");
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25S3ClrEnumCheck.Run(
+                        session.Appdomain, probeDll, testBaseDll);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 S3-5 CLR-enum: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed. Compile: {r.MethodsCompiled} methods / {r.MethodsSkipped} skipped / {r.TemplatesCaptured} templates. Attach: {r.AttachedCount} attached, {r.SkippedCount} skipped.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                    foreach (var s in r.Skipped)
+                        Console.WriteLine($"  SKIP: {s}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25S3ClrEnum threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // Step 26 host-side Neo-vs-Legacy benchmark self-check (the
             // perf-validation capstone; the LAST numbered AOT-chain step).
             // Drives 5 bench workloads via appdomain.Invoke, host-times each
