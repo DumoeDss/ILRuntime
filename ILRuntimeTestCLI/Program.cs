@@ -303,6 +303,35 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // neo-debugger-neo-frame capstone: the Neo debugger frame-inspection
+            // self-check. Drives the unhandled-exception path (an IL method with
+            // primitive + reference locals throws unhandled -> ExecuteNeo's unwind
+            // builds an ILRuntimeException whose ctor calls GetThisInfo /
+            // GetLocalVariableInfo). Asserts the stashed ThisInfo/LocalInfo carry
+            // the CORRECT live values + an adversarial mutated local is reflected
+            // (proves the inspection reads the live frame). Binding gate for the
+            // GetThisInfo/GetLocalVariableInfo Neo arms.
+            if (nameFilter == "NeoDebuggerFrame")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Debugger.NeoDebuggerFrameCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoDebuggerFrame: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoDebuggerFrame threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
 #endif
             int ignoreCnt = 0;
             int todoCnt = 0;

@@ -204,8 +204,67 @@ namespace ILRuntime.Runtime.Debugger
         {
             var topFrame = intepreter.Stack.Frames.Peek();
 #if ENABLE_NEO_MODE
+            // neo-debugger-neo-frame: Neo `this` inspection. Under Neo the frame
+            // is a compact byte* frameBase (aliased by StackFrame.LocalVarPointer,
+            // ILIntepreter.Neo.cs:905) whose slot-0 PARAM holds the `this` as a
+            // 4-byte ABSOLUTE mStack index (sentinel -1 = null). Recover the
+            // ILTypeInstance and reuse the F-4 ILTypeInstance.this[index] indexer
+            // (ILTypeInstance.cs:421-444) for the IL field read -- NO new field-
+            // read code; the indexer's per-shape dispatch + IL-VT-field NIE applies,
+            // swallowed by the per-field catch below.
             if (topFrame.IsRegister && topFrame.Method.CompiledFrame.NeoExecuteBody != null)
-                return "Neo this inspection is not supported yet.";
+            {
+                var m = topFrame.Method;
+                if (!m.HasThis)
+                    return "null";
+                byte* frameBase = (byte*)topFrame.LocalVarPointer;
+                ref readonly var nf = ref m.CompiledFrame;
+                AutoList mStack = intepreter.Stack.ManagedStack;
+                var thisSlot = nf.ParamInfos[0];
+                int nIdx = *(int*)(frameBase + thisSlot.Offset);
+                object thisObj = (nIdx >= 0) ? mStack[nIdx] : null;
+                ILTypeInstance nInstance = null;
+                if (thisObj is ILTypeInstance ilInstance)
+                    nInstance = ilInstance;
+                else if (thisObj is CrossBindingAdaptorType adaptor)
+                    nInstance = adaptor.ILInstance;
+                if (nInstance == null)
+                    return "null";
+                var nFields = nInstance.Type.TypeDefinition.Fields;
+                // Under Neo `instance.Fields` is null (byte[] Primitives + AutoList
+                // ManagedObjects instead), so count non-static fields for the line-
+                // break logic rather than reading Fields.Length.
+                int totalInstanceFields = 0;
+                for (int i = 0; i < nFields.Count; i++)
+                    if (!nFields[i].IsStatic) totalInstanceFields++;
+                int fieldIdx = 0;
+                StringBuilder nSb = new StringBuilder();
+                for (int i = 0; i < nFields.Count; i++)
+                {
+                    try
+                    {
+                        var f = nFields[i];
+                        if (f.IsStatic)
+                            continue;
+                        var v = nInstance[fieldIdx];   // F-4 indexer (per-shape Neo field read)
+                        if (v == null)
+                            v = "null";
+                        nSb.AppendFormat("{0} {1} = {2}", f.FieldType.Name, f.Name, v);
+                        if ((fieldIdx % 3 == 0 && fieldIdx != 0) || fieldIdx == totalInstanceFields - 1)
+                            nSb.AppendLine();
+                        else
+                            nSb.Append(", ");
+                        fieldIdx++;
+                    }
+                    catch
+                    {
+                        // F-4 indexer throws a tagged NIE for an IL-VT FIELD ->
+                        // swallowed here so a single IL-VT field does not abort
+                        // the inspection. Mirror the Legacy arm's resilience.
+                    }
+                }
+                return nSb.ToString();
+            }
 #endif
             var arg = Minus(topFrame.LocalVarPointer, topFrame.Method.ParameterCount);
             if (topFrame.Method.HasThis)
@@ -266,8 +325,54 @@ namespace ILRuntime.Runtime.Debugger
             var m = topFrame.Method;
             StringBuilder sb = new StringBuilder();
 #if ENABLE_NEO_MODE
+            // neo-debugger-neo-frame: Neo local-variable inspection. Under Neo the
+            // frame is a compact byte* frameBase (aliased by StackFrame.LocalVarPointer,
+            // ILIntepreter.Neo.cs:905). Each local's slot layout is in
+            // CompiledFrame.LocalInfos[ParameterCount + i] (JITCompiler.cs:1702) and
+            // its declared type is Definition.Body.Variables[i] (1:1). The value is
+            // recovered by a per-shape dispatch mirroring the F-4 indexer
+            // (ILTypeInstance.cs:421-444): primitive -> read by width; reference ->
+            // the ABSOLUTE mStack index in the slot word; CLR-struct -> ReadNeoValueType
+            // (F-MAJ-1 flat bytes); IL-VT -> a placeholder (SEQUENCE).
             if (topFrame.IsRegister && m.CompiledFrame.NeoExecuteBody != null)
-                return "Neo local variable inspection is not supported yet.";
+            {
+                byte* frameBase = (byte*)topFrame.LocalVarPointer;
+                ref readonly var nf = ref m.CompiledFrame;
+                AutoList mStack = intepreter.Stack.ManagedStack;
+                // LocalInfos layout (AllocateLocalStackSpaces, JITCompiler.cs:
+                // 1654): [0]=this (if HasThis), [1..p)=explicit params, [p..p+varCnt)
+                // = locals, where p = ParameterCount + (HasThis?1:0). m.ParameterCount
+                // is the Cecil count (EXCLUDES this), so add the this slot here.
+                int paramCnt = m.ParameterCount + (m.HasThis ? 1 : 0);
+                var domain = intepreter.AppDomain;
+                for (int i = 0; i < m.LocalVariableCount; i++)
+                {
+                    try
+                    {
+                        var lv = m.Definition.Body.Variables[i];
+                        CLR.TypeSystem.IType lt = ResolveLocalType(m, lv, domain);
+                        var slot = nf.LocalInfos[paramCnt + i];
+                        var v = ReadNeoLocalValue(frameBase, mStack, slot, lt, domain);
+                        if (v == null)
+                            v = "null";
+                        string vName = null;
+                        m.Definition.DebugInformation.TryGetName(lv, out vName);
+                        string name = string.IsNullOrEmpty(vName) ? "v" + lv.Index : vName;
+                        string typeName = lt != null ? lt.Name : lv.VariableType.Name;
+                        sb.AppendFormat("{0} {1} = {2}", typeName, name, v);
+                        if ((i % 3 == 0 && i != 0) || i == m.LocalVariableCount - 1)
+                            sb.AppendLine();
+                        else
+                            sb.Append(", ");
+                    }
+                    catch
+                    {
+                        // Mirrors the Legacy arm's per-iteration resilience so a
+                        // single unreadable local does not abort the inspection.
+                    }
+                }
+                return sb.ToString();
+            }
 #endif
             for (int i = 0; i < m.LocalVariableCount; i++)
             {
@@ -294,6 +399,108 @@ namespace ILRuntime.Runtime.Debugger
             }
             return sb.ToString();
         }
+
+#if ENABLE_NEO_MODE
+        // neo-debugger-neo-frame helpers (Neo-only). The frame-local per-shape
+        // dispatch, mirroring the F-4 ILTypeInstance indexer branches
+        // (ILTypeInstance.cs:421-444) but reading a FRAME slot (offset from
+        // StackSlotInfo.Offset; the reference word is an ABSOLUTE mStack index)
+        // instead of a heap instance field.
+
+        // Resolve a local's declared IType the SAME way the JIT/storage allocator
+        // does (JITCompiler.cs:1715/1788 -> AppDomain.GetType(vt, declaringType,
+        // method); generic-parameter handling lives INSIDE that overload at
+        // AppDomain.cs:1493-1509). Single source of truth: the resolved type's
+        // IsPrimitive/IsValueType/is-ILType classification AGREES with the slot's
+        // allocated layout (Size/RefCount), so the shape test below is correct by
+        // construction.
+        static CLR.TypeSystem.IType ResolveLocalType(CLR.Method.ILMethod m, Mono.Cecil.Cil.VariableDefinition vd, Runtime.Enviorment.AppDomain domain)
+        {
+            var vt = vd.VariableType;
+            if (vt.IsGenericParameter)
+            {
+                // Mirror ILMethod.cs:780-786 Prewarm: a generic-parameter local
+                // resolves via the method's (and declaring type's) generic-arg map.
+                var t = m.FindGenericArgument(vt.Name);
+                return t;
+            }
+            return domain.GetType(vt, m.DeclearingType, m);
+        }
+
+        // The per-shape frame-local value read. Returns the boxed value, or a
+        // placeholder string for an IL value-type local (SEQUENCE).
+        unsafe object ReadNeoLocalValue(byte* frameBase, AutoList mStack,
+            StackSlotInfo slot, CLR.TypeSystem.IType localType, Runtime.Enviorment.AppDomain domain)
+        {
+            if (localType == null)
+                return "<unknown local type>";
+            if (localType.IsPrimitive)
+                return ReadNeoFramePrimitive(frameBase + slot.Offset, localType, domain);
+            if (!localType.IsValueType)
+            {
+                // Reference slot: the word at frameBase+Offset is an ABSOLUTE mStack
+                // index (sentinel -1 = null). The ref-init at ILIntepreter.Neo.cs:871
+                // writes -1 and executor writes store absolute indices -- so mStack[idx]
+                // directly (NOT mStack[frameRefBase + idx]). Same read pattern as
+                // ReadNeoDelegateInvokeArgs (ILIntepreter.Neo.cs:281-283).
+                int idx = *(int*)(frameBase + slot.Offset);
+                return (idx >= 0) ? mStack[idx] : null;
+            }
+            // value type
+            if (localType is CLR.TypeSystem.ILType)
+            {
+                // IL value-type LOCAL spans BOTH a primitive sub-region AND a
+                // reference sub-region (JITCompiler.cs:1716-1728); the boxed
+                // instance is not recoverable without reconstruction. Emit a clear
+                // placeholder so the rest of the inspection stays correct. SEQUENCE
+                // (the frame-local analogue of F-4's IL-VT-FIELD reconstruction).
+                return "<IL value-type local: reconstruction deferred>";
+            }
+            // CLR value type (F-MAJ-1 flat managed bytes) -> ReadNeoValueType boxes it.
+            // The cursor is advanced by slot.Size (byte-consistent with the allocator).
+            int cursor = 0;
+            return Runtime.Intepreter.ILIntepreter.ReadNeoValueType(localType.TypeForCLR, frameBase + slot.Offset, ref cursor, slot.Size);
+        }
+
+        // The frame-local analogue of F-4's ReadNeoPrimitive (ILTypeInstance.cs:547-579),
+        // keyed on the SAME AppDomain primitive singletons the storage allocator uses
+        // (ILType.cs:2300 reference-identity comparison). The only diff is byte* vs byte[].
+        // Locally duplicated (the cost of the byte[]-vs-byte* split); the switch keys are
+        // identical so the width/encoding is guaranteed consistent.
+        static unsafe object ReadNeoFramePrimitive(byte* p, CLR.TypeSystem.IType fieldType, Runtime.Enviorment.AppDomain domain)
+        {
+            if (fieldType == domain.IntType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<int>(ref *p);
+            if (fieldType == domain.LongType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<long>(ref *p);
+            if (fieldType == domain.ShortType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<short>(ref *p);
+            if (fieldType == domain.ByteType)
+                return (*p);
+            if (fieldType == domain.SByteType)
+                return (sbyte)(*p);
+            if (fieldType == domain.UShortType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<ushort>(ref *p);
+            if (fieldType == domain.UIntType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<uint>(ref *p);
+            if (fieldType == domain.ULongType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<ulong>(ref *p);
+            if (fieldType == domain.FloatType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<float>(ref *p);
+            if (fieldType == domain.DoubleType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<double>(ref *p);
+            if (fieldType == domain.BoolType)
+                return (*p) != 0;
+            if (fieldType == domain.CharType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<char>(ref *p);
+            if (fieldType == domain.IntPtrType)
+                return System.Runtime.CompilerServices.Unsafe.ReadUnaligned<System.IntPtr>(ref *p);
+            // Unknown primitive IType (should not happen: the allocator only routes
+            // the singletons above into the primitive region). Surface it rather
+            // than return wrong data -- the caller's per-iteration catch swallows it.
+            throw new NotImplementedException("Neo frame-local inspection: unsupported primitive local type " + fieldType.FullName);
+        }
+#endif
 
         internal static Mono.Cecil.Cil.SequencePoint FindSequencePoint(Mono.Cecil.Cil.Instruction ins, IDictionary<Mono.Cecil.Cil.Instruction, Mono.Cecil.Cil.SequencePoint> seqMapping)
         {
