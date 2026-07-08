@@ -49,6 +49,20 @@ namespace ILRuntime.CLR.Method
         // InitCodeBodyFromNeo. The Cecil/JIT path is byte-identical when this is
         // false (the reference + the fallback). Neo-only.
         internal bool isNeoAotBody;
+        // Step 25 S3-2 (Cecil-free load): true for an ILMethod built by
+        // CreateFromNeoShell (no Cecil MethodDefinition). The Cecil-reading
+        // properties (Name, HasThis, Parameters, ReturnType, SignatureString,
+        // IsConstructor, IsStatic, Definition, etc.) return the recorded shell
+        // data when this is set; access to a Cecil-only surface that the shell
+        // does not carry throws a descriptive NotSupportedException (NEVER
+        // silently null -- D5). Neo-only; the Cecil ctor path leaves this false.
+        internal bool isNeoAotShell;
+        // The recorded shell data (set by CreateFromNeoShell; read by the guarded
+        // Cecil-reading properties). Neo-only.
+        string neoShellName;
+        bool neoShellHasThis, neoShellIsCtor, neoShellIsStatic, neoShellIsVirtual;
+        IType neoShellReturnType;
+        List<IType> neoShellParameters;
 #endif
         bool isEventAdd, isEventRemove;
         int eventFieldIndex;
@@ -140,6 +154,9 @@ namespace ILRuntime.CLR.Method
         {
             get
             {
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return neoShellName;
+#endif
                 return def.Name;
             }
         }
@@ -156,6 +173,9 @@ namespace ILRuntime.CLR.Method
         {
             get
             {
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return neoShellHasThis;
+#endif
                 return def.HasThis;
             }
         }
@@ -165,6 +185,9 @@ namespace ILRuntime.CLR.Method
             {
                 if (IsGenericInstance)
                     return 0;
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return 0;   // the capstone probe is non-generic; the shell carries no generic params
+#endif
                 return def.GenericParameters.Count;
             }
         }
@@ -331,6 +354,53 @@ namespace ILRuntime.CLR.Method
             return cur;
         }
 
+#if ENABLE_NEO_MODE
+        /// <summary>
+        /// Step 25 S3-2 (Cecil-free load): build a live ILMethod shell WITHOUT a
+        /// Cecil MethodDefinition (def = null), for a Cecil-free ILType built
+        /// from a NeoTypeDefRecord. The shell carries the Cecil-reading surface
+        /// ExecuteNeo / Run / Instantiate / the VTable / interface dispatch need
+        /// (Name, HasThis, Parameters, ReturnType, SignatureString, IsConstructor,
+        /// IsStatic, DeclearingType, ParameterCount), set DIRECTLY from the
+        /// resolved ref data. The method BODY (CompiledFrame) is bound later by
+        /// NeoAssemblyLoader.Attach -> InitCodeBodyFromNeo (the S1 path, which
+        /// overwrites CompiledFrame field-by-field + sets isNeoAotBody).
+        ///
+        /// Cecil-only surfaces the shell does NOT carry (GenericParameters,
+        /// Variables, the reflection MethodInfo, the debugger sequence points)
+        /// throw a descriptive NotSupportedException when accessed (NEVER silently
+        /// null -- D5). The capstone probe is non-generic + host-side (no
+        /// debugger), so these are unreachable. Neo-only; Legacy compiles this
+        /// out. The Cecil ctor + ALL lazy inits are UNCHANGED (the shell is a
+        /// SEPARATE construction path; isNeoAotShell defaults false).
+        /// </summary>
+        internal static ILMethod CreateFromNeoShell(string name, ILType declaringType,
+            ILRuntime.Runtime.Enviorment.AppDomain domain, List<IType> parameters,
+            IType returnType, bool isConstructor, bool isStatic)
+        {
+            var m = new ILMethod();
+            m.isNeoAotShell = true;
+            m.appdomain = domain;
+            m.declaringType = declaringType;
+            m.neoShellName = name;
+            m.neoShellParameters = parameters ?? new List<IType>();
+            m.paramCnt = m.neoShellParameters.Count;
+            m.neoShellReturnType = returnType ?? domain.VoidType;
+            m.neoShellIsCtor = isConstructor;
+            m.neoShellIsStatic = isStatic;
+            m.neoShellHasThis = !isStatic && !declaringType.IsInterface;
+            m.neoShellIsVirtual = false;   // the capstone probe's own methods are non-virtual shells; VTable slots carry the override IMethods directly
+            m.jitFlags = domain.DefaultJITFlags;
+            m.jitImmediately = false;
+            m.jitOnDemand = false;
+            return m;
+        }
+
+        // The private parameterless ctor used only by CreateFromNeoShell (def
+        // stays null; the shell data is set by the factory). Neo-only.
+        ILMethod() { }
+#endif
+
         public IType FindGenericArgument(string name, bool findDeclaringType= true)
         {
             IType res = findDeclaringType ? declaringType.FindGenericArgument(name) : null;
@@ -455,6 +525,9 @@ namespace ILRuntime.CLR.Method
         {
             get
             {
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return neoShellIsCtor;
+#endif
                 return def.IsConstructor;
             }
         }
@@ -463,6 +536,9 @@ namespace ILRuntime.CLR.Method
         {
             get
             {
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return neoShellIsVirtual;
+#endif
                 return def.IsVirtual;
             }
         }
@@ -498,7 +574,13 @@ namespace ILRuntime.CLR.Method
 
         public bool IsStatic
         {
-            get { return def.IsStatic; }
+            get
+            {
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return neoShellIsStatic;
+#endif
+                return def.IsStatic;
+            }
         }
 
         public int ParameterCount
@@ -514,6 +596,9 @@ namespace ILRuntime.CLR.Method
         {
             get
             {
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return neoShellParameters;
+#endif
                 if (def.HasParameters && parameters == null)
                 {
                     InitParameters();
@@ -524,9 +609,16 @@ namespace ILRuntime.CLR.Method
 
         public IType ReturnType
         {
-            get;
-            private set;
+            get
+            {
+#if ENABLE_NEO_MODE
+                if (isNeoAotShell) return neoShellReturnType;
+#endif
+                return returnTypeValue;
+            }
+            private set { returnTypeValue = value; }
         }
+        IType returnTypeValue;
 
         string signatureString;
         public string SignatureString

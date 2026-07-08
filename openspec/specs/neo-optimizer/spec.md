@@ -1791,44 +1791,48 @@ per-static-field offset gap SHALL be deferred with sub-surface 4.
 
 ### Requirement: The Cecil-free AppDomain load, cross-AppDomain token-hash re-resolution, static .cctor seeding, and full CLR-assembly registration remain DEFERRED from S3 partial (honest deferral -- not promoted to met)
 
-The S3 partial slice SHALL NOT deliver the Cecil-free AppDomain load, the
-cross-AppDomain token-hash re-resolution, the static `.cctor` seeding via
-`.neo`, or the full CLR aqname / host-CLR-assembly registration. Each SHALL
-remain at its current state: `AppDomain.LoadAssembly` SHALL still require a
-Cecil module (sub-surface 2); the identity-based token hashes
-(`ILType.GetHashCode` / `ILMethod.GetHashCode`) SHALL remain un-recorded in the
-`.neo` (sub-surface 3, APPROACH 1 -- the loader re-registers resolved refs
-under a recorded compile-time hash; Approaches 2/3 name-based-hash /
-body-rewrite stay REJECTED); the static `.cctor` SHALL remain suppressed under
-`ENABLE_NEO_MODE` (`ILType.cs:186-200`) (sub-surface 4); and the standalone
-CLI SHALL keep its current reference-assembly handling (sub-surface 5, the
-Step-24 `TestCLREnum` gap). The deferral SHALL be recorded in
-`.trae/documents/neo-deferred-items.md` under the STEP-25-PARTIAL row. Nothing
-in this slice SHALL be promoted to "met" in the spec without a functional gate.
+> MODIFIED by S3-2: sub-surfaces 2 (Cecil-free load) + 3 (cross-AppDomain hash
+> re-resolution) are PROMOTED to met. Sub-surface 4 (static .cctor seeding) +
+> the sub-surface-4 per-static-field offsets STAY deferred. Sub-surface 5
+> (host-CLR-assembly registration) was already RESOLVED by S3-5 (unchanged).
 
-#### Scenario: Cross-AppDomain token re-resolution stays APPROACH 1 (deferred)
-- **WHEN** a `.neo` compiled in one AppDomain is loaded into a FRESH
-  AppDomain (a Cecil-free load)
-- **THEN** S3 partial SHALL NOT support it (the identity-based token hashes do
-  not survive the fresh AppDomain)
-- **AND** the APPROACH 1 design (record the compile-time `GetHashCode()` per
-  ref entry under a `.neo` Version bump; the loader re-registers resolved refs
-  under the recorded hash) SHALL be the recorded follow-up
-- **AND** Approaches 2/3 (name-based hash / body rewrite) SHALL remain REJECTED
+The S3-2 slice SHALL deliver the Cecil-free AppDomain load (sub-surface 2) AND the
+cross-AppDomain token-hash re-registration (sub-surface 3, APPROACH 1) together --
+they are inseparable (the identity-based token hashes do not survive a fresh
+AppDomain; `GetType(int)` at `AppDomain.cs:1429-1436` has no fallback). The static
+`.cctor` seeding (sub-surface 4) + the per-static-field offsets SHALL remain
+deferred: the capstone probe SHALL be `.cctor`-free + static-field-free, so the
+Cecil-free INSTANCE layout + VTable load is independent of them.
+
+#### Scenario: Cross-AppDomain token re-resolution via APPROACH 1 (SHIPPED)
+- **WHEN** a `.neo` compiled in one ILRuntime AppDomain is loaded into a FRESH
+  ILRuntime AppDomain (a Cecil-free load)
+- **THEN** the `.neo` SHALL record the compile-time identity hash per TypeRef /
+  MethodRef entry (a parallel `int[]` under a `.neo` Version bump; -1 for an
+  unresolved/skip entry)
+- **AND** the Cecil-free loader SHALL re-register each resolved ref (resolved by
+  NAME from the ref tables) in the fresh AppDomain's `mapTypeToken` / `mapMethod`
+  under the RECORDED hash
+- **AND** the deserialized `OpCodeR[]` bodies SHALL run UNMODIFIED (no body
+  rewrite; Approach 3 body-rewrite stays REJECTED)
+- **AND** `ILType.GetHashCode` / `ILMethod.GetHashCode` SHALL remain identity-
+  based (Approach 2 name-based-hash stays REJECTED)
 
 #### Scenario: Static .cctor seeding stays deferred
 - **WHEN** an AOT-loaded type declares a static constructor (`.cctor`)
-- **THEN** S3 partial SHALL NOT seed it (the `.cctor` stays suppressed under
-  Neo; the per-static-field offsets are not in the `NeoTypeDefRecord`)
-- **AND** seeding it SHALL remain a follow-up folded with the Cecil-free load
-  (sub-surface 2) + a `.neo` format extension for the per-static-field offsets
+- **THEN** S3-2 SHALL NOT seed it (the `.cctor` stays suppressed under Neo; the
+  per-static-field offsets are not in the `NeoTypeDefRecord`)
+- **AND** seeding it SHALL remain a follow-up folded with a `.neo` format
+  extension for the per-static-field offsets (sub-surface 4)
 
-#### Scenario: The ILType layout + VTable rebuild is the ONLY ILType-decoupling delivered
-- **WHEN** the S3 partial slice is reviewed
-- **THEN** the rebuild builder SHALL be consumed ONLY by the DEBUG self-check
-  (it SHALL NOT replace the Cecil init on a live type in this slice)
-- **AND** the Cecil-free functional load (sub-surface 2) + the cross-AppDomain
-  re-resolution (sub-surface 3) SHALL remain deferred to a follow-up child
+#### Scenario: The Cecil-free load is the ILType-decoupling delivered
+- **WHEN** the S3-2 slice is reviewed
+- **THEN** the Cecil-free load SHALL build a live `ILType` from a
+  `NeoTypeDefRecord` WITHOUT a Cecil ctor (no `TypeReference` / `TypeDefinition`)
+- **AND** the S3-partial rebuild (layout + VTable + interface map) SHALL be
+  INSTALLED on the Cecil-free ILType (NOT merely returned as comparison data)
+- **AND** the capstone probe (`TestCases/NeoStep25S3Probe`) SHALL have NO static
+  fields + NO `.cctor` so the capstone is independent of sub-surface 4
 
 
 ### Requirement: The box T; isinst U peephole fusion is deferred behind a dedicated peephole-pass optimizer child (D-PEEP)
@@ -2270,4 +2274,123 @@ resolved, by this mechanism.
   `Skipped`, omitted, exit-2-equivalent) with NO separate edit
 
 
-*Step-25 / Step-26 partial-ship scope note.* The S1 requirements (non-generic methods, same-AppDomain), the S2 requirements (generic-instantiation-at-load for the no-T-identity-token slice), the Step-26 requirements (benchmark self-check + single-threaded contract), the S3-partial requirement (ILType layout + Neo VTable rebuild from a `.neo` `NeoTypeDefRecord`), the S3-5 requirement (standalone AOT CLI registers host CLR reference assemblies via `Assembly.LoadFrom`), and the STEP-25-CLR-ADAPTOR requirement above (standalone CLI gracefully skips IL types needing an unregistered CrossBindingAdaptor + types with unresolvable field types + bodyless methods; full TestCases.dll compiles to a valid `.neo`, exit 2, no fatal) are SHIPPED. DEFERRED follow-up scopes (the canonical spec does NOT describe these as met): the S3 remainder -- Cecil-free AppDomain load (sub-surface 2), cross-AppDomain token-hash re-resolution APPROACH 1 (sub-surface 3), static `.cctor` seeding (sub-surface 4); the D-PEEP `box;isinst` peephole fusion (needs a dedicated peephole-pass + liveness child); the Neo debugger variable inspection (`neo-debugger-neo-frame`); and the F-4 reflection-on-Neo field-read family. The S1 loader consumes `NeoAssemblyModel.MethodDefs`; the S2 loader additionally consumes the `TemplateTable`; the S3-partial additionally rebuilds ILType layout + VTable from the `TypeDefTable` as a DEBUG completeness proof; S3-5 additionally registers host CLR refs with the host CLR; STEP-25-CLR-ADAPTOR makes the standalone CLI robust on arbitrary assemblies (no fatal; graceful type/method skips; exit 0/2). None performs cross-AppDomain hash re-resolution (S3 sub-surface 3). The Step-26 benchmark self-check measures interpreter throughput on a fixed workload and asserts measurement correctness; it does NOT assert a Neo-vs-Legacy ratio threshold.
+### Requirement: A `.neo` loads into a FRESH Cecil-free ILRuntime AppDomain and executes correctly via ExecuteNeo (S3-2 capstone)
+
+The runtime SHALL provide a Neo-only `AppDomain.LoadNeoAssembly(NeoAssemblyModel
+model, IReadOnlyList<string> hostClrRefPaths)` entry that loads a `.neo` into the
+calling AppDomain WITHOUT reading any Cecil `ModuleDefinition`. The fresh
+AppDomain's `mapType` / `mapTypeToken` / `mapMethod` SHALL be populated PURELY
+from the `.neo` tables + the host CLR refs (via `Assembly.LoadFrom`, the S3-5
+pattern). A method invoked on a Cecil-free ILType SHALL execute via `ExecuteNeo`
+and yield the correct result, exercising field read + virtual dispatch +
+interface dispatch on the Cecil-free type.
+
+#### Scenario: A Cecil-free load builds live ILTypes from NeoTypeDefRecords
+- **WHEN** `LoadNeoAssembly(model, hostClrRefPaths)` is called on a fresh
+  AppDomain
+- **THEN** the loader SHALL NOT call `ModuleDefinition.ReadModule` (no Cecil
+  stream) + SHALL NOT add to `loadedModules`
+- **AND** for each `NeoTypeDefRecord` in `model.TypeDefs`, the loader SHALL build
+  a live `ILType` via a Neo-only factory that sets the instance layout
+  (`totalPrimitiveSize`, `totalReferenceCnt`, per-field `fieldOffsets`,
+  `fieldTypes`, `fieldMapping`), the re-derived `naturalAlignment`, the Neo VTable
+  (from `VTableMethodRefIdxs` resolved to live `IMethod[]`), and the interface map
+  (from `Interfaces[]`) DIRECTLY
+- **AND** each Cecil-free ILType SHALL be registered in `mapType[fullName]` +
+  `mapTypeToken[freshHash]`
+- **AND** a Cecil-free ILType's Cecil-reading properties (`TypeDefinition`,
+  `TypeReference`, `GenericParameters`, etc.) SHALL throw a descriptive
+  `NotSupportedException` when accessed (NEVER silently return null/wrong)
+
+#### Scenario: A two-pass build resolves intra-.neo base + interface references
+- **WHEN** a `.neo` declares a type whose base type or interface is ANOTHER type
+  in the same `.neo`
+- **THEN** the loader SHALL build all `.neo` ILTypes in a first pass (registered
+  in `mapType` by FullName) + resolve base/interface by NAME in a second pass
+- **AND** a base/interface type NOT in the `.neo` SHALL resolve by name via the
+  host CLR fallback (`GetType(string)`, post `Assembly.LoadFrom`)
+
+#### Scenario: The capstone executes correctly on a Cecil-free AppDomain
+- **WHEN** the S3 probe (`TestCases.NeoStep25S3Probe`, 3 instance fields of
+  differing widths + a base-virtual override + an interface impl) is compiled in
+  AppDomain A, loaded Cecil-free into a fresh AppDomain B, and a method invoked
+- **THEN** the invocation SHALL return the known-expected value
+- **AND** field read, virtual dispatch, and interface dispatch SHALL all execute
+  on the Cecil-free ILType
+
+#### Scenario: A green smoke does NOT prove the Cecil-free load (adversarial gate)
+- **WHEN** the Cecil-free load is validated
+- **THEN** a body-mutation cell SHALL mutate a `Ldc_I4` constant in an
+  INDEPENDENT `model2`'s `NeoExecuteBody` BEFORE load + assert the Cecil-free
+  execution yields the MUTATED value (not the Cecil/JIT value)
+- **AND** a layout-mutation cell SHALL mutate a `PrimitiveOffset` in `model2`'s
+  `Fields[]` BEFORE load + assert the Cecil-free ILType's `fieldOffsets` reflects
+  the mutation (not Cecil's)
+- **AND** a Cecil-free load that secretly fell back to Cecil or used the
+  compile-AppDomain's maps SHALL fail BOTH mutation cells
+
+### Requirement: The .neo records compile-time identity hashes per reference entry for cross-AppDomain re-registration (APPROACH 1, sub-surface 3)
+
+The `.neo` format SHALL carry a parallel `int[]` of compile-time identity hashes
+alongside the TypeRef and MethodRef tables, recorded at serialize time (a
+`.neo` Version bump). The Cecil-free loader SHALL re-register each resolved ref
+under the recorded hash so the identity-hash token operands baked into the
+deserialized `OpCodeR[]` bodies resolve in the fresh AppDomain. This SHALL NOT
+mutate the bodies and SHALL NOT change `GetHashCode` semantics.
+
+#### Scenario: The TypeRef + MethodRef tables carry recorded identity hashes
+- **WHEN** a `.neo` is serialized after Cecil-load + force-compile in the
+  compiling AppDomain
+- **THEN** each TypeRef entry SHALL carry the compile-time identity hash of the
+  resolved `IType` (`t.GetHashCode()`, the value `GetTypeTokenHashCode` stores
+  at `ILMethod.cs:1250`), or -1 for an unresolved/skip entry
+- **AND** each MethodRef entry SHALL carry the compile-time identity hash of the
+  resolved `IMethod` (`m.GetHashCode()`), or -1
+- **AND** the `.neo` Version SHALL be bumped (the reader SHALL reject a prior-
+  Version `.neo` for the Cecil-free load via a Version guard)
+
+#### Scenario: The Cecil-free loader re-registers resolved refs under recorded hashes
+- **WHEN** the Cecil-free loader resolves a ref by NAME (IL via the `.neo` TypeDef
+  table; CLR via `GetType(string)` post `Assembly.LoadFrom`)
+- **AND** the recorded hash for that ref is != -1
+- **THEN** the loader SHALL register the resolved live object in `mapTypeToken`
+  (for a type) or `mapMethod` (for a method) under the RECORDED hash
+- **AND** the deserialized `OpCodeR[]` token operands (baked with the compile-time
+  hash) SHALL resolve in the fresh AppDomain via `GetType(int)` / `GetMethod(int)`
+
+#### Scenario: Same-AppDomain loads ignore the recorded hashes
+- **WHEN** a V2 `.neo` (with recorded hashes) is loaded same-AppDomain via the
+  S1/S2/S3-partial `NeoAssemblyLoader.Attach` path
+- **THEN** the recorded-hash arrays SHALL be IGNORED (the live maps resolve the
+  bodies naturally)
+- **AND** the same-AppDomain S1/S2/S3-partial behavior SHALL be unchanged
+
+#### Scenario: String-token + switch-target hashes need no recording
+- **WHEN** a deserialized body's ldstr token or switch-target hash is resolved in
+  the fresh AppDomain
+- **THEN** the string interner SHALL be content-keyed (stable across AppDomains,
+  no recording needed) for ldstr
+- **AND** the switch-target hashes SHALL be body-local (carried verbatim in
+  `SwitchTargets`, rebuilt by `RebuildSwitchTargetsFromNeo`, no cross-AppDomain
+  concern)
+- **AND** the static-field token path SHALL be unexercised by the capstone
+  (SEQUENCE with sub-surface 4)
+
+### Requirement: Host CLR reference assemblies are registered via Assembly.LoadFrom on the Cecil-free load side (reuses the S3-5 pattern)
+
+The Cecil-free loader SHALL register host CLR reference assemblies via
+`System.Reflection.Assembly.LoadFrom(path)` (best-effort try/catch), so
+`AppDomain.GetType(string)`'s live `System.AppDomain.CurrentDomain.
+GetAssemblies()` CLR fallback resolves host CLR types as `CLRType`. The loader
+SHALL NOT `LoadAssembly(refStream)` the host CLR refs (which would shadow CLR
+types as `ILType`, the S3-5 Q1.2 finding).
+
+#### Scenario: Host CLR refs resolve as CLRType on the Cecil-free side
+- **WHEN** `LoadNeoAssembly` is called with `hostClrRefPaths`
+- **THEN** each path SHALL be registered via `Assembly.LoadFrom(path)` (best-
+  effort try/catch; a BCL/already-loaded/unresolvable ref is skipped, never fatal)
+- **AND** a CLR type referenced by the `.neo` SHALL resolve via `GetType(string)`
+  as a `CLRType` (NOT a shadow `ILType`)
+- **AND** the loader SHALL NOT call `LoadAssembly(refStream)` for a host CLR ref
+
+*Step-25 / Step-26 partial-ship scope note.* The S1 requirements (non-generic methods, same-AppDomain), the S2 requirements (generic-instantiation-at-load), the Step-26 requirements (benchmark self-check + single-threaded contract), the S3-partial requirement (ILType layout + Neo VTable rebuild), the S3-5 requirement (host CLR ref registration), the STEP-25-CLR-ADAPTOR requirement (standalone CLI robust on arbitrary assemblies), and the S3-2 requirement above (a `.neo` loads + executes in a FRESH Cecil-free `new AppDomain()` via NAME-based APPROACH-1 cross-AppDomain token re-resolution) are SHIPPED. The Cecil-free load + the cross-AppDomain re-resolution (S3 sub-surfaces 2 + 3) shipped TOGETHER (D-GATE 1: they are inseparable). DEFERRED follow-up scopes (the canonical spec does NOT describe these as met): the S3-2 sequenced follow-ons -- static `.cctor` seeding + per-static-field offsets (sub-surface 4), CLR base/interface resolution on the Cecil-free path (needs a CrossBindingAdaptor), generic-method/type instances on the Cecil-free path (S2 T-identity-token), cross-PROCESS load; the D-PEEP `box;isinst` peephole fusion; the Neo debugger variable inspection (`neo-debugger-neo-frame`); the F-4 reflection-on-Neo field-read family (paths #1/#2/#4 SHIPPED; #3 instance-method re-entry SHIPPED via `neo-f4-parametrized-run-entry`); and the F-13 nested-Run/ExecuteNeo re-entrancy. The S1 loader consumes `NeoAssemblyModel.MethodDefs`; S2 consumes the `TemplateTable`; S3-partial rebuilds ILType layout + VTable from the `TypeDefTable`; S3-5 registers host CLR refs; STEP-25-CLR-ADAPTOR makes the standalone CLI robust; S3-2 adds the Cecil-free `AppDomain.LoadNeoAssembly` + the `.neo` v2 NAME-based token-binding tables. The Step-26 benchmark self-check measures interpreter throughput; it does NOT assert a Neo-vs-Legacy ratio threshold.

@@ -30,7 +30,15 @@ namespace ILRuntime.Runtime.NeoAOT
     {
         // "ILRN" little-endian = 0x49 0x4C 0x52 0x4E.
         public const int Magic = 0x494C524E;
-        public const short Version = 1;
+        // Step 25 S3-2: Version bumped 1 -> 2. V2 adds the APPROACH-1 recorded
+        // compile-time identity-hash arrays (TypeRefHashes + MethodRefHashes)
+        // parallel to the TypeRef / MethodRef tables, so a Cecil-free load into
+        // a FRESH AppDomain can re-register each resolved ref under the recorded
+        // hash (the baked token operands then resolve in B's maps). The arrays
+        // are ADDITIVE: the same-AppDomain S1/S2/S3-partial path IGNORES them
+        // (the live maps resolve the bodies naturally). A Cecil-free load
+        // REQUIRES V2 (the Version guard rejects a V1 `.neo` for that path).
+        public const short Version = 2;
         public const byte EndiannessLittle = 1;
         // 7 indexed tables (the static-ctor InitializerTable is folded into the
         // TypeDefTable via StaticCtorMethodRefIdx -- see design.md D4/D6).
@@ -102,6 +110,13 @@ namespace ILRuntime.Runtime.NeoAOT
     internal struct NeoMethodDefRecord
     {
         public int MethodRefIdx;          // -> MethodRefTable (declaring type + name + sig)
+        // Step 25 S3-2: the method's return type (-> TypeRefTable). The
+        // MethodRef table does NOT carry a return type (HybridPatch's
+        // MethodReferencePatchInfo omits it); a Cecil-free ILMethod shell needs
+        // it for Run's type-discriminated return-read, so it rides here. -1 if
+        // void / unavailable (the Cecil-free loader resolves void from the
+        // AppDomain).
+        public int ReturnTypeRefIdx;
         // The lowered body ExecuteNeo runs (raw 24-byte OpCodeR[]).
         public OpCodeR[] NeoExecuteBody;
         // Frame layout. StackSlotInfo = {Offset, RefOffset, Size, RefCount} (4 ints).
@@ -246,6 +261,39 @@ namespace ILRuntime.Runtime.NeoAOT
         public NeoTypeDefRecord[] TypeDefs;
         public NeoMethodDefRecord[] MethodDefs;
         public NeoTemplateRecord[] Templates;
+        // Step 25 S3-2 (APPROACH 1): the recorded compile-time identity-hash ->
+        // NAME bindings, snapshotted from the COMPILING AppDomain's mapTypeToken
+        // / mapMethod after the bodies are JIT-compiled. Each baked token operand
+        // in the deserialized bodies carries one of these hashes (ILType/ILMethod
+        // identity for IL refs; Cecil TypeReference / MethodReference identity
+        // for CLR-type + method-call tokens -- ALL identity-based against
+        // process-global counters, NONE reproducible in a fresh AppDomain). A ref
+        // may appear under MULTIPLE hashes (different Cecil token instances of
+        // the same logical ref baked in different bodies), so this is a FLAT
+        // binding list. The binding carries the NAME directly (NOT a ref-table
+        // index) because body-INTERNAL call-site tokens (e.g. an interface
+        // method a body calls via Callvirt_Interface) are NOT in the .neo ref
+        // tables -- matching by name-only reaches them all. The Cecil-free
+        // loader re-resolves by name + re-registers under the recorded hash.
+        // Same-AppDomain loads IGNORE these.
+        public NeoTokenBinding[] TypeTokenBindings;
+        public NeoTokenBinding[] MethodTokenBindings;
+    }
+
+    /// <summary>
+    /// Step 25 S3-2 (APPROACH 1): one recorded compile-time identity-hash ->
+    /// name binding. For a type: FullName. For a method: DeclaringFullName +
+    /// Name + ParamCount. The Cecil-free loader re-resolves by name, then
+    /// registers the resolved object in the fresh AppDomain's mapTypeToken /
+    /// mapMethod under <see cref="Hash"/> (an ALIAS key alongside the fresh
+    /// identity hash) so the baked token operands resolve.
+    /// </summary>
+    internal struct NeoTokenBinding
+    {
+        public int Hash;                    // the compile-time identity hash baked in a body
+        public string FullName;             // type: the type full name; method: the declaring type full name
+        public string MethodName;           // type: null; method: the method name
+        public int ParamCount;              // type: 0; method: the parameter count
     }
 
     /// <summary>1-byte IL/CLR discriminator carried alongside each TypeRef.</summary>

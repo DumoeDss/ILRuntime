@@ -100,6 +100,37 @@ namespace ILRuntime.Runtime.Enviorment
 
         internal List<ModuleDefinition> LoadedModules { get { return loadedModules; } }
 
+#if ENABLE_NEO_MODE
+        // Step 25 S3-2 (APPROACH 1): read-only snapshots of the compile-time
+        // token-hash maps, so the .neo writer can record EVERY identity-hash
+        // key that maps to a given resolved IType / IMethod. The baked token
+        // operands in the deserialized bodies carry these hashes (ILType/
+        // ILMethod identity hashes for IL refs; Cecil TypeReference /
+        // MethodReference identity hashes for CLR-type + method-call tokens --
+        // ALL identity-based against process-global counters, NONE reproducible
+        // in a fresh AppDomain). The Cecil-free loader re-registers each
+        // resolved ref under its recorded hash so the bodies resolve. Neo-only;
+        // the maps are private otherwise. Returns a list of (hash, resolved)
+        // pairs (a ref may appear under multiple baked hashes -- different Cecil
+        // token instances of the same logical ref).
+        internal IEnumerable<KeyValuePair<int, IType>> NeoTypeTokenSnapshot
+        {
+            get
+            {
+                foreach (var kv in mapTypeToken.InnerDictionary)
+                    yield return kv;
+            }
+        }
+        internal IEnumerable<KeyValuePair<int, IMethod>> NeoMethodTokenSnapshot
+        {
+            get
+            {
+                foreach (var kv in mapMethod.InnerDictionary)
+                    yield return kv;
+            }
+        }
+#endif
+
         public int DefaultJITFlags { get { return defaultJITFlags; } }
 
         public bool IsNeoMode
@@ -665,6 +696,190 @@ namespace ILRuntime.Runtime.Enviorment
             mapTypeToken[type.GetHashCode()] = type;
             mapTypeToken[type.TypeDefinition.GetHashCode()] = type;
         }
+
+#if ENABLE_NEO_MODE
+        /// <summary>
+        /// Step 25 S3-2 (Cecil-free load): load a deserialized .neo model into
+        /// THIS AppDomain WITHOUT reading any Cecil ModuleDefinition. The fresh
+        /// AppDomain's mapType / mapTypeToken / mapMethod are populated PURELY
+        /// from the .neo tables + the host CLR refs (Assembly.LoadFrom, the S3-5
+        /// pattern). A method invoked on a Cecil-free ILType then executes via
+        /// ExecuteNeo and yields the correct result (the capstone). Neo-only;
+        /// the Cecil LoadAssembly(Stream) path is UNCHANGED.
+        ///
+        /// Flow (design D3): (1) host-CLR-ref registration via Assembly.LoadFrom;
+        /// (2) two-pass ILType build -- pass 1 builds each NeoTypeDefRecord into a
+        /// Cecil-free ILType (CreateFromNeoRecord) + registers in mapType, pass 2
+        /// resolves base/interface by NAME + finalizes VTable/interface-map; (3)
+        /// hash re-registration -- for each recorded APPROACH-1 binding, re-resolve
+        /// the ref by NAME + rebind in mapTypeToken/mapMethod under the recorded
+        /// hash so the bodies' baked token operands resolve; (4) bind bodies via
+        /// NeoAssemblyLoader.Attach.
+        /// </summary>
+        internal NeoAOT.NeoLoadReport LoadNeoAssembly(NeoAOT.NeoAssemblyModel model,
+            IReadOnlyList<string> hostClrRefPaths)
+        {
+            var report = new NeoAOT.NeoLoadReport();
+            if (model == null || model.TypeDefs == null) return report;
+
+            // (1) Host CLR ref registration. Best-effort (a BCL/already-loaded/
+            // unresolvable ref is skipped, never fatal). MUST be Assembly.LoadFrom
+            // (NOT LoadAssembly(refStream) -- that shadows CLR types as ILType,
+            // the S3-5 Q1.2 finding). Puts host CLR assemblies into System.AppDomain
+            // so GetType(string)'s live-assembly CLR fallback resolves them.
+            if (hostClrRefPaths != null)
+            {
+                foreach (var rp in hostClrRefPaths)
+                {
+                    if (string.IsNullOrEmpty(rp) || !System.IO.File.Exists(rp)) continue;
+                    try { System.Reflection.Assembly.LoadFrom(rp); }
+                    catch { /* best-effort */ }
+                }
+            }
+
+            // Initialize the BCL primitive types (a fresh Cecil-free AppDomain
+            // has NO Cecil load -> InitializeFromModule never ran -> the IntType
+            // / LongType / etc. getters + GetPrimitiveSize NRE/NIE). Resolve them
+            // by name via the CLR fallback (the live System.AppDomain assemblies).
+            // Mirrors InitializeFromModule's primitive-init block.
+            EnsureNeoPrimitiveTypes();
+
+            // (2) Two-pass build.
+            // Pass 1: build every .neo ILType (Cecil-free) + register in mapType
+            // (so pass 2 + ref resolution find them by name). Base/interface
+            // resolution is DEFERRED (forward references within the .neo).
+            var built = new ILType[model.TypeDefs.Length];
+            for (int i = 0; i < model.TypeDefs.Length; i++)
+            {
+                var rec = model.TypeDefs[i];
+                ILType t = null;
+                try { t = ILType.CreateFromNeoRecord(rec, model, this); }
+                catch (Exception ex) { report.Skipped.Add(("CreateFromNeoRecord threw: " + ex.GetType().Name + ": " + ex.Message, "#" + i)); continue; }
+                if (t == null) { report.Skipped.Add(("CreateFromNeoRecord null", "#" + i)); continue; }
+                built[i] = t;
+                mapType[t.FullName] = t;
+                mapTypeToken[t.GetHashCode()] = t;   // register under the FRESH identity hash
+            }
+            // Pass 2: resolve base/interface by NAME (all .neo types now in
+            // mapType) + finalize VTable/interface-map/field indices.
+            for (int i = 0; i < model.TypeDefs.Length; i++)
+            {
+                var t = built[i];
+                if (t == null) continue;
+                try { t.FinalizeFromNeoRecord(model.TypeDefs[i], model); }
+                catch (Exception ex) { report.Skipped.Add(("FinalizeFromNeoRecord threw: " + ex.GetType().Name, t.FullName)); }
+            }
+
+            // (3) APPROACH 1 hash re-registration. For each recorded binding,
+            // re-resolve the ref by NAME + rebind under the RECORDED compile-time
+            // hash (an ALIAS key alongside the fresh hash). This makes the baked
+            // token operands (which carry the compile-time hash) resolve in B's
+            // maps. A binding whose name does not resolve in B is skipped.
+            ReRegisterTokenBindings(model);
+
+            // (4) Bind bodies. NeoAssemblyLoader.Attach matches each
+            // NeoMethodDefRecord to a Cecil-free ILMethod shell (built in pass 1)
+            // + populates CompiledFrame via InitCodeBodyFromNeo.
+            try
+            {
+                var attachReport = NeoAOT.NeoAssemblyLoader.Attach(this, model);
+                foreach (var a in attachReport.Attached) report.Attached.Add(a);
+                foreach (var s in attachReport.Skipped) report.Skipped.Add(s);
+            }
+            catch (Exception ex) { report.Skipped.Add(("Attach threw: " + ex.GetType().Name + ": " + ex.Message, "?")); }
+
+            return report;
+        }
+
+#if ENABLE_NEO_MODE
+        // Step 25 S3-2: initialize the BCL primitive types on a fresh Cecil-free
+        // AppDomain (no Cecil load -> InitializeFromModule never ran). Resolves
+        // them by name via the CLR fallback. Idempotent (guards on voidType ==
+        // null). Neo-only.
+        internal void EnsureNeoPrimitiveTypes()
+        {
+            if (voidType != null) return;
+            voidType = GetType("System.Void");
+            sbyteType = GetType("System.SByte");
+            shortType = GetType("System.Int16");
+            intType = GetType("System.Int32");
+            longType = GetType("System.Int64");
+            byteType = GetType("System.Byte");
+            ushortType = GetType("System.UInt16");
+            uintType = GetType("System.UInt32");
+            ulongType = GetType("System.UInt64");
+            intptrType = GetType("System.IntPtr");
+            charType = GetType("System.Char");
+            boolType = GetType("System.Boolean");
+            floatType = GetType("System.Single");
+            doubleType = GetType("System.Double");
+            objectType = GetType("System.Object");
+        }
+#endif
+
+
+        // ref under the recorded compile-time hash. The ref is re-resolved by
+        // NAME (IL via LoadedTypes; CLR via GetType(name)); a miss is skipped.
+        void ReRegisterTokenBindings(NeoAOT.NeoAssemblyModel model)
+        {
+            if (model.TypeTokenBindings != null)
+            {
+                foreach (var b in model.TypeTokenBindings)
+                {
+                    if (b.Hash == 0 || string.IsNullOrEmpty(b.FullName)) continue;
+                    IType resolved = null;
+                    if (!LoadedTypes.TryGetValue(b.FullName, out resolved) || resolved == null)
+                    {
+                        try { resolved = GetType(b.FullName); } catch { resolved = null; }
+                    }
+                    if (resolved != null) mapTypeToken[b.Hash] = resolved;
+                }
+            }
+            if (model.MethodTokenBindings != null)
+            {
+                foreach (var b in model.MethodTokenBindings)
+                {
+                    if (b.Hash == 0 || string.IsNullOrEmpty(b.FullName) || string.IsNullOrEmpty(b.MethodName)) continue;
+                    IMethod resolved = ResolveMethodRefByName(b.FullName, b.MethodName, b.ParamCount);
+                    if (resolved != null) mapMethod[b.Hash] = resolved;
+                }
+            }
+        }
+
+        // Resolve a method ref by name + declaring type + param count. IL via
+        // LoadedTypes -> ILType.GetMethod (hierarchy-aware). If the declaring type
+        // is a Cecil-free ILType that LACKS the method (e.g. an interface whose
+        // abstract methods are NOT in the .neo MethodDefs -- they have no body),
+        // build + register a Cecil-free shell on it. The shell's body is NEVER
+        // run for an interface method (interface dispatch resolves the impl via
+        // the implementing type's VTable); the shell only provides the
+        // DeclearingType the dispatch reads. A miss returns null.
+        IMethod ResolveMethodRefByName(string declaringFullName, string name, int paramCount)
+        {
+            if (!LoadedTypes.TryGetValue(declaringFullName, out var it) || !(it is ILType ilt)) return null;
+            IMethod m = null;
+            try { m = ilt.GetMethod(name, paramCount, false); }
+            catch { m = null; }
+            if (m != null) return m;
+            // Cecil-free ILType missing the method (interface abstract method):
+            // synthesize a shell so the dispatch's declared-method resolution has
+            // a non-null target (whose DeclearingType is the interface).
+#if ENABLE_NEO_MODE
+            if (ilt.isNeoAotType)
+            {
+                try
+                {
+                    var shell = ILMethod.CreateFromNeoShell(name, ilt, this,
+                        new List<IType>(paramCount), this.VoidType, false, false);
+                    ilt.AddNeoAotShell(name, shell);
+                    return shell;
+                }
+                catch { return null; }
+            }
+#endif
+            return null;
+        }
+#endif
 
         internal void InitializeFromModule(ModuleDefinition module)
         {

@@ -97,6 +97,18 @@ namespace ILRuntime.CLR.TypeSystem
         // align value-type slots so typed pointer casts in the _Inline field-
         // access opcodes are naturally aligned.
         int naturalAlignment = -1;
+        // Step 25 S3-2 (Cecil-free load): true for an ILType built by
+        // CreateFromNeoRecord (no Cecil TypeDefinition). The Cecil-reading
+        // properties (TypeDefinition, TypeReference, IsInterface-via-Cecil,
+        // IsEnum-via-Cecil, the reflection type, etc.) throw a descriptive
+        // NotSupportedException when accessed on such a type (NEVER silently
+        // null -- D5); the Cecil ctor path leaves this false. The capstone probe
+        // is curated to avoid them (ExecuteNeo reads only the Neo data surface
+        // -- fieldOffsets, neoVTable, neoInterfaceMap, BaseType, Instantiate).
+        internal bool isNeoAotType;
+        // The Cecil-free type's full name (from the .neo TypeRef table). Set
+        // directly by the factory; FullName returns it without touching typeRef.
+        string neoAotFullName;
 #endif
 
         public IMethod ToStringMethod
@@ -274,6 +286,9 @@ namespace ILRuntime.CLR.TypeSystem
         {
             get
             {
+#if ENABLE_NEO_MODE
+                if (isNeoAotType) return false;   // the capstone probe is non-generic
+#endif
                 if (genericArguments != null)
                     return hasGenericArguments;
                 return typeRef.HasGenericParameters && genericArguments == null;
@@ -284,6 +299,9 @@ namespace ILRuntime.CLR.TypeSystem
         {
             get
             {
+#if ENABLE_NEO_MODE
+                if (isNeoAotType) return false;
+#endif
                 return typeRef.IsGenericParameter && genericArguments == null;
             }
         }
@@ -1228,6 +1246,286 @@ namespace ILRuntime.CLR.TypeSystem
             appdomain = domain;
             jitFlags = domain.DefaultJITFlags;
         }
+#if ENABLE_NEO_MODE
+        // Step 25 S3-2 (Cecil-free load): private ctor for a Cecil-free ILType
+        // (typeRef / definition stay null). Used ONLY by CreateFromNeoRecord.
+        // isNeoAotType is set so the Cecil-reading properties + lazy inits route
+        // to the recorded data / no-op. Neo-only.
+        ILType(string fullName, Runtime.Enviorment.AppDomain domain)
+        {
+            appdomain = domain;
+            jitFlags = domain.DefaultJITFlags;
+            isNeoAotType = true;
+            neoAotFullName = fullName;
+            // baseType / interfaces are RESOLVED + installed in pass 2 (forward
+            // references within the .neo). Mark inits "done" so the lazy paths
+            // no-op (the factory installs the real values in pass 2).
+            baseTypeInitialized = true;
+            interfaceInitialized = true;
+        }
+
+        /// <summary>
+        /// Step 25 S3-2 (Cecil-free load): build a live ILType from a
+        /// NeoTypeDefRecord WITHOUT a Cecil TypeDefinition (the S3-partial
+        /// rebuild INSTALLED on a fresh Cecil-free type, NOT returned as
+        /// comparison data). Pass 1: build + install the instance layout +
+        /// methods/constructors shells (methods' bodies are bound later by
+        /// NeoAssemblyLoader.Attach). Pass 2 (FinalizeFromNeoRecord, called after
+        /// ALL .neo types are built): resolve baseType + interfaces by NAME +
+        /// install the Neo VTable + interface map (which reference the resolved
+        /// base ILType's VTable). Neo-only; Legacy compiles this out.
+        /// </summary>
+        internal static ILType CreateFromNeoRecord(
+            ILRuntime.Runtime.NeoAOT.NeoTypeDefRecord rec,
+            ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model,
+            Runtime.Enviorment.AppDomain domain)
+        {
+            if (rec.TypeRefIdx < 0 || rec.TypeRefIdx >= model.TypeRefs.Length) return null;
+            string fullName = model.TypeRefs[rec.TypeRefIdx].Name;
+            var t = new ILType(fullName, domain);
+
+            // ---- instance field layout: carried totals + carried per-field
+            // offsets + fieldTypes/fieldMapping (by name from FieldRef). ----
+            int fc = rec.Fields != null ? rec.Fields.Length : 0;
+            t.totalPrimitiveSize = rec.TotalPrimitiveSize;
+            t.totalReferenceCnt = rec.TotalReferenceCount;
+            t.totalStaticPrimitiveSize = rec.StaticTotalPrimitiveSize;
+            t.totalStaticReferenceCnt = rec.StaticTotalReferenceCount;
+            t.fieldMapping = new Dictionary<string, int>();
+            if (fc > 0)
+            {
+                t.fieldTypes = new IType[fc];
+#if ENABLE_NEO_MODE
+                t.fieldOffsets = new ILTypeFieldOffset[fc];
+#endif
+                t.fieldReferences = new FieldReference[fc];
+                t.fieldDefinitions = new FieldDefinition[fc];
+                int maxAlign = 1;
+                for (int i = 0; i < fc; i++)
+                {
+                    var f = rec.Fields[i];
+                    // The OWN-field index starts at 0 on a Cecil-free type
+                    // (FieldStartIndex is resolved in pass 2 from the base).
+                    t.fieldMapping[FieldName(model, f.FieldRefIdx)] = i;
+                    t.fieldOffsets[i] = new ILTypeFieldOffset
+                    {
+                        PrimitiveOffset = f.PrimitiveOffset,
+                        ReferenceOffset = f.ReferenceOffset,
+                    };
+                    var ft = ResolveNamedIType(domain, FieldType(model, f.FieldRefIdx));
+                    t.fieldTypes[i] = ft;
+                    if (ft != null)
+                    {
+                        int sz = NaturalSizeOfFieldType(domain, ft);
+                        if (sz > maxAlign) maxAlign = sz;
+                    }
+                }
+                t.naturalAlignment = maxAlign;
+            }
+            else
+            {
+                t.fieldTypes = new IType[0];
+                t.fieldOffsets = new ILTypeFieldOffset[0];
+                t.fieldReferences = new FieldReference[0];
+                t.fieldDefinitions = new FieldDefinition[0];
+                t.naturalAlignment = 1;
+            }
+
+            // ---- methods + constructors: Cecil-free ILMethod shells (bodies
+            // bound later by Attach). The shells are built from the .neo
+            // MethodDefs whose declaring type == this FullName. ----
+            t.methods = new Dictionary<string, List<ILMethod>>();
+            t.constructors = new List<ILMethod>();
+            if (model.MethodDefs != null)
+            {
+                for (int i = 0; i < model.MethodDefs.Length; i++)
+                {
+                    var md = model.MethodDefs[i];
+                    if (md.MethodRefIdx < 0 || md.MethodRefIdx >= model.MethodRefs.Length) continue;
+                    var mr = model.MethodRefs[md.MethodRefIdx];
+                    if (mr == null || mr.IsGenericInstance) continue;
+                    if (mr.DeclaringType == null || mr.DeclaringType.Name != fullName) continue;
+                    var parameters = ResolveParameterTypes(domain, mr.Parameters);
+                    bool isCtor = mr.Name == ".ctor" || mr.Name == ".cctor";
+                    // Return type: from the MethodDef's ReturnTypeRefIdx (the
+                    // MethodRef table omits it); void / -1 -> the AppDomain void.
+                    var retType = isCtor || md.ReturnTypeRefIdx < 0
+                        ? domain.VoidType
+                        : ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(domain, model, md.ReturnTypeRefIdx);
+                    if (retType == null) retType = domain.VoidType;
+                    var shell = ILMethod.CreateFromNeoShell(mr.Name, t, domain, parameters, retType, isCtor, false);
+                    if (isCtor) t.constructors.Add(shell);
+                    else
+                    {
+                        if (!t.methods.TryGetValue(mr.Name, out var lst))
+                        {
+                            lst = new List<ILMethod>();
+                            t.methods[mr.Name] = lst;
+                        }
+                        lst.Add(shell);
+                    }
+                }
+            }
+            return t;
+        }
+
+        /// <summary>
+        /// Step 25 S3-2 pass 2: resolve baseType + interfaces by NAME (now ALL
+        /// .neo types are in mapType) + install the Neo VTable + interface map
+        /// (which reference the resolved base ILType's VTable) + finalize the
+        /// field indices. Called after every .neo ILType is built + registered.
+        /// </summary>
+        internal void FinalizeFromNeoRecord(
+            ILRuntime.Runtime.NeoAOT.NeoTypeDefRecord rec,
+            ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model)
+        {
+            // ---- baseType: resolve by NAME (IL via LoadedTypes; CLR via
+            // GetType(name) post Assembly.LoadFrom). ----
+            if (rec.BaseTypeRefIdx >= 0 && rec.BaseTypeRefIdx < model.TypeRefs.Length)
+            {
+                baseType = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(appdomain, model, rec.BaseTypeRefIdx);
+            }
+            // ---- interfaces: resolve each by NAME. ----
+            if (rec.Interfaces != null && rec.Interfaces.Length > 0)
+            {
+                interfaces = new IType[rec.Interfaces.Length];
+                for (int i = 0; i < rec.Interfaces.Length; i++)
+                    interfaces[i] = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(appdomain, model, rec.Interfaces[i].InterfaceTypeRefIdx);
+            }
+            else interfaces = new IType[0];
+
+            // ---- fieldStartIndex / totalFieldCount: own fields + the base IL
+            // type's TotalFieldCount (the index base for inherited field access).
+            // ----
+            fieldStartIdx = (baseType is ILType bt) ? bt.TotalFieldCount : 0;
+            totalFieldCnt = fieldStartIdx + (fieldTypes != null ? fieldTypes.Length : 0);
+
+            // ---- firstCLRBaseType / firstCLRInterface: walk the base/interface
+            // chain to the first CLR type (mirrors InitializeBaseType/
+            // InitializeInterfaces). For the capstone probe (IL base + IL
+            // interface), these resolve to the BCL System.Object CLRType + null.
+            // ----
+            firstCLRBaseType = ResolveFirstCLRBase(baseType);
+            firstCLRInterface = ResolveFirstCLRInterface(interfaces, baseType);
+
+            // ---- Neo VTable: install from VTableMethodRefIdxs resolved to live
+            // IMethod[] (hierarchy-aware, the S3-partial helper). ----
+            var vt = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveVTableFromRecord(this, model, rec, out _);
+            neoVTable = vt;
+            neoVTableSlotKeys = new string[vt != null ? vt.Length : 0];
+            neoVTableSlots = new Dictionary<string, int>();
+            if (vt != null)
+            {
+                for (int i = 0; i < vt.Length; i++)
+                {
+                    neoVTableSlotKeys[i] = vt[i] != null ? vt[i].SignatureString : null;
+                    if (vt[i] != null && !neoVTableSlots.ContainsKey(vt[i].SignatureString))
+                        neoVTableSlots[vt[i].SignatureString] = i;
+                }
+            }
+
+            // ---- interface offset map: install from rec.Interfaces (the carried
+            // VTableOffset / MethodSlotKeys / ClassSlotRemap + the resolved
+            // interface IType). Installed DIRECTLY (not via EnsureNeoInterfaceMap,
+            // which would replay the Cecil BuildNeoInterfaceMap). ----
+            if (rec.Interfaces != null && rec.Interfaces.Length > 0 && interfaces != null)
+            {
+                neoInterfaceMap = new InterfaceEntry[rec.Interfaces.Length];
+                neoInterfaceOffsets = new Dictionary<IType, int>();
+                for (int i = 0; i < rec.Interfaces.Length; i++)
+                {
+                    var ie = rec.Interfaces[i];
+                    var it = i < interfaces.Length ? interfaces[i] : null;
+                    neoInterfaceMap[i] = new InterfaceEntry
+                    {
+                        InterfaceType = it,
+                        VTableOffset = ie.VTableOffset,
+                        MethodSlotKeys = ie.MethodSlotKeys,
+                        ClassSlotRemap = ie.ClassSlotRemap,
+                    };
+                    if (it != null && !neoInterfaceOffsets.ContainsKey(it))
+                        neoInterfaceOffsets[it] = ie.VTableOffset;
+                }
+            }
+        }
+
+        // Resolve the first CLR base type walking the IL base chain (mirrors the
+        // tail of InitializeBaseType). For an IL base that itself has a CLR base,
+        // recurses; System.Object resolves to its CLRType. Neo-only.
+        static IType ResolveFirstCLRBase(IType baseType)
+        {
+            IType bt = baseType;
+            while (bt != null)
+            {
+                if (bt is CLRType) return bt;
+                if (bt is ILType ilt)
+                {
+                    if (ilt.firstCLRBaseType != null) return ilt.firstCLRBaseType;
+                    bt = ilt.baseType;
+                    continue;
+                }
+                return null;
+            }
+            return null;
+        }
+
+        // Resolve the first CLR interface (mirrors InitializeInterfaces). For
+        // the capstone probe's IL interface, returns null (an IL interface has
+        // no CLR adaptor). Neo-only.
+        static IType ResolveFirstCLRInterface(IType[] interfaces, IType baseType)
+        {
+            if (interfaces != null)
+            {
+                foreach (var it in interfaces)
+                {
+                    if (it is CLRType) return it;
+                }
+            }
+            if (baseType is ILType ilt && ilt.firstCLRInterface != null)
+                return ilt.firstCLRInterface;
+            return null;
+        }
+
+        // Resolve the MethodRef's parameter TypeRefs to runtime IType[] (by
+        // name). A null/empty Parameters yields an empty list. Neo-only.
+        static List<IType> ResolveParameterTypes(Runtime.Enviorment.AppDomain domain,
+            ILRuntime.Hybrid.TypeReferencePatchInfo[] paramInfos)
+        {
+            var res = new List<IType>();
+            if (paramInfos == null) return res;
+            foreach (var pi in paramInfos)
+                res.Add(ResolveNamedIType(domain, pi));
+            return res;
+        }
+
+        // Field name / field type from the FieldRef table. Neo-only helpers.
+        static string FieldName(ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model, int fieldRefIdx)
+        {
+            if (fieldRefIdx < 0 || fieldRefIdx >= model.FieldRefs.Length) return null;
+            return model.FieldRefs[fieldRefIdx].Name;
+        }
+        static ILRuntime.Hybrid.TypeReferencePatchInfo FieldType(ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model, int fieldRefIdx)
+        {
+            if (fieldRefIdx < 0 || fieldRefIdx >= model.FieldRefs.Length) return null;
+            return model.FieldRefs[fieldRefIdx].FieldType;
+        }
+
+        // Step 25 S3-2: register a Cecil-free ILMethod shell into this Cecil-free
+        // ILType's methods dict (used to synthesize an interface's abstract
+        // method on its Cecil-free interface type so the interface-dispatch
+        // declared-method resolution has a non-null target). Neo-only.
+        internal void AddNeoAotShell(string name, ILMethod shell)
+        {
+            if (!isNeoAotType) return;
+            if (methods == null) methods = new Dictionary<string, List<ILMethod>>();
+            if (!methods.TryGetValue(name, out var lst))
+            {
+                lst = new List<ILMethod>();
+                methods[name] = lst;
+            }
+            lst.Add(shell);
+        }
+#endif
 
         /// <summary>
         /// 加载类型
@@ -1299,6 +1597,12 @@ namespace ILRuntime.CLR.TypeSystem
             {
                 if ( IsArray )
                     return false;
+#if ENABLE_NEO_MODE
+                // Cecil-free: the capstone probe is a class (not a valuetype).
+                // A valuetype probe would need the flag carried (sub-surface 2
+                // forward-compat); throw loudly so a future caller is unambiguous.
+                if (isNeoAotType) return false;
+#endif
                 if ( isValueType == null )
                     isValueType = definition.IsValueType;
 
@@ -1325,6 +1629,12 @@ namespace ILRuntime.CLR.TypeSystem
         {
             get
             {
+#if ENABLE_NEO_MODE
+                // Cecil-free: the capstone probe is a class, not an interface.
+                // (An interface TypeDef record in the .neo would carry an
+                // IsInterface flag under a future format extension.)
+                if (isNeoAotType) return false;
+#endif
                 return TypeDefinition.IsInterface;
             }
         }
@@ -1418,6 +1728,10 @@ namespace ILRuntime.CLR.TypeSystem
         {
             get
             {
+#if ENABLE_NEO_MODE
+                // Cecil-free: the factory set neoAotFullName + fullName directly.
+                if (isNeoAotType) return neoAotFullName;
+#endif
                 if ( string.IsNullOrEmpty ( fullName ) )
                 {
                     if ( typeRef.HasGenericParameters && genericArguments != null )
@@ -1486,6 +1800,11 @@ namespace ILRuntime.CLR.TypeSystem
         void InitializeInterfaces ()
         {
             interfaceInitialized = true;
+#if ENABLE_NEO_MODE
+            // Cecil-free: the factory installed interfaces + neoInterfaceMap
+            // directly. No Cecil init to replay (definition == null).
+            if (isNeoAotType) return;
+#endif
             if ( definition != null && definition.HasInterfaces )
             {
                 interfaces = new IType [ definition.Interfaces.Count ];
@@ -1511,6 +1830,11 @@ namespace ILRuntime.CLR.TypeSystem
         }
         void InitializeBaseType ()
         {
+#if ENABLE_NEO_MODE
+            // Cecil-free: the factory resolved + installed baseType directly
+            // (definition == null; no Cecil BaseType to read).
+            if (isNeoAotType) return;
+#endif
             if ( definition != null && definition.BaseType != null )
             {
                 bool specialProcess = false;
@@ -2163,6 +2487,11 @@ namespace ILRuntime.CLR.TypeSystem
 
         void InitializeFields ()
         {
+#if ENABLE_NEO_MODE
+            // Cecil-free: the factory installed fieldMapping + fieldTypes +
+            // fieldOffsets + the layout totals directly. No Cecil Fields to read.
+            if (isNeoAotType) return;
+#endif
             fieldMapping = new Dictionary<string, int> ();
             if (definition == null)
             {

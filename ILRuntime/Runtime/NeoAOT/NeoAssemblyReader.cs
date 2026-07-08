@@ -172,6 +172,7 @@ namespace ILRuntime.Runtime.NeoAOT
         {
             var md = new NeoMethodDefRecord();
             md.MethodRefIdx = br.ReadInt32();
+            md.ReturnTypeRefIdx = br.ReadInt32();   // Step 25 S3-2: return type (V2)
             md.NeoExecuteBody = ReadOpCodeRArray(br);
             md.LocalInfos = ReadStackSlotInfoArray(br);
             md.ParamInfos = ReadStackSlotInfoArray(br);
@@ -369,7 +370,39 @@ namespace ILRuntime.Runtime.NeoAOT
             model.Templates = new NeoTemplateRecord[tplCount];
             for (int i = 0; i < tplCount; i++) model.Templates[i] = ReadTemplate(br);
 
+            // Step 25 S3-2 (APPROACH 1): the recorded token-binding tables. V2-
+            // additive trailing data after the 7 indexed tables. A V1 .neo (no
+            // trailing bytes) yields empty binding tables (the reader reaches EOF
+            // cleanly for a V1 stream of exactly the 7 tables; a partial/EOF read
+            // is tolerated -> empty, NEVER fatal, so a same-AppDomain V1 load is
+            // unaffected). The Cecil-free loader REQUIRES these (Version guard in
+            // LoadNeoAssembly rejects a V1 .neo for that path).
+            model.TypeTokenBindings = ReadTokenBindings(br);
+            model.MethodTokenBindings = ReadTokenBindings(br);
+
             return model;
+        }
+
+        public static NeoTokenBinding[] ReadTokenBindings(BinaryReader br)
+        {
+            // Tolerate a stream that ends exactly after the 7 V1 tables (a V1
+            // .neo has no trailing binding data). NEVER fatal -- a same-AppDomain
+            // V1 load must stay unaffected.
+            if (br.BaseStream.Position >= br.BaseStream.Length) return null;
+            int n = br.ReadInt32();
+            if (n < 0) return null;
+            var arr = new NeoTokenBinding[n];
+            for (int i = 0; i < n; i++)
+            {
+                arr[i] = new NeoTokenBinding
+                {
+                    Hash = br.ReadInt32(),
+                    FullName = br.ReadString(),
+                    MethodName = br.ReadString(),
+                    ParamCount = br.ReadInt32(),
+                };
+            }
+            return arr;
         }
 
         // ===== V1 roundtrip helper: System.Type re-resolution =====

@@ -76,6 +76,10 @@ namespace ILRuntime.Runtime.NeoAOT
         public NeoTypeRefKind[] TypeRefKinds => _typeRefKinds.ToArray();
         public MethodReferencePatchInfo[] MethodRefs => _methodRefs.ToArray();
         public FieldReferencePatchInfo[] FieldRefs => _fieldRefs.ToArray();
+        // Step 25 S3-2 (APPROACH 1): the internal-refs set, so BuildTokenBindings
+        // can re-create the SAME structural key the builder used at index time
+        // (the IsInternal flag is part of the key). Neo-only.
+        internal HashSet<MemberReference> InternalRefsForAOT => _internalRefs;
 
         public int IndexString(string s)
         {
@@ -125,6 +129,23 @@ namespace ILRuntime.Runtime.NeoAOT
             idx = _methodRefs.Count;
             _methodRefIdx[key] = idx;
             _methodRefs.Add(info);
+            return idx;
+        }
+
+        // Step 25 S3-2 (APPROACH 1): expose the (structural key -> ref index)
+        // maps so BuildTokenBindings can match a snapshot entry's resolved
+        // IType/IMethod back to its .neo ref entry by the SAME structural key
+        // the builder used at index time. Neo-only.
+        internal int FindTypeRefIdx(TypeReferencePatchInfo info)
+        {
+            if (info == null) return -1;
+            _typeRefIdx.TryGetValue(StructuralKey(info), out int idx);
+            return idx;
+        }
+        internal int FindMethodRefIdx(MethodReferencePatchInfo info)
+        {
+            if (info == null) return -1;
+            _methodRefIdx.TryGetValue(StructuralKey(info), out int idx);
             return idx;
         }
 
@@ -290,6 +311,7 @@ namespace ILRuntime.Runtime.NeoAOT
         public static void WriteMethodDef(BinaryWriter bw, NeoMethodDefRecord md)
         {
             bw.Write(md.MethodRefIdx);
+            bw.Write(md.ReturnTypeRefIdx);   // Step 25 S3-2: return type (V2)
             WriteOpCodeRArray(bw, md.NeoExecuteBody);
             WriteStackSlotInfoArray(bw, md.LocalInfos);
             WriteStackSlotInfoArray(bw, md.ParamInfos);
@@ -502,11 +524,68 @@ namespace ILRuntime.Runtime.NeoAOT
             for (int i = 0; i < templates.Length; i++)
                 templateRecs[i] = BuildTemplate(templates[i], builder, module);
 
-            WriteModel(stream, builder, typeDefs, methodDefs, templateRecs);
+            // Step 25 S3-2 (APPROACH 1): AFTER every body is CompileFresh-ed
+            // (the loops above), the COMPILING AppDomain's mapTypeToken /
+            // mapMethod carry EVERY identity-hash the bodies baked (IL identity
+            // for IL refs; Cecil-ref identity for CLR-type + method-call tokens;
+            // a ref may appear under several hashes). Snapshot + match each
+            // entry to its .neo ref index -> the recorded bindings the Cecil-
+            // free loader re-registers. Built here (after compilation, before
+            // WriteModel) so the bindings ride in the .neo stream.
+            var appdomain = types.Length > 0 ? types[0].AppDomain : (methods.Length > 0 ? methods[0].AppDomain : null);
+            NeoTokenBinding[] typeBindings = null, methodBindings = null;
+            try
+            {
+                typeBindings = BuildTokenBindings(appdomain, builder, module, isMethod: false);
+                methodBindings = BuildTokenBindings(appdomain, builder, module, isMethod: true);
+            }
+            catch (Exception) { /* APPROACH 1 binding capture is best-effort; never fatal to the compile */ }
+
+            WriteModel(stream, builder, typeDefs, methodDefs, templateRecs, typeBindings, methodBindings);
+        }
+
+        // Step 25 S3-2 (APPROACH 1): snapshot the compiling AppDomain's token
+        // maps + record each (hash -> NAME) binding. The binding carries the
+        // resolved object's NAME directly (a type's FullName; a method's
+        // declaring-type FullName + name + param count) -- NOT a ref-table
+        // index, because body-INTERNAL call-site tokens (an interface method a
+        // body calls via Callvirt_Interface, a CLR helper, etc.) are NOT in the
+        // .neo ref tables; name-only reaches them all. A snapshot entry whose
+        // name is empty is skipped. Best-effort: never fatal-aborts the compile.
+        // Returns null if no bindings / unavailable.
+        static NeoTokenBinding[] BuildTokenBindings(ILRuntime.Runtime.Enviorment.AppDomain appdomain,
+            NeoRefTableBuilder b, ModuleDefinition module, bool isMethod)
+        {
+            if (appdomain == null) return null;
+            var res = new List<NeoTokenBinding>();
+            if (isMethod)
+            {
+                foreach (var kv in appdomain.NeoMethodTokenSnapshot)
+                {
+                    var m = kv.Value;
+                    if (m == null) continue;
+                    string dn = m.DeclearingType != null ? m.DeclearingType.FullName : null;
+                    if (string.IsNullOrEmpty(dn) || string.IsNullOrEmpty(m.Name)) continue;
+                    res.Add(new NeoTokenBinding { Hash = kv.Key, FullName = dn, MethodName = m.Name, ParamCount = m.ParameterCount });
+                }
+            }
+            else
+            {
+                foreach (var kv in appdomain.NeoTypeTokenSnapshot)
+                {
+                    var t = kv.Value;
+                    if (t == null) continue;
+                    string fn = t.FullName;
+                    if (string.IsNullOrEmpty(fn)) continue;
+                    res.Add(new NeoTokenBinding { Hash = kv.Key, FullName = fn, MethodName = null, ParamCount = 0 });
+                }
+            }
+            return res.Count == 0 ? null : res.ToArray();
         }
 
         void WriteModel(Stream stream, NeoRefTableBuilder b,
-            NeoTypeDefRecord[] typeDefs, NeoMethodDefRecord[] methodDefs, NeoTemplateRecord[] templates)
+            NeoTypeDefRecord[] typeDefs, NeoMethodDefRecord[] methodDefs, NeoTemplateRecord[] templates,
+            NeoTokenBinding[] typeBindings, NeoTokenBinding[] methodBindings)
         {
             // Build every table blob first (in memory), then compute offsets and
             // emit header + tables in one clean pass. This avoids any seek/patch
@@ -518,6 +597,12 @@ namespace ILRuntime.Runtime.NeoAOT
             byte[] typeDefBlob = BufTypeDefs(typeDefs);
             byte[] methodDefBlob = BufMethodDefs(methodDefs);
             byte[] templateBlob = BufTemplates(templates);
+            // Step 25 S3-2 (APPROACH 1): the recorded token-binding tables. V2-
+            // additive trailing data (NOT one of the V1 7 indexed tables; the V1
+            // header's 7 TableOffsets are unchanged). The reader reads the 7
+            // indexed tables, then these 2 binding tables.
+            byte[] typeBindingBlob = BufTokenBindings(typeBindings);
+            byte[] methodBindingBlob = BufTokenBindings(methodBindings);
 
             // Header fixed size: int + short + byte + byte + 7 ints = 4+2+1+1+28 = 36.
             const int HeaderSize = 4 + 2 + 1 + 1 + sizeof(int) * NeoAssemblyFormat.TableCount;
@@ -545,6 +630,35 @@ namespace ILRuntime.Runtime.NeoAOT
                 bw.Write(typeDefBlob);
                 bw.Write(methodDefBlob);
                 bw.Write(templateBlob);
+                // V2 trailing data (APPROACH 1). A V1 reader stops after the 7
+                // tables; a V2 reader reads these for the Cecil-free load.
+                bw.Write(typeBindingBlob);
+                bw.Write(methodBindingBlob);
+            }
+        }
+
+        // Step 25 S3-2 (APPROACH 1): serialize a NeoTokenBinding[] as
+        // (count, [Hash, RefIdx] per entry). null -> count 0.
+        static byte[] BufTokenBindings(NeoTokenBinding[] bindings)
+        {
+            using (var ms = new MemoryStream())
+            using (var tw = new BinaryWriter(ms, System.Text.Encoding.UTF8, leaveOpen: true))
+            {
+                WriteTokenBindings(tw, bindings);
+                return ms.ToArray();
+            }
+        }
+
+        public static void WriteTokenBindings(BinaryWriter bw, NeoTokenBinding[] bindings)
+        {
+            int n = bindings == null ? 0 : bindings.Length;
+            bw.Write(n);
+            for (int i = 0; i < n; i++)
+            {
+                bw.Write(bindings[i].Hash);
+                bw.Write(bindings[i].FullName ?? string.Empty);
+                bw.Write(bindings[i].MethodName ?? string.Empty);   // empty = a type binding
+                bw.Write(bindings[i].ParamCount);
             }
         }
 
@@ -628,6 +742,12 @@ namespace ILRuntime.Runtime.NeoAOT
         {
             var rec = new NeoMethodDefRecord();
             rec.MethodRefIdx = b.IndexMethodRef(method, module);
+            // Step 25 S3-2: record the return type (MethodRef omits it; a Cecil-
+            // free ILMethod shell needs it for Run's return-read).
+            var retType = method.ReturnType;
+            rec.ReturnTypeRefIdx = retType != null
+                ? b.IndexTypeRef(retType is ILType irt ? irt.TypeReference : module.ImportReference(((CLRType)retType).TypeForCLR), retType)
+                : -1;
             rec.NeoExecuteBody = frame.NeoExecuteBody;
             rec.LocalInfos = frame.LocalInfos;
             rec.ParamInfos = frame.ParamInfos;

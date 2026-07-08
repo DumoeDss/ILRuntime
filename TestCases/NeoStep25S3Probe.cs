@@ -59,5 +59,27 @@ namespace TestCases
 
         public override int BaseVirtual(int k) { return k + 20; }  // override base virtual
         public int IfaceMethod(int x) { return x * 3; }           // interface impl
+
+        // The S3-2 capstone entry: a PARAMETERLESS method the Cecil-free load
+        // invokes via domainB.Invoke (the Run host entry). Exercises field WRITE
+        // (Stfld FInt/FLong/FRef), field READ (Ldfld), virtual dispatch
+        // (BaseVirtual override via Callvirt on `this`), and interface dispatch
+        // (IfaceMethod via the interface map) -- all on a Cecil-free ILType. The
+        // arithmetic result is a known constant so the capstone asserts exactly.
+        public int Compute()
+        {
+            FInt = 7;
+            FLong = 100L;
+            FRef = "hi";
+            // Virtual dispatch: BaseVirtual(7) override -> 7 + 20 = 27.
+            int v = BaseVirtual(FInt);
+            // Interface dispatch via this (cast to the interface). IfaceMethod(7)
+            // -> 7 * 3 = 21.
+            int iv = ((INeoStep25S3Iface)this).IfaceMethod(FInt);
+            // Field read: FLong is 100; FInt is 7. Combine so a field-layout bug
+            // (wrong offset) yields a different sum.
+            return v + iv + (int)FLong + FInt;
+            // 27 + 21 + 100 + 7 = 155.
+        }
     }
 }

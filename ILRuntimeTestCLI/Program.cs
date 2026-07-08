@@ -138,6 +138,35 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 25 S3-2 host-side self-check: the Cecil-free load capstone.
+            // Compile a .neo for the S3 probe in the session AppDomain A, then
+            // load it Cecil-free into a FRESH AppDomain B (no Cecil module) +
+            // invoke -> assert correct. Adversarial: a body-mutation cell (M1)
+            // + a layout-mutation cell (M2) prove the Cecil-free load genuinely
+            // uses the .neo tables (a Cecil-fallback fails both).
+            if (nameFilter == "NeoStep25CecilFreeLoad")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25CecilFreeLoadCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 S3-2 Cecil-free load: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed. Attach: {r.AttachedCount} attached, {r.SkippedCount} skipped.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                    foreach (var s in r.Skipped)
+                        Console.WriteLine($"  SKIP: {s}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25CecilFreeLoad threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // Step 25 S3-5 host-side self-check: the standalone-AOT-CLI host-CLR-
             // registration gate. Drives the FILE-PATH NeoCompiler.Compile (the
             // Assembly.LoadFrom fix) on TestCases.dll + ILRuntimeTestBase.dll ref,
