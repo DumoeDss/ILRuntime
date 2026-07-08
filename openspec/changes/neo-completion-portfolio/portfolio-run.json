@@ -221,6 +221,12 @@
       "completedDate": "2026-07-09", "smoke": "DOC-ONLY (no source change). Closes F-9 + F-2 + F-11 (non-reproducible/not-a-bug). F-7 future-fix SHALL recorded in neo-dispatch spec; routed to neo-f7-delegate-byref (the remaining real fix). NeoStep 229/0/0 unchanged.",
       "review": "LEAD diff-read (doc-only; no code to verify). 3/4 honest closes; F-7 sequenced (real but Step-19-sized)."
     },
+    "neo-f7-delegate-byref": {
+      "pipeline": "small-feature", "wave": "completion-2", "scope": "[TRUE COMPLETION] F-7 delegate ref/out byref -- a same-frame delegate-Invoke fast path (NeoRunDelegateTargetOnThis: IL target on THIS interpreter + byref relativization + CopyNeoCallThisBack write-back). 2 design corrections: byref RELATIVIZATION (stind/ldind resolve against the TARGET frame -- the first real cross-frame IL byref; Step-17 only passed via inlining) + static/instance base shift.",
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-dispatch",
+      "completedDate": "2026-07-09", "smoke": "NeoStep19 14/0/0 (ref int->15, out int->99, multicast->30, ref string read -- write-back OBSERVABLE) + NeoStep 233/0/0; Legacy-neutral. Primitive-byref delegate RESOLVED. F-7B (ref-type write-back, mStack lifetime) sequenced.",
+      "review": "LEAD-verify (byref probes write-back observable; NeoStep 233/0/0 = delegate hot-path gate). Resumed via transcript cold-recovery (impl-f7 socket-close-interrupted; successor finished engine fix + 2 design corrections)."
+    },
     "neo-opportunistic-cleanup": {
       "pipeline": "small-feature", "wave": 4, "scope": "[N-CGTUN + N-TC2] cgt-un comment nit + Step14 TC2 tighten",
       "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-type-checks",
@@ -269,8 +275,8 @@
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; Minor dead-divide-assert + 3 Minor/Trivial accepted-known). Last numbered AOT-chain step."
     }
   },
-  "runnableFrontier": ["neo-peephole-pass", "neo-f7-delegate-byref"],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling", "neo-peephole-isinst", "neo-async-movenext-fix", "neo-step25-s3-clr-registration", "neo-step25-clr-adaptor", "neo-f4-reflection-on-neo", "neo-f4-parametrized-run-entry", "neo-step25-s3-cecil-free-load", "neo-step25-s3-ccctor", "neo-f4-surfaced-gaps", "neo-debugger-neo-frame", "neo-f13-nested-run-executeneo", "neo-latent-edges"],
+  "runnableFrontier": ["neo-peephole-pass", "neo-f7b-reftype-writeback"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling", "neo-peephole-isinst", "neo-async-movenext-fix", "neo-step25-s3-clr-registration", "neo-step25-clr-adaptor", "neo-f4-reflection-on-neo", "neo-f4-parametrized-run-entry", "neo-step25-s3-cecil-free-load", "neo-step25-s3-ccctor", "neo-f4-surfaced-gaps", "neo-debugger-neo-frame", "neo-f13-nested-run-executeneo", "neo-latent-edges", "neo-f7-delegate-byref"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

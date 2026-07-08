@@ -178,13 +178,103 @@ namespace TestCases
         // to exercise the IL-delegate construct + Invoke callvirt path.
         public delegate int NeoStep19IlFuncDelegate(int input);
         public static int Doubler(int x) { return x * 3; }
-        public static void NeoStep19_RefOutParam()
+        public static void NeoStep19_PlainIntParam()
         {
             NeoStep19IlFuncDelegate d = Doubler;
             int result = d(7);
             if (result != 21)
             {
                 int z = 1; int d2 = 0; int _ = z / d2;
+            }
+        }
+
+        // ---- F-7 (NEO-DELEGATE-REFOUT) byref probes: a delegate whose target
+        // signature carries a ref/out param, invoked via Neo (`del(ref v)`).
+        // The byref MUST marshal across the delegate boundary as a valid Ref Slot
+        // and the target's write-back MUST propagate to the caller's frame cell.
+        // On HEAD (pre-fix) these threw ArgumentOutOfRangeException because the
+        // byref was half-read through ReadNeoDelegateInvokeArgs' object[] funnel
+        // and the target ran on a separate pooled interpreter. The same-frame
+        // fast path (Callvirt_IL IsDelegateInvoke -> InvokeNeoCallTarget on THIS
+        // interpreter -> CopyNeoCallThisBack) makes them pass.
+
+        public delegate void NeoStep19RefIntDelegate(ref int x);
+        public delegate void NeoStep19OutIntDelegate(out int x);
+        public delegate int NeoStep19RefStringDelegate(ref string s);
+
+        // ref int target: bumps the byref'd cell by 10.
+        public static void BumpRef(ref int x) { x += 10; }
+        // out int target: assigns a constant.
+        public static void SetOut(out int x) { x = 99; }
+        // Double target (for the multicast probe): doubles the cell.
+        public static void DoubleRef(ref int x) { x *= 2; }
+        // ref string target: reads the byref'd string (proving the byref
+        // marshals across the delegate boundary as a valid Ref Slot the callee
+        // can deref) and returns its length. NOTE: an in-place WRITE-BACK of a
+        // callee-created string (`s = s + "!"`) is a SEPARATE follow-up -- the
+        // new object lands in the callee's frame ref region, which ExecuteNeo
+        // pops on return, leaving the caller's slot with a dangling mStack index.
+        // Ref-type byref write-back of a callee-created object needs mStack
+        // lifetime promotion (track under neo-f7 / ref-type-byref-writeback).
+        // This probe verifies the marshal + READ path (the F-7 byref-marshal
+        // criterion for a reference-type param).
+        public static int ReadLength(ref string s)
+        {
+            return s.Length;
+        }
+
+        // F-7 probe 1: ref int -> write-back observable (v==15).
+        public static void NeoStep19_ByRef_Int()
+        {
+            NeoStep19RefIntDelegate d = BumpRef;
+            int v = 5;
+            d(ref v);
+            if (v != 15)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // F-7 probe 2: out int -> write-back observable (v==99).
+        public static void NeoStep19_ByRef_Out()
+        {
+            NeoStep19OutIntDelegate d = SetOut;
+            int v;
+            d(out v);
+            if (v != 99)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // F-7 probe 3: ref string -> the byref marshals across the delegate
+        // boundary as a valid Ref Slot the callee can deref (READ path). The
+        // callee reads `s` and returns its length (3 for "abc"). The in-place
+        // write-back of a callee-CREATED string is a separate follow-up (see
+        // ReadLength's note: mStack lifetime promotion).
+        public static void NeoStep19_ByRef_String()
+        {
+            NeoStep19RefStringDelegate d = ReadLength;
+            string s = "abc";
+            int r = d(ref s);
+            if (r != 3)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // F-7 probe 4: multicast with a byref param -> each target sees the
+        // prior target's mutation and writes back to the same caller cell.
+        // Bump(+10) then Double(*2) over v==5 -> ((5+10)*2)==30.
+        public static void NeoStep19_ByRef_Multicast()
+        {
+            NeoStep19RefIntDelegate d = BumpRef;
+            d += DoubleRef;
+            int v = 5;
+            d(ref v);
+            if (v != 30)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
             }
         }
 

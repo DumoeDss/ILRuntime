@@ -639,6 +639,89 @@ namespace ILRuntime.Runtime.Intepreter
             throw new NotImplementedException("Unknown method type in Neo mode.");
         }
 
+        // F-7 (NEO-DELEGATE-REFOUT): run ONE IL delegate target on THIS interpreter
+        // (same-frame fast path) with its bound `instance`, returning false on an
+        // unhandled target exception. The delegate-Invoke callvirt marshaled the
+        // explicit params into targetBase per the INVOKE method's layout, whose
+        // slot 0 is the adapter `this` (4-byte mStack index) and whose explicit
+        // params follow at offset 4+. An INSTANCE target's layout coincides
+        // (this@0, params@4+), so targetBase is used directly; a STATIC target has
+        // no `this`, so shift the base forward by the Invoke `this` slot (4) so the
+        // target reads its params where the Invoke layout placed them.
+        //
+        // BYREF RELATIVIZATION: a byref param's 8-byte Ref Slot (objectIndex, off)
+        // was copied VERBATIM into targetBase (an IL callee's byref is unflagged,
+        // so CopyNeoCallArguments copies the 8 bytes raw). The frame-native case
+        // (objectIndex == -1) carries an offset RELATIVE TO THE CALLER's frame.
+        // The target's stind/ldind resolve objectIndex==-1 against the TARGET's
+        // frame base (which sits ABOVE the caller's frame), so the raw offset would
+        // address the wrong cell. Re-base the offset by the frame distance
+        // (callerFrameBase -> targetFrameBase) so it resolves back to the caller's
+        // cell: the target's mutation then lands in the caller's frame and the
+        // write-back is live. (mStack-object byrefs -- objectIndex >= 0 -- address
+        // mStack absolutely and need no rebase.) NOTE: the Neo Step-17 IL-byref
+        // tests pass because the optimizer INLINES those small targets, so the
+        // byref never actually crosses a frame; a delegate-Invoke target CANNOT be
+        // inlined (indirect call), making this the first real cross-frame IL byref
+        // -- hence the relativization is required here even though Call_IL does
+        // not need it for inlined targets.
+        unsafe bool NeoRunDelegateTargetOnThis(ILMethod target, ILTypeInstance instance,
+            byte* targetBase, int thisSlotShift, byte* callerFrameBase,
+            AutoList mStack, byte* retDstPtr, int targetRetRefBase, out bool unhandledException)
+        {
+            byte* dTargetBase = targetBase + thisSlotShift;
+
+            // D2: for an instance target, overwrite the adapter mStack slot (stored
+            // at targetBase+0 by the Invoke map) with the bound `instance`, so the
+            // target's `this` is the bound object (mirrors NeoInvokeSub's
+            // WriteNeoCallSlot(paramInfos[0], ..., instance)). No-op for static.
+            if (target.HasThis && instance != null)
+            {
+                int thisIdx = *(int*)targetBase;
+                if (thisIdx >= 0 && thisIdx < mStack.Count)
+                    mStack[thisIdx] = instance;
+            }
+
+            // Re-base frame-native byref param offsets so they resolve to the
+            // caller's frame cell from the target's (higher) frame base. The rebase
+            // is undone after the run so a multicast re-invocation of the SAME
+            // targetBase does not compound the subtraction.
+            var tParams = target.Parameters;
+            var tParamInfos = target.CompiledFrame.ParamInfos;
+            int rebasedSlotOff = -1;   // at most one byref param per delegate signature
+            int rebasedOrigOff = 0;
+            if (tParams != null && tParamInfos != null)
+            {
+                long frameDist = dTargetBase - callerFrameBase; // target base is ABOVE caller
+                int firstParam = target.HasThis ? 1 : 0;
+                int nParams = tParams.Count;
+                for (int p = 0; p < nParams; p++)
+                {
+                    int slotIdx = firstParam + p;
+                    if (slotIdx >= tParamInfos.Length) break;
+                    var pt = tParams[p];
+                    if (pt == null || !pt.IsByRef) continue;
+                    var slot = tParamInfos[slotIdx];
+                    if (slot.Size != 8) continue; // byref Ref Slot is 8 bytes
+                    int objIdx = *(int*)(dTargetBase + slot.Offset + 0);
+                    if (objIdx != -1) continue; // mStack-object byref: absolute, no rebase
+                    rebasedOrigOff = *(int*)(dTargetBase + slot.Offset + 4);
+                    *(int*)(dTargetBase + slot.Offset + 4) = rebasedOrigOff - (int)frameDist;
+                    rebasedSlotOff = slot.Offset;
+                    break; // a delegate signature has at most one byref per slot; first suffices
+                }
+            }
+
+            bool ok = InvokeNeoCallTarget(target, false, dTargetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException);
+
+            // Undo the rebase so the raw caller-relative offset is restored for any
+            // re-invocation (multicast) of the same targetBase.
+            if (rebasedSlotOff >= 0)
+                *(int*)(dTargetBase + rebasedSlotOff + 4) = rebasedOrigOff;
+
+            return ok;
+        }
+
         void InvokeNeoClrMethod(CLRMethod clrMethod, bool isNewobj, byte* targetBase, AutoList mStack, byte* retDstPtr, int targetRetRefBase)
         {
             var redirectNeo = clrMethod.RedirectionNeo;
@@ -2445,11 +2528,64 @@ namespace ILRuntime.Runtime.Intepreter
                                         object delThis = mStack[*(int*)targetBase];
                                         if (delThis is DelegateAdapter dAdapter)
                                         {
-                                            object[] delArgs = ReadNeoDelegateInvokeArgs(targetMethod, targetBase, mStack);
-                                            object delRes = dAdapter.NeoInvokePublic(delArgs);
-                                            WriteNeoDelegateInvokeReturn(targetMethod, delRes, retDstPtr, mStack, targetRetRefBase);
-                                            ip++;
-                                            continue;
+                                            // F-7 (NEO-DELEGATE-REFOUT): for an IL delegate target,
+                                            // run it on THIS interpreter (same-frame fast path) via
+                                            // NeoRunDelegateTargetOnThis, which re-bases frame-native
+                                            // byref offsets so a ref/out param's write-back lands in
+                                            // the caller's frame cell. The old ReadNeoDelegateInvokeArgs
+                                            // + NeoInvokePublic path half-read the byref through object[]
+                                            // and ran the target on a SEPARATE pooled interpreter, so a
+                                            // ref/out param could neither be read nor written back. The
+                                            // fallback (ReadNeoDelegateInvokeArgs) stays for a non-IL
+                                            // delegate target (D5).
+                                            if (dAdapter.Method is ILMethod dTargetIlm)
+                                            {
+                                                int headShift = dTargetIlm.HasThis ? 0 : 4;
+                                                if (!NeoRunDelegateTargetOnThis(dTargetIlm, dAdapter.Instance,
+                                                    targetBase, headShift, frameBase, mStack,
+                                                    retDstPtr, targetRetRefBase, out unhandledException))
+                                                    return null;
+
+                                                // D3: multicast next-chain. Each subsequent IL target re-
+                                                // runs the same fast path. The byref in targetBase points
+                                                // at the caller cell, now holding the head's mutation, so
+                                                // the next target sees the prior target's write (C#
+                                                // multicast-byref semantics). Last target's return wins
+                                                // (Legacy ILInvokeSub semantics).
+                                                IDelegateAdapter nxt = dAdapter.Next;
+                                                while (nxt != null)
+                                                {
+                                                    if (nxt is DelegateAdapter nAdapter && nAdapter.Method is ILMethod nIlm)
+                                                    {
+                                                        int nShift = nIlm.HasThis ? 0 : 4;
+                                                        if (!NeoRunDelegateTargetOnThis(nIlm, nAdapter.Instance,
+                                                            targetBase, nShift, frameBase, mStack,
+                                                            retDstPtr, targetRetRefBase, out unhandledException))
+                                                            return null;
+                                                        nxt = nAdapter.Next;
+                                                    }
+                                                    else
+                                                    {
+                                                        // Non-IL target in the chain: fall back to the
+                                                        // separate-interpreter path for this node.
+                                                        object[] delArgs = ReadNeoDelegateInvokeArgs(targetMethod, targetBase, mStack);
+                                                        object delRes = ((DelegateAdapter)nxt).NeoInvokePublic(delArgs);
+                                                        WriteNeoDelegateInvokeReturn(targetMethod, delRes, retDstPtr, mStack, targetRetRefBase);
+                                                        nxt = nxt.Next;
+                                                    }
+                                                }
+
+                                                ip++;
+                                                continue;
+                                            }
+                                            else
+                                            {
+                                                object[] delArgs = ReadNeoDelegateInvokeArgs(targetMethod, targetBase, mStack);
+                                                object delRes = dAdapter.NeoInvokePublic(delArgs);
+                                                WriteNeoDelegateInvokeReturn(targetMethod, delRes, retDstPtr, mStack, targetRetRefBase);
+                                                ip++;
+                                                continue;
+                                            }
                                         }
                                     }
 
