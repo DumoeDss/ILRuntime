@@ -396,6 +396,16 @@ namespace ILRuntime.Runtime.NeoAOT
                 bw.Write(td.Fields.Length);
                 for (int i = 0; i < td.Fields.Length; i++) WriteFieldLayout(bw, td.Fields[i]);
             }
+            // Step 25 S3-4: the per-static-field layout (length-prefixed, SAME
+            // shape as the instance Fields[] above). BuildStaticFieldLayouts
+            // NEVER returns null (an empty array for a no-static-fields type),
+            // so this is always a >= 0 length (no -1 sentinel needed).
+            if (td.StaticFields == null) bw.Write(0);
+            else
+            {
+                bw.Write(td.StaticFields.Length);
+                for (int i = 0; i < td.StaticFields.Length; i++) WriteFieldLayout(bw, td.StaticFields[i]);
+            }
             WriteIntArray(bw, td.VTableMethodRefIdxs);
             if (td.Interfaces == null) bw.Write(-1);
             else
@@ -878,6 +888,12 @@ namespace ILRuntime.Runtime.NeoAOT
             rec.StaticTotalPrimitiveSize = type.StaticTotalPrimitiveSize;
             rec.StaticTotalReferenceCount = type.StaticTotalReferenceCount;
             rec.Fields = BuildFieldLayouts(type, b);
+            // Step 25 S3-4: the per-static-field layout (parallel to Fields[]).
+            // Carries the static fields' name + type + byte offsets so the Cecil-
+            // free ILType factory can install staticFieldOffsets/Types/Mapping
+            // (the .cctor seed + Stsfld/Ldsfld tokens then resolve). EMPTY for a
+            // type with no static fields.
+            rec.StaticFields = BuildStaticFieldLayouts(type, b);
             rec.VTableMethodRefIdxs = BuildVTable(type, b, module);
             rec.Interfaces = BuildInterfaces(type, b);
             rec.StaticCtorMethodRefIdx = BuildStaticCtorRef(type, b, module);
@@ -899,6 +915,40 @@ namespace ILRuntime.Runtime.NeoAOT
                 res[i] = new NeoFieldLayoutRecord
                 {
                     FieldRefIdx = b.IndexFieldRef(fr),
+                    PrimitiveOffset = off.PrimitiveOffset,
+                    ReferenceOffset = off.ReferenceOffset,
+                };
+            }
+            return res;
+        }
+
+        // Step 25 S3-4: the per-STATIC-field layout. Mirrors BuildFieldLayouts
+        // but reads the Cecil-computed STATIC-field accessor surface
+        // (StaticFieldTypes[i] / StaticFieldReferences[i] / GetStaticFieldOffset(i))
+        // -- the same surface the Cecil InitializeFields static branch populates
+        // (ILType.cs:2539-2603). Returns an EMPTY array for a type with no static
+        // fields (NEVER null on the wire -- the Cecil-free factory treats an empty
+        // array as "no static fields"; a null would be indistinguishable from the
+        // missing-array sentinel).
+        static NeoFieldLayoutRecord[] BuildStaticFieldLayouts(ILType type, NeoRefTableBuilder b)
+        {
+            var types = type.StaticFieldTypes;     // forces InitializeFields if needed
+            if (types == null || types.Length == 0)
+                return Array.Empty<NeoFieldLayoutRecord>();
+            var refs = type.StaticFieldReferences;
+            var res = new NeoFieldLayoutRecord[types.Length];
+            for (int i = 0; i < types.Length; i++)
+            {
+                var off = type.GetStaticFieldOffset(i);
+                // FieldRefIdx via the Cecil FieldReference (name + type + IsStatic);
+                // a null reference (should not happen for a resolved static field)
+                // -> -1 (the Cecil-free factory skips a -1 entry).
+                int fieldRefIdx = -1;
+                if (refs != null && i < refs.Length && refs[i] != null)
+                    fieldRefIdx = b.IndexFieldRef(refs[i]);
+                res[i] = new NeoFieldLayoutRecord
+                {
+                    FieldRefIdx = fieldRefIdx,
                     PrimitiveOffset = off.PrimitiveOffset,
                     ReferenceOffset = off.ReferenceOffset,
                 };
@@ -940,13 +990,18 @@ namespace ILRuntime.Runtime.NeoAOT
 
         static int BuildStaticCtorRef(ILType type, NeoRefTableBuilder b, ModuleDefinition module)
         {
-            var ctors = type.GetConstructors();
-            if (ctors == null) return -1;
-            foreach (var c in ctors)
-            {
-                if (c != null && c.IsStatic) return b.IndexMethodRef(c, module);
-            }
-            return -1;
+            // Step 25 S3-4: the .cctor is NOT in GetConstructors() (InitializeMethods
+            // at ILType.cs:2101-2108 routes a static .ctor to the SEPARATE
+            // staticConstructor field, not the constructors list). The dedicated
+            // accessor GetStaticConstroctor() returns it. Pre-S3-4 this scanned
+            // GetConstructors() for IsStatic -- which NEVER found the .cctor (that
+            // list holds only instance ctors), so StaticCtorMethodRefIdx was always
+            // -1 + the .cctor body was never compiled. S3-4 fixes both: this now
+            // records the real .cctor MethodRef, AND CompileCore compiles the .cctor
+            // body into methods[] (see NeoCompiler.CompileCore).
+            var cctor = type.GetStaticConstroctor();
+            if (cctor == null) return -1;
+            return b.IndexMethodRef(cctor, module);
         }
 
         public static NeoTemplateRecord BuildTemplate(GenericMethodTemplate tpl,

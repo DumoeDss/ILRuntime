@@ -291,6 +291,149 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 RecordCell(res, "M2 layout-mutation (factory builds from the .neo record)", diff);
             }
 
+            // ====================================================================
+            // Step 25 S3-4 (.cctor seeding) cells -- a SEPARATE probe declaring a
+            // static field + a .cctor. The S3-2 probe has no statics, so the .cctor
+            // seeding (sub-surface 4) is exercised ONLY here.
+            // ====================================================================
+
+            const string CctorProbeFullName = "TestCases.NeoStep25S3CctorProbe";
+            const int CctorValue = 777;   // mirrors NeoStep25S3CctorProbe.CctorValue
+
+            // ---- (C1) the .cctor capstone: compile the probe, Cecil-free-load into
+            // a FRESH B, Invoke ReadStatic -> assert the .cctor-set value (NOT zero).
+            // Proves the .cctor RAN at Cecil-free load (the deserialized .cctor body
+            // executes after Attach binds its CompiledFrame + the seed step runs it).
+            res.TotalCells++;
+            {
+                string diff;
+                try
+                {
+                    if (!appdomainA.LoadedTypes.TryGetValue(CctorProbeFullName, out var cpIt) || !(cpIt is ILType cctorProbeA))
+                    {
+                        diff = CctorProbeFullName + " not loaded in A / not an ILType";
+                    }
+                    else
+                    {
+                        NeoAssemblyModel cmodel;
+                        using (var cms = new MemoryStream())
+                        {
+                            var cset = new List<ILType> { cctorProbeA };
+                            var ccres = new NeoCompiler().Compile(cset, cms);
+                            if (!ccres.IsComplete)
+                            {
+                                var sb = new System.Text.StringBuilder();
+                                foreach (var s in ccres.Skipped) sb.Append(s.MethodDisplay).Append(" (").Append(s.ExceptionType).Append("); ");
+                                res.TotalCells++; res.Failed++;
+                                res.Failures.Add("C1 compile skipped " + ccres.Skipped.Count + ": " + sb);
+                                return res;
+                            }
+                            cms.Position = 0;
+                            cmodel = NeoAssemblyReader.Read(cms);
+                        }
+                        var domainBC = new ILRuntime.Runtime.Enviorment.AppDomain();
+                        try
+                        {
+                            domainBC.LoadNeoAssembly(cmodel, null);
+                            var probeBC = domainBC.GetType(CctorProbeFullName);
+                            var readMethod = probeBC?.GetMethod("ReadStatic", 0);
+                            if (readMethod == null) diff = "C1: ReadStatic not found after Cecil-free load";
+                            else
+                            {
+                                var r = domainBC.Invoke(readMethod, null);
+                                int got = -1;
+                                try { got = Convert.ToInt32(r); } catch { }
+                                diff = (got == CctorValue)
+                                    ? null
+                                    : "C1 .cctor capstone: ReadStatic=" + got + " expected=" + CctorValue + " (a load that never ran the .cctor reads 0)";
+                            }
+                        }
+                        finally { domainBC.Dispose(); }
+                    }
+                }
+                catch (Exception ex) { diff = "C1 threw " + ex.GetType().Name + ": " + ex.Message; }
+                RecordCell(res, "C1 .cctor capstone (.cctor-set static reads correctly)", diff);
+            }
+
+            // ---- (C2) adversarial body-mutation cell: mutate the .cctor body's
+            // Ldc_I4 stored constant in an INDEPENDENT model2 BEFORE LoadNeoAssembly
+            // -> load into B2 -> Invoke ReadStatic -> assert the MUTATED constant.
+            // A Cecil-fallback (re-reading Cecil's .cctor) yields the UNMUTATED
+            // value -> FAIL. A default-zero read (the .cctor never ran) -> FAIL.
+            // Only a genuine execution of the deserialized .cctor body passes.
+            res.TotalCells++;
+            {
+                const int MUTATED = 4242;
+                string diff;
+                try
+                {
+                    if (!appdomainA.LoadedTypes.TryGetValue(CctorProbeFullName, out var cpIt) || !(cpIt is ILType cctorProbeA))
+                    {
+                        diff = CctorProbeFullName + " not loaded in A / not an ILType";
+                    }
+                    else
+                    {
+                        NeoAssemblyModel cmodel2;
+                        using (var cms2 = new MemoryStream())
+                        {
+                            var cset = new List<ILType> { cctorProbeA };
+                            new NeoCompiler().Compile(cset, cms2);
+                            cms2.Position = 0;
+                            cmodel2 = NeoAssemblyReader.Read(cms2);
+                        }
+                        // Locate the .cctor MethodDef, then its Ldc_I4 constant.
+                        int defIdx = FindMethodDefByName(cmodel2, CctorProbeFullName, ".cctor");
+                        OpCodeR[] body = defIdx >= 0 ? cmodel2.MethodDefs[defIdx].NeoExecuteBody : null;
+                        int mutateAt = -1;
+                        if (body != null)
+                        {
+                            for (int j = 0; j < body.Length; j++)
+                            {
+                                var c = body[j].Code;
+                                if ((c == OpCodeREnum.Ldc_I4 || c == OpCodeREnum.Ldc_I4_S) && body[j].Operand == CctorValue)
+                                {
+                                    mutateAt = j;
+                                    // Promote to Ldc_I4 so the wider Operand field holds MUTATED.
+                                    body[j].Code = OpCodeREnum.Ldc_I4;
+                                    break;
+                                }
+                            }
+                        }
+                        if (mutateAt < 0)
+                        {
+                            var sb = new System.Text.StringBuilder();
+                            if (body == null) sb.Append("null .cctor body (defIdx=").Append(defIdx).Append(")");
+                            else for (int j = 0; j < body.Length; j++)
+                            {
+                                if (j > 0) sb.Append(',');
+                                sb.Append(body[j].Code);
+                                if (body[j].Code == OpCodeREnum.Ldc_I4 || body[j].Code == OpCodeREnum.Ldc_I4_S) sb.Append('=').Append(body[j].Operand);
+                            }
+                            diff = "C2: .cctor Ldc=" + CctorValue + " not found [" + sb + "]";
+                        }
+                        else
+                        {
+                            body[mutateAt].Operand = MUTATED;
+                            var domainB2 = new ILRuntime.Runtime.Enviorment.AppDomain();
+                            try
+                            {
+                                domainB2.LoadNeoAssembly(cmodel2, null);
+                                var m = domainB2.GetType(CctorProbeFullName)?.GetMethod("ReadStatic", 0);
+                                var r = m != null ? domainB2.Invoke(m, null) : null;
+                                int got = -1;
+                                try { got = Convert.ToInt32(r); } catch { }
+                                diff = (got == MUTATED)
+                                    ? null
+                                    : "C2 .cctor body-mutation: expected " + MUTATED + " got " + got + " (a Cecil-fallback would yield " + CctorValue + "; a no-.cctor run yields 0)";
+                            }
+                            finally { domainB2.Dispose(); }
+                        }
+                    }
+                }
+                catch (Exception ex) { diff = "C2 threw " + ex.GetType().Name + ": " + ex.Message; }
+                RecordCell(res, "C2 .cctor body-mutation (deserialized .cctor genuinely ran)", diff);
+            }
+
             return res;
         }
 

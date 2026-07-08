@@ -788,6 +788,41 @@ namespace ILRuntime.Runtime.Enviorment
             }
             catch (Exception ex) { report.Skipped.Add(("Attach threw: " + ex.GetType().Name + ": " + ex.Message, "?")); }
 
+            // (5) Step 25 S3-4: seed each Cecil-free type's .cctor. Runs AFTER
+            // Attach (so the .cctor's CompiledFrame is populated from the .neo
+            // body -- running it before Attach would JIT-fallback with no AOT body
+            // bound) + AFTER the hash re-registration (so the .cctor's own Stsfld
+            // token operands resolve via the re-registered hashes). For each built
+            // Cecil-free ILType whose staticConstructor is set (the factory tracks
+            // the .cctor shell from the .neo MethodDefs): call Invoke(.cctor, null,
+            // null) -- the SAME call the Legacy lazy StaticInstance getter uses.
+            // Best-effort: a .cctor that throws is recorded as a skip, NEVER fatal
+            // (the additive contract; the static state is left at default). A type
+            // with no .cctor (StaticCtorMethodRefIdx == -1 -> no staticConstructor)
+            // is skipped.
+            for (int i = 0; i < built.Length; i++)
+            {
+                var t = built[i];
+                if (t == null) continue;
+                var cctor = t.StaticConstructorForNeoAOT;
+                if (cctor == null) continue;
+                try
+                {
+                    // Instantiate the StaticInstance FIRST (it sizes the static
+                    // byte[]/AutoList from the installed static totals + offsets;
+                    // the .cctor's Stsfld writes into it). Setting
+                    // staticConstructorCalled=true before Invoke mirrors the Legacy
+                    // lazy path (avoids re-entrant .cctor via the getter).
+                    _ = t.StaticInstance;
+                    Invoke(cctor, null, null);
+                    report.Attached.Add(".cctor seeded: " + t.FullName);
+                }
+                catch (Exception ex)
+                {
+                    report.Skipped.Add((".cctor seed skipped (" + ex.GetType().Name + ": " + ex.Message + ")", t.FullName));
+                }
+            }
+
             return report;
         }
 

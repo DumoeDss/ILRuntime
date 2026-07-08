@@ -275,8 +275,14 @@ namespace ILRuntime.Runtime.NeoAOT
             foreach (var type in compilableTypes)
             {
                 if (type == null) continue;
-                // GetMethods(): all non-ctor methods. GetConstructors(): instance
-                // ctors + static .cctor. Both are enumerated.
+                // GetMethods(): all non-ctor methods. GetConstructors(): INSTANCE
+                // ctors ONLY (a static .cctor routes to the SEPARATE staticConstructor
+                // field in InitializeMethods, NOT the constructors list -- see
+                // ILType.cs:2101-2108). Step 25 S3-4: ALSO compile the .cctor (via
+                // GetStaticConstroctor) so its body lands in the .neo MethodDef table
+                // + is force-compiled like any other non-generic method. Pre-S3-4 the
+                // .cctor body was NEVER compiled (GetConstructors() did not include
+                // it), so StaticCtorMethodRefIdx was -1 + the seed had nothing to run.
                 var typeMethods = new List<ILMethod>();
                 if (type.GetMethods() != null)
                 {
@@ -287,6 +293,12 @@ namespace ILRuntime.Runtime.NeoAOT
                     }
                 }
                 if (type.GetConstructors() != null) typeMethods.AddRange(type.GetConstructors());
+                {
+                    // The static .cctor (if any). Cast to ILMethod; a CLR type's .cctor
+                    // (a CLRMethod) is out of scope for a .neo MethodDef (IL only).
+                    var cctor = type.GetStaticConstroctor() as ILMethod;
+                    if (cctor != null) typeMethods.Add(cctor);
+                }
 
                 foreach (var ilm in typeMethods)
                 {

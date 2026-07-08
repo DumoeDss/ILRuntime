@@ -237,6 +237,18 @@ namespace ILRuntime.Runtime.NeoAOT
                 td.Fields = new NeoFieldLayoutRecord[flen];
                 for (int i = 0; i < flen; i++) td.Fields[i] = ReadFieldLayout(br);
             }
+            // Step 25 S3-4: the per-static-field layout (length-prefixed, mirrors
+            // the instance Fields[] read above). The writer ALWAYS writes a
+            // length (0 for a no-static-fields type), so this reads every V3
+            // `.neo` cleanly. A V3 `.neo` is the only Version that reaches here
+            // (the top-level Version guard rejects a V2 `.neo` for this path).
+            int sflen = br.ReadInt32();
+            if (sflen < 0) td.StaticFields = null;
+            else
+            {
+                td.StaticFields = new NeoFieldLayoutRecord[sflen];
+                for (int i = 0; i < sflen; i++) td.StaticFields[i] = ReadFieldLayout(br);
+            }
             td.VTableMethodRefIdxs = ReadIntArray(br);
             int icnt = br.ReadInt32();
             if (icnt < 0) td.Interfaces = null;

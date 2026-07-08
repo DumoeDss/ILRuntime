@@ -2881,6 +2881,115 @@ namespace ILRuntime.Runtime.Intepreter
                                     ins.ManagedObjects[ip->Operand3] = srcIdx >= 0 ? mStack[srcIdx] : null;
                                 }
                                 break;
+                            // ---- Step 25 S3-4: STATIC field access (Stsfld / Ldsfld).
+                            // Pre-S3-4 ExecuteNeo had NO static-field handlers (a stale
+                            // "TODO Step 7" suppressed the Cecil-path .cctor; the NeoStep
+                            // smoke probes never declared static fields). S3-4 seeds the
+                            // .cctor at Cecil-free load, so Stsfld (the .cctor writes) +
+                            // Ldsfld (a reader reads) MUST execute. The token encoding is
+                            // (typeHash << 32) | staticFieldIdx (the SAME encoding the
+                            // Legacy register VM uses at ILIntepreter.Register.cs:3288/
+                            // 3316); the declaring type resolves via the recorded hash
+                            // (S3-2 re-registration), the static field via the installed
+                            // staticFieldOffsets (S3-4 factory). The static instance is a
+                            // byte[] Primitives + AutoList ManagedObjects (ILTypeInstance
+                            // Neo layout) -- read/write the per-field offset with the
+                            // field type's width. Primitive widths + reference slots are
+                            // handled (the capstone uses static int); an IL value-type
+                            // static field spans both regions (sequenced -- the capstone
+                            // uses a primitive static). ----
+                            case OpCodeREnum.Stsfld:
+                                {
+                                    var declType = AppDomain.GetType((int)(ip->OperandLong >> 32));
+                                    if (declType == null) throw new TypeLoadException("Neo Stsfld: declaring type not resolved for token 0x" + ip->OperandLong.ToString("X"));
+                                    if (declType is ILType ilt)
+                                    {
+                                        int sIdx = (int)ip->OperandLong;
+                                        var sinst = ilt.StaticInstance;
+                                        var off = ilt.GetStaticFieldOffset(sIdx);
+                                        var ft = ilt.StaticFieldTypes.Length > sIdx ? ilt.StaticFieldTypes[sIdx] : null;
+                                        // JIT Code.Stsfld sets ONLY Register1 (= the DstOffset
+                                        // alias) to the source value register; SrcOffset/
+                                        // Register2 is NOT set for Stsfld. So the source value
+                                        // lives at DstOffset (the same slot the typed Stfld_*
+                                        // ops read from SrcOffset -- Stsfld has no instance,
+                                        // so the value is the lone operand at Register1).
+                                        byte* srcSlot = frameBase + ip->DstOffset;
+                                        if (ft != null && ft.IsPrimitive)
+                                        {
+                                            int psz = AppDomain.GetPrimitiveSize(ft);
+                                            if (psz == 1) sinst.Primitives[off.PrimitiveOffset] = *srcSlot;
+                                            else if (psz == 2) Unsafe.WriteUnaligned(ref sinst.Primitives[off.PrimitiveOffset], *(short*)srcSlot);
+                                            else if (psz == 4) Unsafe.WriteUnaligned(ref sinst.Primitives[off.PrimitiveOffset], *(int*)srcSlot);
+                                            else if (psz == 8) Unsafe.WriteUnaligned(ref sinst.Primitives[off.PrimitiveOffset], *(long*)srcSlot);
+                                        }
+                                        else if (ft != null && ft.IsValueType && ft is ILType vtil)
+                                        {
+                                            // An IL value-type static field spans both the
+                                            // primitive + reference regions (mirrors the
+                                            // Cecil InitializeFields static VT branch). Copy
+                                            // the flat-bytes primitive region + the ref slots.
+                                            Unsafe.CopyBlockUnaligned(ref sinst.Primitives[off.PrimitiveOffset], ref Unsafe.AsRef<byte>(srcSlot), (uint)vtil.TotalPrimitiveSize);
+                                            for (int ri = 0; ri < vtil.TotalReferenceCount; ri++)
+                                            {
+                                                int srcRefIdx = *(int*)(srcSlot + vtil.TotalPrimitiveSize + ri * 4);
+                                                sinst.ManagedObjects[off.ReferenceOffset + ri] = srcRefIdx >= 0 ? mStack[srcRefIdx] : null;
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Reference static field: the source register is a
+                                            // ref-slot mStack index.
+                                            int srcRefIdx = *(int*)srcSlot;
+                                            sinst.ManagedObjects[off.ReferenceOffset] = srcRefIdx >= 0 ? mStack[srcRefIdx] : null;
+                                        }
+                                    }
+                                    else throw new NotImplementedException("Neo Stsfld: CLR static field not implemented (Step 25 S3-4; the capstone is IL-only)");
+                                }
+                                break;
+                            case OpCodeREnum.Ldsfld:
+                                {
+                                    var declType = AppDomain.GetType((int)(ip->OperandLong >> 32));
+                                    if (declType == null) throw new TypeLoadException("Neo Ldsfld: declaring type not resolved for token 0x" + ip->OperandLong.ToString("X"));
+                                    if (declType is ILType ilt)
+                                    {
+                                        int sIdx = (int)ip->OperandLong;
+                                        var sinst = ilt.StaticInstance;
+                                        var off = ilt.GetStaticFieldOffset(sIdx);
+                                        var ft = ilt.StaticFieldTypes.Length > sIdx ? ilt.StaticFieldTypes[sIdx] : null;
+                                        byte* dstSlot = frameBase + ip->DstOffset;
+                                        if (ft != null && ft.IsPrimitive)
+                                        {
+                                            int psz = AppDomain.GetPrimitiveSize(ft);
+                                            if (psz == 1) *(int*)dstSlot = (sbyte)sinst.Primitives[off.PrimitiveOffset];
+                                            else if (psz == 2) *(int*)dstSlot = Unsafe.ReadUnaligned<short>(ref sinst.Primitives[off.PrimitiveOffset]);
+                                            else if (psz == 4) *(int*)dstSlot = Unsafe.ReadUnaligned<int>(ref sinst.Primitives[off.PrimitiveOffset]);
+                                            else if (psz == 8) *(long*)dstSlot = Unsafe.ReadUnaligned<long>(ref sinst.Primitives[off.PrimitiveOffset]);
+                                        }
+                                        else if (ft != null && ft.IsValueType && ft is ILType vtil)
+                                        {
+                                            Unsafe.CopyBlockUnaligned(ref Unsafe.AsRef<byte>(dstSlot), ref sinst.Primitives[off.PrimitiveOffset], (uint)vtil.TotalPrimitiveSize);
+                                            for (int ri = 0; ri < vtil.TotalReferenceCount; ri++)
+                                            {
+                                                object rv = sinst.ManagedObjects[off.ReferenceOffset + ri];
+                                                // Allocate a ref slot + store its index in the dest's
+                                                // ref region (mirrors how a VT load materializes refs).
+                                                mStack.Add(rv);
+                                                *(int*)(dstSlot + vtil.TotalPrimitiveSize + ri * 4) = mStack.Count - 1;
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // Reference static field: materialize a ref-slot
+                                            // mStack index into the dest register.
+                                            object rv = sinst.ManagedObjects[off.ReferenceOffset];
+                                            mStack.Add(rv);
+                                            *(int*)dstSlot = mStack.Count - 1;
+                                        }
+                                    }
+                                    else throw new NotImplementedException("Neo Ldsfld: CLR static field not implemented (Step 25 S3-4; the capstone is IL-only)");
+                                }
+                                break;
                             // ---- Step 12: in-frame value-type inline field access ----
                             // These index the frame byte region directly. Encoding:
                             //   Ldfld_*_Inline: DstOffset = dest temp byte offset;

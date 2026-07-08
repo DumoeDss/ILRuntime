@@ -59,17 +59,29 @@ namespace ILRuntime.Runtime.Intepreter
                     managedObjs.Add(null);
             }
             int idxStatic = 0;
-            foreach (var f in type.TypeDefinition.Fields)
+            // Step 25 S3-4: a Cecil-free ILType (isNeoAotType) has NO Cecil
+            // TypeDefinition (the Neo guard throws; the Cecil InitialValue byte
+            // blobs are a Cecil-emit detail NOT carried in the .neo). The .cctor
+            // is the initializer -- a field with a non-constant initializer is the
+            // .cctor's job, already seeded at Cecil-free load. SKIP the Cecil
+            // InitialValue replay loop on a Cecil-free type (the byte[] / AutoList
+            // sizing above is driven by the static totals, which the factory sets
+            // from the record; GetStaticFieldOffset reads the installed
+            // staticFieldOffsets). A Cecil-loaded Neo type runs the loop unchanged.
+            if (!type.isNeoAotType)
             {
-                if (f.IsStatic)
+                foreach (var f in type.TypeDefinition.Fields)
                 {
-                    if (f.InitialValue != null && f.InitialValue.Length > 0)
+                    if (f.IsStatic)
                     {
-                        var offset = type.GetStaticFieldOffset(idxStatic);
-                        if (managedObjs != null)
-                            managedObjs[offset.ReferenceOffset] = f.InitialValue;
+                        if (f.InitialValue != null && f.InitialValue.Length > 0)
+                        {
+                            var offset = type.GetStaticFieldOffset(idxStatic);
+                            if (managedObjs != null)
+                                managedObjs[offset.ReferenceOffset] = f.InitialValue;
+                        }
+                        idxStatic++;
                     }
-                    idxStatic++;
                 }
             }
 #endif

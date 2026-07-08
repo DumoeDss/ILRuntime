@@ -198,7 +198,20 @@ namespace ILRuntime.CLR.TypeSystem
                 if ( staticInstance != null && !staticConstructorCalled )
                 {
                     staticConstructorCalled = true;
-                    if ( staticConstructor != null && ( !TypeReference.HasGenericParameters || IsGenericInstance ) )
+                    // Step 25 S3-4: a Cecil-free ILType (isNeoAotType) has NO Cecil
+                    // TypeReference -> TypeReference.HasGenericParameters NREs here.
+                    // The capstone probe is non-generic, so for a Cecil-free type the
+                    // generic-parameter check is vacuously TRUE (no generic params).
+                    // The #if ENABLE_NEO_MODE suppression below STAYS (the .cctor is
+                    // seeded explicitly at Cecil-free load by LoadNeoAssembly, NOT via
+                    // this lazy getter) -- this guard only makes the CONDITION Cecil-
+                    // free-safe, it does NOT lift the suppression.
+                    bool cctorEligible =
+#if ENABLE_NEO_MODE
+                        isNeoAotType ? true :
+#endif
+                        ( !TypeReference.HasGenericParameters || IsGenericInstance );
+                    if ( staticConstructor != null && cctorEligible )
                     {
 #if ENABLE_NEO_MODE
                         // TODO Step 7: Neo interpreter still lacks Stfld_*/Ldfld_* case handlers,
@@ -307,6 +320,14 @@ namespace ILRuntime.CLR.TypeSystem
         }
 
         public Dictionary<string, int> StaticFieldMapping { get { return staticFieldMapping; } }
+#if ENABLE_NEO_MODE
+        // Step 25 S3-4: Neo-only accessor for the private staticConstructor,
+        // tracked by the Cecil-free factory from the .neo's .cctor shell. The
+        // Cecil-free LoadNeoAssembly seed step reads it to run the .cctor after
+        // the bodies are bound. Returns null for a type with no .cctor
+        // (StaticCtorMethodRefIdx == -1).
+        internal ILMethod StaticConstructorForNeoAOT { get { return staticConstructor; } }
+#endif
         public ILRuntime.Runtime.Enviorment.AppDomain AppDomain
         {
             get
@@ -1331,6 +1352,46 @@ namespace ILRuntime.CLR.TypeSystem
                 t.naturalAlignment = 1;
             }
 
+            // ---- Step 25 S3-4: STATIC field layout (carried per-field offsets +
+            // fieldTypes/staticFieldMapping by name from the new StaticFields[]
+            // record). Mirrors the instance block above. The Cecil InitializeFields
+            // static branch (ILType.cs:2539-2603) is NEVER run on a Cecil-free
+            // type, so WITHOUT this block staticFieldOffsets/Types/Mapping stay
+            // NULL -> a Stsfld/Ldsfld token (GetFieldIndex -> staticFieldMapping,
+            // ILType.cs:2405) returns -1 -> the .cctor + static accesses fail. An
+            // empty StaticFields[] yields empty arrays + an empty mapping (a type
+            // with no static fields). ----
+            int sfc = rec.StaticFields != null ? rec.StaticFields.Length : 0;
+            t.staticFieldMapping = new Dictionary<string, int>();
+            if (sfc > 0)
+            {
+                t.staticFieldTypes = new IType[sfc];
+#if ENABLE_NEO_MODE
+                t.staticFieldOffsets = new ILTypeFieldOffset[sfc];
+#endif
+                for (int i = 0; i < sfc; i++)
+                {
+                    var f = rec.StaticFields[i];
+                    string name = FieldName(model, f.FieldRefIdx);
+                    if (!string.IsNullOrEmpty(name)) t.staticFieldMapping[name] = i;
+#if ENABLE_NEO_MODE
+                    t.staticFieldOffsets[i] = new ILTypeFieldOffset
+                    {
+                        PrimitiveOffset = f.PrimitiveOffset,
+                        ReferenceOffset = f.ReferenceOffset,
+                    };
+#endif
+                    t.staticFieldTypes[i] = ResolveNamedIType(domain, FieldType(model, f.FieldRefIdx));
+                }
+            }
+            else
+            {
+                t.staticFieldTypes = new IType[0];
+#if ENABLE_NEO_MODE
+                t.staticFieldOffsets = new ILTypeFieldOffset[0];
+#endif
+            }
+
             // ---- methods + constructors: Cecil-free ILMethod shells (bodies
             // bound later by Attach). The shells are built from the .neo
             // MethodDefs whose declaring type == this FullName. ----
@@ -1353,7 +1414,13 @@ namespace ILRuntime.CLR.TypeSystem
                         ? domain.VoidType
                         : ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(domain, model, md.ReturnTypeRefIdx);
                     if (retType == null) retType = domain.VoidType;
-                    var shell = ILMethod.CreateFromNeoShell(mr.Name, t, domain, parameters, retType, isCtor, false);
+                    // Step 25 S3-4: pass the MethodRef's recorded IsStatic (a .cctor
+                    // + ReadStatic are static; an instance .ctor / method is not).
+                    // Pre-S3-4 this was hardcoded false, which made a static shell
+                    // carry HasThis=true -> Invoke(static, null) NRE'd ("instance
+                    // should not be null"). The MethodRef PatchInfo carries IsStatic
+                    // (serialized at HybridPatch AssemblyInfo.cs:376).
+                    var shell = ILMethod.CreateFromNeoShell(mr.Name, t, domain, parameters, retType, isCtor, mr.IsStatic);
                     if (isCtor) t.constructors.Add(shell);
                     else
                     {
@@ -1364,6 +1431,24 @@ namespace ILRuntime.CLR.TypeSystem
                         }
                         lst.Add(shell);
                     }
+                }
+            }
+
+            // ---- Step 25 S3-4: track the static constructor (.cctor). The .cctor
+            // shell is built above (the ".cctor" name match routes it to
+            // constructors). Record it as the type's staticConstructor so the
+            // Cecil-free LoadNeoAssembly seed step can resolve + run it (the
+            // legacy lazy StaticInstance getter's #if ENABLE_NEO_MODE suppression
+            // stays in place on the Cecil ctor path -- S3-4 seeds ONLY the
+            // Cecil-free path). staticConstructorCalled stays FALSE (the seed runs
+            // it). rec.StaticCtorMethodRefIdx points at it but the live shell is
+            // resolved by the .cctor NAME (the MethodRef idx -> name roundtrip is
+            // already how the shells are built above). ----
+            if (t.constructors != null)
+            {
+                foreach (var c in t.constructors)
+                {
+                    if (c != null && c.Name == ".cctor") { t.staticConstructor = c; break; }
                 }
             }
             return t;

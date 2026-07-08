@@ -1,0 +1,10 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-step25-s3-ccctor",
+  "stages": {
+    "propose": { "status": "done", "verdict": ".cctor IS a .neo MethodDef; StaticCtorMethodRefIdx recorded-but-unused (S3-4 = first consumer). 3 coupled parts: record StaticFields[] (V2->V3) + install in CreateFromNeoRecord + guard ILTypeStaticInstance ctor (reads NULL Cecil TypeDefinition.Fields). Seed via appdomain.Invoke(cctor) at Cecil-free load. Stale Neo .cctor suppression sidestepped (Cecil-free path only). SHIP, SMALL, Neo-only.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-ccctor" } },
+    "apply": { "status": "in_progress" },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 223/0/0 @ HEAD f32f816e; NeoStep25CecilFreeLoad 5/5; NeoStep25LoadExec 28/28"
+}

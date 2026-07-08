@@ -30,15 +30,25 @@ namespace ILRuntime.Runtime.NeoAOT
     {
         // "ILRN" little-endian = 0x49 0x4C 0x52 0x4E.
         public const int Magic = 0x494C524E;
-        // Step 25 S3-2: Version bumped 1 -> 2. V2 adds the APPROACH-1 recorded
+        // Step 25 S3-2: Version bumped 1 -> 2. V2 added the APPROACH-1 recorded
         // compile-time identity-hash arrays (TypeRefHashes + MethodRefHashes)
         // parallel to the TypeRef / MethodRef tables, so a Cecil-free load into
         // a FRESH AppDomain can re-register each resolved ref under the recorded
         // hash (the baked token operands then resolve in B's maps). The arrays
         // are ADDITIVE: the same-AppDomain S1/S2/S3-partial path IGNORES them
-        // (the live maps resolve the bodies naturally). A Cecil-free load
-        // REQUIRES V2 (the Version guard rejects a V1 `.neo` for that path).
-        public const short Version = 2;
+        // (the live maps resolve the bodies naturally).
+        //
+        // Step 25 S3-4: Version bumped 2 -> 3. V3 adds the per-static-field
+        // layout array (NeoTypeDefRecord.StaticFields[]) parallel to the
+        // instance Fields[], so a Cecil-free ILType can locate each STATIC field
+        // in its static byte[] + AutoList storage (the instance Fields[] only
+        // covers instance fields). This is ADDITIVE + backward-compatible: the
+        // same-AppDomain S1/S2/S3 path IGNORES StaticFields[] (the live Cecil
+        // InitializeFields provides the static offsets naturally); the Cecil-free
+        // loader's Version guard rejects a prior-Version `.neo` for the static-
+        // field path. Each type writes StaticFields[] (EMPTY for a type with no
+        // static fields), so a V3 reader reads every V3 `.neo` cleanly.
+        public const short Version = 3;
         public const byte EndiannessLittle = 1;
         // 7 indexed tables (the static-ctor InitializerTable is folded into the
         // TypeDefTable via StaticCtorMethodRefIdx -- see design.md D4/D6).
@@ -183,6 +193,18 @@ namespace ILRuntime.Runtime.NeoAOT
         public int StaticTotalPrimitiveSize;
         public int StaticTotalReferenceCount;
         public NeoFieldLayoutRecord[] Fields;        // instance fields
+        // Step 25 S3-4: the per-STATIC-field layout, parallel to the instance
+        // Fields[]. Each entry = {FieldRefIdx (name + type + IsStatic),
+        // PrimitiveOffset, ReferenceOffset} -- the SAME NeoFieldLayoutRecord
+        // shape used for instance fields, but for the type's STATIC fields
+        // (offsets within the static byte[] Primitives + static AutoList
+        // ManagedObjects). The Cecil-free ILType factory installs staticFieldOffsets
+        // / staticFieldTypes / staticFieldMapping from this array so the .cctor
+        // (seeded at Cecil-free load) + Stsfld/Ldsfld tokens resolve. EMPTY for a
+        // type with no static fields (never null on the wire -- length-prefixed).
+        // ADDITIVE: the same-AppDomain S1/S2/S3 path IGNORES it (the Cecil
+        // InitializeFields provides the static offsets naturally).
+        public NeoFieldLayoutRecord[] StaticFields;   // static fields (S3-4)
         // NeoVTable (IMethod[] slot -> method-ref). Each slot -> MethodRef index
         // (open question Q2 default NO: serialize only the slot -> method-ref
         // array; the reverse slot-key map is rebuilt by Step 25's loader).

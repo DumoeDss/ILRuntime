@@ -1521,18 +1521,46 @@ namespace ILRuntime.CLR.Method
                 sb.Append(Name);
                 sb.Append('(');
                 bool isFirst = true;
-                if (parameters == null)
-                    InitParameters();
-                for (int i = 0; i < parameters.Count; i++)
+#if ENABLE_NEO_MODE
+                // Step 25 S3-4: a Cecil-free shell (isNeoAotShell) has NO Cecil
+                // MethodDefinition -> InitParameters()/def.Parameters NRE. Use the
+                // shell's neoShellParameters (the Parameters property's source).
+                // Pre-S3-4 a Cecil-free method whose body threw -> the ExecuteNeo
+                // catch wrapped it in ILRuntimeException -> GetStackTrace ->
+                // ToString -> InitParameters -> NRE, masking the real inner
+                // exception. The guard surfaces the real exception (a Cecil-
+                // property guard per the S3-2 D5 discipline).
+                if (isNeoAotShell)
                 {
-                    if (isFirst)
-                        isFirst = false;
-                    else
-                        sb.Append(", ");
-                    sb.Append(parameters[i].FullName);
-                    sb.Append(' ');
-                    sb.Append(def.Parameters[i].Name);
+                    var sp = neoShellParameters;
+                    if (sp != null)
+                    {
+                        for (int i = 0; i < sp.Count; i++)
+                        {
+                            if (isFirst) isFirst = false;
+                            else sb.Append(", ");
+                            sb.Append(sp[i].FullName);
+                        }
+                    }
                 }
+                else
+                {
+#endif
+                    if (parameters == null)
+                        InitParameters();
+                    for (int i = 0; i < parameters.Count; i++)
+                    {
+                        if (isFirst)
+                            isFirst = false;
+                        else
+                            sb.Append(", ");
+                        sb.Append(parameters[i].FullName);
+                        sb.Append(' ');
+                        sb.Append(def.Parameters[i].Name);
+                    }
+#if ENABLE_NEO_MODE
+                }
+#endif
                 sb.Append(')');
                 cachedName = sb.ToString();
             }
