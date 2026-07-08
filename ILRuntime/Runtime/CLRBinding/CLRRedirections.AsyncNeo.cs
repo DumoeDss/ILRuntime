@@ -78,6 +78,34 @@ namespace ILRuntime.Runtime.Enviorment
 
         private static ILTypeInstance CurrentAsyncSm => _currentAsyncSm;
 
+        // neo-async-movenext-fix (Piece 2/3) -- the suspend-side side map. When a
+        // truly-incomplete awaiter suspends the SM, AwaitUnsafeOnCompleted_Neo
+        // parks the ILAsyncContext<T> here keyed by SM (parallel to SmTaskMap).
+        // SmTaskMap holds the COMPLETED/faulted task (sync path); SmContextMap
+        // holds the SUSPENDED context (suspend path). get_Task consults SmTaskMap
+        // first (completed), then SmContextMap (suspended -> Task<T> bridge).
+        [ThreadStatic]
+        private static Dictionary<ILTypeInstance, IAsyncContextSink> _smContextMap;
+
+        private static Dictionary<ILTypeInstance, IAsyncContextSink> SmContextMap
+        {
+            get
+            {
+                if (_smContextMap == null)
+                    _smContextMap = new Dictionary<ILTypeInstance, IAsyncContextSink>();
+                return _smContextMap;
+            }
+        }
+
+        // The context being RESUMED on this thread (the sink-swap, design D3 step
+        // 5). Set by ResumeAsync before ExecuteNeo resumes the SM; checked FIRST by
+        // SetResult/SetException so the resumed SM's terminal result routes to the
+        // context (CompleteResult/CompleteException) instead of SmTaskMap.
+        // ThreadStatic save/restore mirrors CurrentAsyncSm (resume scope: the
+        // resumed MoveNext runs to terminal state synchronously).
+        [ThreadStatic]
+        private static IAsyncContextSink _currentAsyncContext;
+
         // Per-type cached MoveNext ILMethod (avoids a per-call GetMethod lookup).
         private static readonly Dictionary<ILType, ILMethod> _moveNextCache = new Dictionary<ILType, ILMethod>();
 
@@ -122,11 +150,13 @@ namespace ILRuntime.Runtime.Enviorment
         private static ILTypeInstance RecoverSmForGetTask(byte* frameBase, AutoList mStack)
         {
             ILTypeInstance sm = RecoverSmFromBuilderByref(frameBase, 0, mStack);
-            if (sm != null && SmTaskMap.ContainsKey(sm)) return sm;
+            if (sm != null && (SmTaskMap.ContainsKey(sm) || SmContextMap.ContainsKey(sm))) return sm;
             // Reverse scan: the most-recently-stashed SM (innermost nested) wins.
+            // A suspended SM lives on SmContextMap (the suspend slice parked its
+            // ILAsyncContext<T> there); a completed/faulted SM lives on SmTaskMap.
             for (int i = mStack.Count - 1; i >= 0; i--)
             {
-                if (mStack[i] is ILTypeInstance ili && SmTaskMap.ContainsKey(ili))
+                if (mStack[i] is ILTypeInstance ili && (SmTaskMap.ContainsKey(ili) || SmContextMap.ContainsKey(ili)))
                     return ili;
             }
             return sm ?? CurrentAsyncSm;
@@ -188,9 +218,22 @@ namespace ILRuntime.Runtime.Enviorment
             // layout depends on T (primitive / ref / VT). Use the CLRMethod's
             // parameter type to size the read.
             object resultObj = ReadResultParam(intp, method, frameBase, ref curPrim, mStack, retRefBase);
-            ILTypeInstance sm = CurrentAsyncSm;
-            if (sm == null) return;
-            SmTaskMap[sm] = Task.FromResult(resultObj);
+            // Sink-swap (design D3 step 5): if a context is being RESUMED on this
+            // thread, route the resumed SM's terminal result to the context
+            // (CompleteResult completes the TaskCompletionSource<T> bridge) instead
+            // of stashing in SmTaskMap. Checked FIRST so the resume result is not
+            // lost to the sync sink. OQ2 resolved: _currentAsyncContext wins.
+            IAsyncContextSink ctx = _currentAsyncContext;
+            if (ctx != null)
+            {
+                ILTypeInstance sm = CurrentAsyncSm;
+                if (sm != null) SmContextMap.Remove(sm);
+                ctx.CompleteResult(resultObj);
+                return;
+            }
+            ILTypeInstance sm2 = CurrentAsyncSm;
+            if (sm2 == null) return;
+            SmTaskMap[sm2] = Task.FromResult(resultObj);
         }
 
         public static void AsyncTaskMethodBuilder_T_SetException_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
@@ -206,9 +249,19 @@ namespace ILRuntime.Runtime.Enviorment
                 // IL exception: unwrap via CLRInstance (the ExceptionAdaptor).
                 ex = ilEx.CLRInstance as Exception;
             }
-            ILTypeInstance sm = CurrentAsyncSm;
-            if (sm == null) return;
-            SmTaskMap[sm] = Task.FromException(ex ?? new Exception("Neo async: unknown exception"));
+            // Sink-swap (resume): route the resumed SM's terminal exception to the
+            // context (CompleteException faults the TaskCompletionSource<T> bridge).
+            IAsyncContextSink ctx = _currentAsyncContext;
+            if (ctx != null)
+            {
+                ILTypeInstance sm = CurrentAsyncSm;
+                if (sm != null) SmContextMap.Remove(sm);
+                ctx.CompleteException(ex ?? new Exception("Neo async: unknown exception"));
+                return;
+            }
+            ILTypeInstance sm2 = CurrentAsyncSm;
+            if (sm2 == null) return;
+            SmTaskMap[sm2] = Task.FromException(ex ?? new Exception("Neo async: unknown exception"));
         }
 
         public static void AsyncTaskMethodBuilder_T_GetTask_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
@@ -224,6 +277,16 @@ namespace ILRuntime.Runtime.Enviorment
             object task = null;
             if (sm != null && SmTaskMap.TryGetValue(sm, out task))
                 SmTaskMap.Remove(sm);
+            if (task == null && sm != null && SmContextMap.TryGetValue(sm, out IAsyncContextSink ctx))
+            {
+                // neo-async-movenext-fix (D4): the SM SUSPENDED on a truly-incomplete
+                // await. SmTaskMap has no entry (SetResult did not run); SmContextMap
+                // holds the parked context. Return the context's Task<T> bridge (a
+                // TaskCompletionSource<T> -- OQ3 first cut). The caller observes an
+                // incomplete Task that completes when the awaited task does (resume
+                // -> SetResult -> ctx.CompleteResult -> TCS.SetResult).
+                task = ctx.GetTaskBridge();
+            }
             if (task == null)
             {
                 // Defensive: sync path always stashed in Start; if reached
@@ -421,25 +484,128 @@ namespace ILRuntime.Runtime.Enviorment
         }
 
         // ----------------------------------------------------------------
-        // AwaitUnsafeOnCompleted / AwaitOnCompleted -- tagged NIE (suspend slice)
+        // AwaitUnsafeOnCompleted / AwaitOnCompleted -- the SUSPEND body
+        // (neo-async-movenext-fix Piece 2). The state machine reached here AFTER
+        // the Piece-1 fix made get_IsCompleted's false result zero-extended (the
+        // 8-byte Brtrue read is clean -> falls through to the suspend block).
         // ----------------------------------------------------------------
 
         public static void AwaitUnsafeOnCompleted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
-            // DEFERRED (neo-step20-async-suspend STOP): the suspend machinery is
-            // not wired. The redirect is also currently unreachable end-to-end
-            // (see planning-context Findings) -- the closed-generic call does not
-            // dispatch here, and a stacked control-flow issue routes MoveNext to
-            // the completion path regardless of IsCompleted. Re-dump-gate B1 + the
-            // control-flow bug before implementing this body. Kept as a tagged NIE.
-            throw new NotImplementedException("Neo async suspend path: neo-step20-async-suspend (Step 20 suspend slice)");
+            SuspendStateMachine(method);
         }
 
         public static void AwaitOnCompleted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
-            throw new NotImplementedException("Neo async suspend path: neo-step20-async-suspend (Step 20 suspend slice)");
+            // AwaitOnCompleted semantics differ from AwaitUnsafeOnCompleted by
+            // capturing the ExecutionContext. The capture is a deferred concern
+            // (design Non-Goal); the suspend body is otherwise identical.
+            SuspendStateMachine(method);
+        }
+
+        // The SUSPEND body (design D2). Recovers the heap SM (CurrentAsyncSm),
+        // reads the awaited Task from the SM's <>u__1 field (stored by MoveNext
+        // just before this call), builds an ILAsyncContext<T> (T = the builder's
+        // result type), parks it on SmContextMap[sm] (so get_Task returns the
+        // bridge), and registers the task's UnsafeOnCompleted continuation (the
+        // resume entry). Returns WITHOUT SetResult -- the SM is suspended. The SM
+        // is already a heap ILTypeInstance (dump-confirmed), so its state (<>1__state)
+        // and awaiter (<>u__1) survive across the suspension; HoistNeoILValueToHeap
+        // is NOT needed for the SM (retained for the in-frame-VT-local edge).
+        private static void SuspendStateMachine(CLRMethod method)
+        {
+            ILTypeInstance sm = CurrentAsyncSm;
+            if (sm == null)
+                throw new InvalidOperationException("Neo async suspend: no current state machine (CurrentAsyncSm is null)");
+
+            Task task = GetAwaitedTaskFromSm(sm);
+            if (task == null)
+                throw new InvalidOperationException("Neo async suspend: could not recover the awaited task from the state machine (<>u__1 empty)");
+
+            // T = the async method's result type (the builder's first generic arg).
+            // method.DeclearingType is AsyncTaskMethodBuilder<T> / AsyncValueTaskMethodBuilder<T>.
+            Type resultType = GetResultClrType(method);
+            if (resultType == null) resultType = typeof(object);
+
+            // Build ILAsyncContext<T> (T is runtime-determined -> reflect the ctor).
+            ILMethod moveNext = GetMoveNext(sm.Type);
+            if (moveNext == null)
+                throw new InvalidOperationException("Neo async suspend: state machine has no MoveNext: " + sm.Type.FullName);
+            Type ctxType = typeof(ILAsyncContext<>).MakeGenericType(resultType);
+            object ctx = Activator.CreateInstance(ctxType,
+                BindingFlags.NonPublic | BindingFlags.Instance, null,
+                new object[] { sm, moveNext }, null);
+            IAsyncContextSink sink = (IAsyncContextSink)ctx;
+
+            // Park on SmContextMap so get_Task (which runs in the driver frame after
+            // Start returns) finds the suspended context and returns its Task<T> bridge.
+            SmContextMap[sm] = sink;
+
+            // Register the continuation on the awaited Task. The resume fires on the
+            // thread that completes the task. If the task raced to completion between
+            // the IsCompleted check and here, UnsafeOnCompleted fires the continuation
+            // (resume) immediately -- correct (no hang; MoveNext re-enters, reloads
+            // <>u__1, calls GetResult, and continues). task is the awaiter's m_task
+            // (typed Task); its (non-generic) GetAwaiter's UnsafeOnCompleted is the
+            // standard await hook (TaskAwaiter implements ICriticalNotifyCompletion).
+            MethodInfo resumeMi = ctxType.GetMethod("MoveNextInternal", BindingFlags.Instance | BindingFlags.NonPublic);
+            Action resumeAction = (Action)Delegate.CreateDelegate(typeof(Action), ctx, resumeMi);
+            task.GetAwaiter().UnsafeOnCompleted(resumeAction);
+            // Return WITHOUT SetResult/SetException -- the SM is suspended.
+        }
+
+        // Recover the awaited Task from the SM's heap fields. The awaited Task is
+        // either hoisted directly onto the SM (a Task/Task<T> reference field --
+        // Roslyn hoists the await operand when it outlives the GetAwaiter call) OR
+        // carried inside the <>u__1 awaiter's m_task field. Prefer a DIRECT Task
+        // reference (robust to the SM field layout / count, which varies with the
+        // number of hoisted locals); fall back to reading the awaiter's m_task.
+        //
+        // SINGLE-TASK SHAPE ONLY (review fixer Finding B): when the SM hoists MORE
+        // THAN ONE Task reference field, the currently-awaited Task CANNOT be
+        // disambiguated -- ManagedObjects is FIELD-DECLARATION order, NOT assignment
+        // order, so the reverse-scan "highest-index wins" heuristic is silent-wrong
+        // (it would register the continuation on the wrong Task + read the wrong
+        // GetResult at resume). A recovery-miss MUST fail the SAME way across all
+        // shapes (the stobj-refloop M1 lesson: loud NIE, never silent-skip). So an
+        // AMBIGUOUS scan (directTaskCount > 1) throws a TAGGED NIE that routes the
+        // multi-Task case to the deferred multi-await follow-up. The single-Task
+        // shape (TC8 / explicit-local single await) keeps working -- the common case.
+        private static Task GetAwaitedTaskFromSm(ILTypeInstance sm)
+        {
+            var mo = sm.ManagedObjects;
+            if (mo == null) return null;
+            // 1) A directly-hoisted Task reference (the common case for the await
+            //    operand). Count them: >1 is ambiguous -> fail loud. Exactly 1 ->
+            //    return it (the reverse scan remembers the single hit).
+            Task directTask = null;
+            int directTaskCount = 0;
+            for (int i = mo.Count - 1; i >= 0; i--)
+            {
+                if (mo[i] is Task direct)
+                {
+                    directTask = direct;
+                    directTaskCount++;
+                }
+            }
+            if (directTaskCount > 1)
+            {
+                throw new NotImplementedException(
+                    "Neo async multi-Task awaiter not supported (single-Task shape only); " +
+                    "the currently-awaited Task cannot be disambiguated. " +
+                    "State machine hoists " + directTaskCount + " Task fields. " +
+                    "(neo-async-movenext-fix finding B -> deferred multi-await follow-up)");
+            }
+            if (directTask != null) return directTask;
+            // 2) The awaiter's m_task (<>u__1 boxed TaskAwaiter/TaskAwaiter<T>).
+            for (int i = 0; i < mo.Count; i++)
+            {
+                Task t = GetAwaiterTask(mo[i]) as Task;
+                if (t != null) return t;
+            }
+            return null;
         }
 
         public static void SetStateMachine_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
@@ -465,13 +631,22 @@ namespace ILRuntime.Runtime.Enviorment
         {
             if (boxedAwaiter == null) return null;
             Type t = boxedAwaiter.GetType();
+            // Only TaskAwaiter / TaskAwaiter<T> carry an m_task field. Using the
+            // fallback (TaskAwaiter.m_task) on a non-awaiter object (e.g. a hoisted
+            // Task<T> local, or the builder) throws ArgumentException at GetValue --
+            // gate on the object actually being a TaskAwaiter, and defend GetValue.
+            bool isAwaiter = t == typeof(System.Runtime.CompilerServices.TaskAwaiter);
+            if (!isAwaiter && t.IsGenericType)
+                isAwaiter = t.GetGenericTypeDefinition() == typeof(System.Runtime.CompilerServices.TaskAwaiter<>);
+            if (!isAwaiter) return null;
             FieldInfo fi = t.GetField("m_task", BindingFlags.NonPublic | BindingFlags.Instance);
             if (fi == null)
             {
                 // Generic TaskAwaiter<T> also stores m_task on the base field.
                 fi = s_taskAwaiterTaskField;
             }
-            return fi?.GetValue(boxedAwaiter);
+            try { return fi?.GetValue(boxedAwaiter); }
+            catch { return null; }
         }
 
         // TaskAwaiter<T>.get_IsCompleted -- read awaiter, return task.IsCompleted.
@@ -485,7 +660,18 @@ namespace ILRuntime.Runtime.Enviorment
             object awaiter = ILIntepreter.ReadNeoValueType(method.DeclearingType.TypeForCLR, frameBase, ref curPrim, sz);
             Task task = GetAwaiterTask(awaiter) as Task;
             bool isCompleted = task != null && task.IsCompleted;
-            if (retDst != null) *(int*)retDst = isCompleted ? 1 : 0;
+            // Piece 1 (neo-async-movenext-fix): zero-extend the bool result to the
+            // FULL 8-byte dest slot. The optimizer sizes Brtrue/Brfalse by the
+            // physical slot width (localInfos[r1].Size), and the IsCompleted dest
+            // slot is reused for a managed pointer elsewhere in the async SM
+            // (Ldloca_S -> &awaiter), so it is 8 bytes. Writing only 4 bytes
+            // ( *(int*)retDst ) leaves stale non-zero high pointer bits -> the
+            // 8-byte Brtrue read misroutes when IsCompleted == false (the hang).
+            // Zero-extending makes the 8-byte read clean (CONFIRMED by the propose-
+            // phase probe: the SM falls through to the suspend block and REACHES
+            // AwaitUnsafeOnCompleted). Neo-only, async-specific (the generic
+            // Call-return zero-fill is the Option-B hardening, deferred).
+            if (retDst != null) *(long*)retDst = isCompleted ? 1 : 0;
         }
 
         // TaskAwaiter<T>.GetResult -- read awaiter, return task.Result (or rethrow).
@@ -497,6 +683,18 @@ namespace ILRuntime.Runtime.Enviorment
             int sz = Optimizer.GetNeoValueTypeManagedSize(method.DeclearingType.TypeForCLR);
             object awaiter = ILIntepreter.ReadNeoValueType(method.DeclearingType.TypeForCLR, frameBase, ref curPrim, sz);
             Task task = GetAwaiterTask(awaiter) as Task;
+            if (task == null)
+            {
+                // On RESUME, the awaiter reloaded from <>u__1 (ldfld of a CLR-struct-
+                // with-ref-field hoisted on the heap SM) may surface with a null
+                // m_task (the ref does not survive the heap round-trip via the
+                // F-10 boxed-struct storage). Fall back to the awaited Task hoisted
+                // directly on the SM (the same source the suspend path registered
+                // the continuation on via GetAwaitedTaskFromSm). The sync path
+                // (fresh awaiter, m_task present) does not hit this fallback.
+                ILTypeInstance sm = CurrentAsyncSm;
+                if (sm != null) task = GetAwaitedTaskFromSm(sm);
+            }
             if (task == null) throw new NullReferenceException("Neo async GetResult: awaiter has no task");
             // B2 (neo-step20-async-suspend): this redirect is registered for BOTH
             // the generic TaskAwaiter<T> AND the non-generic TaskAwaiter (via
@@ -861,23 +1059,62 @@ namespace ILRuntime.Runtime.Enviorment
             }
         }
 
-        // Drive a state machine's MoveNext to terminal state (sync scope: every
-        // await short-circuits, so MoveNext completes synchronously here). Uses a
-        // FRESH pooled interpreter (mirrors Step 19 NeoInvokeSub) so MoveNext's
-        // frame + mStack reservation is fully isolated from the caller's in-flight
-        // frame -- the async SM's recursive calls (SetResult/SetException/etc.)
-        // cannot perturb the caller's frame bytes or mStack region. The fresh
-        // interpreter is returned to the pool in finally (unbounded growth guard).
+        // Drive a state machine's MoveNext. SYNC scope: every await short-circuits,
+        // so MoveNext completes synchronously here (sink == null -> SetResult/
+        // SetException stash in SmTaskMap). SUSPEND scope: if an await is truly
+        // incomplete, AwaitUnsafeOnCompleted_Neo suspends (registers a continuation,
+        // returns WITHOUT SetResult); DriveMoveNext returns with the SM parked on
+        // SmContextMap. The RESUME is driven by ResumeAsync (sink != null).
+        // Uses a FRESH pooled interpreter (mirrors Step 19 NeoInvokeSub) so
+        // MoveNext's frame + mStack reservation is fully isolated from the caller's
+        // in-flight frame -- the async SM's recursive calls (SetResult/
+        // SetException/etc.) cannot perturb the caller's frame bytes or mStack
+        // region. The fresh interpreter is returned to the pool in finally
+        // (unbounded growth guard; the Step-19 F1 lesson).
         private static unsafe void DriveMoveNext(ILIntepreter callerIntp, ILTypeInstance sm, ILMethod moveNext,
             byte* subFrameBase, AutoList callerMStack)
         {
-            AppDomain appdomain = callerIntp.AppDomain;
+            DriveMoveNextCore(callerIntp.AppDomain, sm, moveNext, null);
+        }
+
+        // neo-async-movenext-fix (Piece 3) -- the RESUME entry, called by
+        // ILAsyncContext<T>.MoveNextInternal on the thread that completed the
+        // awaited task. There is no in-flight Neo frame (the resume fires off the
+        // threadpool), so the AppDomain is recovered from the SM's ILType. Sets
+        // _currentAsyncContext = sink so the resumed SM's SetResult/SetException
+        // route to the context (CompleteResult/CompleteException) instead of
+        // SmTaskMap (the sink-swap, design D3 step 5).
+        internal static unsafe void ResumeAsync(ILTypeInstance sm, ILMethod moveNext, IAsyncContextSink sink)
+        {
+            DriveMoveNextCore(sm.Type.AppDomain, sm, moveNext, sink);
+        }
+
+        private static unsafe void DriveMoveNextCore(AppDomain appdomain, ILTypeInstance sm, ILMethod moveNext,
+            IAsyncContextSink sink)
+        {
             ILIntepreter intp = appdomain.RequestILIntepreter();
-            // Set the current async SM for the duration of this drive (save/restore
-            // for nested async). SetResult/SetException/get_Task read
-            // CurrentAsyncSm to key the SmTaskMap.
+            // Set the current async SM + (for resume) the context sink for the
+            // duration of this drive (save/restore for nested async).
+            // SetResult/SetException/get_Task read CurrentAsyncSm to key the
+            // SmTaskMap; SetResult/SetException check _currentAsyncContext FIRST
+            // (the sink-swap) so the resumed SM's terminal result routes to ctx.
             ILTypeInstance prevSm = _currentAsyncSm;
+            IAsyncContextSink prevCtx = _currentAsyncContext;
             _currentAsyncSm = sm;
+            // UNCONDITIONAL (review fixer Finding A): assign the sink even when null
+            // so a SYNC nested DriveMoveNext during a resume CLEARS the outer resume
+            // context. Previously this was `if (sink != null)` -- a sync drive
+            // (Start of a nested async that completes synchronously) left
+            // _currentAsyncContext inherited from the outer resume (ctx_A), so the
+            // nested SM's SetResult misrouted ITS result to the OUTER bridge
+            // (CompleteResult on ctx_A), and the outer SM's own later SetResult
+            // double-completed ctx_A (wrong value + InvalidOperationException). The
+            // null assignment isolates the nested sync drive (its SetResult stashes
+            // in SmTaskMap like any top-level sync drive); the prevCtx save/restore
+            // in finally reinstates ctx_A for the resumed SM's continued execution.
+            // Top-level sync drives have prevCtx == null so the unconditional null
+            // write is a no-op for them.
+            _currentAsyncContext = sink;
             try
             {
                 var stack = intp.Stack;
@@ -945,6 +1182,7 @@ namespace ILRuntime.Runtime.Enviorment
                 // pointer contaminated subsequent async tests in a multi-test
                 // run). get_Task recovers the SM via RecoverSmForGetTask instead.
                 _currentAsyncSm = prevSm;
+                _currentAsyncContext = prevCtx;
                 appdomain.FreeILIntepreter(intp);
             }
         }

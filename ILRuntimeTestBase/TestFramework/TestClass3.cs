@@ -197,13 +197,31 @@ namespace ILRuntimeTest.TestFramework
         //      check host-side (avoids needing Task.Exception/AggregateException
         //      redirects in the interpreter). ----
 
-        // B1: a permanently-incomplete Task<int> (SetResult never called before
-        // the assertion). NeoStep20_IncompleteAwaitProbe awaits this -> its
-        // TaskAwaiter_T_GetIsCompleted_Neo returns false -> the await falls
-        // through to AwaitUnsafeOnCompleted<TA,TSM>.
-        private static readonly TaskCompletionSource<int> s_incompleteTcs =
-            new TaskCompletionSource<int>();
+        // B1 / neo-async-movenext-fix: an incomplete Task<int> the async probe
+        // awaits (its TaskAwaiter_T_GetIsCompleted_Neo returns false -> the await
+        // falls through to AwaitUnsafeOnCompleted<TA,TSM>). The TCS is MUTABLE and
+        // self-resetting: CompleteIncompleteTask atomically swaps in a fresh
+        // incomplete TCS and completes the previous one. This keeps the probe
+        // deterministic across test orderings / re-runs: GetIncompleteTask always
+        // returns an incomplete Task (TC10's IsCompleted diagnostic stays green
+        // even when it runs after TC8 drove completion of an earlier TCS).
+        private static TaskCompletionSource<int> s_incompleteTcs = new TaskCompletionSource<int>();
         public static Task<int> GetIncompleteTask() { return s_incompleteTcs.Task; }
+
+        // neo-async-movenext-fix (TC8 redesign, design D5): DRIVE completion of the
+        // deterministic probe's Task from the host side. TC8 asserts the await
+        // TRULY SUSPENDED (the returned Task is NOT sync-completed), then calls this
+        // to complete the owning TCS, then spin-waits for the resumed Task.Result.
+        // The continuation the Neo suspend path registered (task.GetAwaiter()
+        // .UnsafeOnCompleted) fires on this SetResult -> the resume runs GetResult +
+        // continues + SetResult, completing the bridge Task the test observes. The
+        // swap ensures the NEXT GetIncompleteTask returns a fresh incomplete Task.
+        public static void CompleteIncompleteTask(int value)
+        {
+            TaskCompletionSource<int> current = System.Threading.Interlocked.Exchange(
+                ref s_incompleteTcs, new TaskCompletionSource<int>());
+            current.SetResult(value);
+        }
 
         // B1 verdict inspectors. Returns 1 iff `ex` is the tagged Neo async-
         // suspend NIE (outcome 3: the 2-generic-arg redirect resolved on

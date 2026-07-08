@@ -59,10 +59,15 @@ namespace TestCases
     //     to the completion path regardless of IsCompleted" note, which the
     //     disproven sibling (neo-async-controlflow-iscompleted) FAILED to
     //     exercise because it only used sync-completing awaits.
-    // This is suspend-path territory (the neo-step20-async-suspend follow-up),
-    // NOT a B1 redirect fix. TC8 stays [Ignored] + hang-reproducer; un-ignore
-    // once the control-flow bug is fixed (the redirect already resolves, so the
-    // tagged NIE will fire and TC8 will pass).
+    // This is suspend-path territory. RESOLVED by neo-async-movenext-fix: the
+    // control-flow bug was a branch read-width vs producer write-width mismatch
+    // (the 8-byte Brtrue slot reused for a pointer read stale high bits after a
+    // 4-byte get_IsCompleted write); the bool is now zero-extended (Piece 1) +
+    // the suspend/resume machinery ships (Pieces 2/3). TC8 is UN-IGNORED and
+    // redesigned to the deterministic suspend+resume probe (assert the await
+    // truly suspended, drive completion, assert the resumed result). The OLD
+    // IsTaggedAsyncNIE/IsFaultedWithTaggedAsyncNIE host helpers are retained as
+    // historical harness but are no longer TC8's verdict path.
     //
     // TC9 = sync-completing CONTROL (active guard): a complete await must NOT
     // reach AwaitUnsafeOnCompleted (the IsCompleted short-circuit skips it).
@@ -109,16 +114,43 @@ namespace TestCases
             return v + 5;
         }
 
-        // TC8 probe body: await the host-side permanently-incomplete Task. Its
-        // IsCompleted is deterministically false -> the await is FORCED through
-        // AwaitUnsafeOnCompleted<TA,TSM> (the B1 redirect). PRIVATE so the harness
-        // does not auto-discover/run it (it hangs on HEAD -- see TC8); only TC8
-        // (currently [Ignored]) calls it.
+        // TC8 probe body: await the host-side deterministic incomplete Task. Its
+        // IsCompleted is deterministically false -> the await is FORCED through the
+        // suspend path (Piece-1 fix -> AwaitUnsafeOnCompleted -> suspend). PRIVATE
+        // so the harness does not auto-discover/run it; only TC8 calls it. TC8
+        // drives completion (CompleteIncompleteTask) and asserts the resume.
         private static async Task<int> NeoStep20_IncompleteAwaitProbe()
         {
             Task<int> incomplete = TestCLRBinding.GetIncompleteTask();
             int v = await incomplete;
             return v + 3;
+        }
+
+        // TC11 inner helper: a SYNC-completing nested async. Awaited by the TC11
+        // probe AFTER the probe resumes (a sync nested DriveMoveNext inside a
+        // resume scope). PRIVATE (only the TC11 probe calls it). Returns a value
+        // distinct from any TC8/TC11 outer value so a misroute is observable.
+        private static async Task<int> NeoStep20_InnerSyncForNestedProbe()
+        {
+            int x = await Task.FromResult(5);
+            return x + 1; // 6
+        }
+
+        // TC11 probe body: a TRULY-ASYNC SM with a SINGLE await (the deterministic
+        // incomplete Task). After resume it CALLS a sync nested async (fire-and-
+        // forget -- the call triggers the nested's Start -> sync DriveMoveNext
+        // INSIDE the resume scope, which is exactly Finding A's scenario; the
+        // nested's Task is deliberately NOT consumed, because reading a nested
+        // async's Task result during a resume hits a SEPARATE RecoverSmForGetTask
+        // scan limitation -- documented as a deferred item, not Finding A). sm_A
+        // then returns its OWN value, so the bridge result proves whether the
+        // nested's SetResult was misrouted to the outer context. PRIVATE (TC11).
+        private static async Task<int> NeoStep20_NestedSyncAfterSuspendProbe()
+        {
+            Task<int> incomplete = TestCLRBinding.GetIncompleteTask();
+            int v = await incomplete;                              // SUSPEND (single await)
+            NeoStep20_InnerSyncForNestedProbe();                   // SYNC nested call (post-resume) -- Finding A trigger
+            return v + 50;                                         // sm_A's own value (n + 50)
         }
 
         // TC9 control body: SAME SHAPE as the probe but awaits an already-
@@ -166,31 +198,53 @@ namespace TestCases
             if (!t.IsCompleted || t.Result != 105) { int x = 1; int y = 0; int _ = x / y; }
         }
 
-        // TC8 (deterministic truly-incomplete-awaiter probe): [Ignored] on HEAD.
-        // The probe is the B1 adversarial harness -- it forces an await through
-        // AwaitUnsafeOnCompleted via a permanently-incomplete TaskCompletionSource
-        // Task. Empirically (HEAD 38133af8) the probe HANGS: get_IsCompleted
-        // correctly returns false, but a MoveNext control-flow bug then prevents
-        // the state machine from reaching the AwaitUnsafeOnCompleted call (or
-        // GetResult) -- it loops between them. This is a REAL truly-async-path
-        // bug (suspend-path territory, NOT a B1 redirect bug -- B1 resolution is
-        // exonerated). Marked [Ignored] so the smoke does not hang; un-ignore
-        // once the control-flow bug is fixed (the redirect already resolves, so
-        // the tagged NIE will fire and TC8 will pass). See the class comment +
-        // the change's design/handoff for the full evidence.
-        [ILRuntimeTest.ILRuntimeTest(Ignored = true)]
-        public static void NeoStep20_TC8_IncompleteAwaitHitsTaggedNIE()
+        // TC8 (deterministic truly-async suspend+resume): the BINDING success
+        // criterion for neo-async-movenext-fix. Forces an await through the
+        // suspend path (a TaskCompletionSource-backed Task whose IsCompleted is
+        // deterministically false -> the Piece-1 fix makes the Brtrue fall through
+        // to the suspend block -> AwaitUnsafeOnCompleted registers a continuation
+        // -> the SM SUSPENDS and Start returns). The async method's get_Task then
+        // returns the suspend-path's TaskCompletionSource<int> bridge (NOT yet
+        // completed). Two conjuncts are binding:
+        //   * !t.IsCompleted -- the await TRULY SUSPENDED (the gate that proves
+        //     suspend happened; the F-10/K1 silent-wrong-result guard). A
+        //     control-flow regression that misroutes MoveNext to sync-completion
+        //     makes this FAIL.
+        //   * t.Result == N + 3 after CompleteIncompleteTask -- the resume ran
+        //     GetResult + continued + SetResult end-to-end (Piece 3).
+        // A green smoke does NOT prove this; the deterministic TCS probe is binding.
+        // (Previously [Ignored] hang reproducer under the old tag-NIE design; un-
+        // ignored + redesigned now that the 3-piece suspend/resume machinery ships.)
+        public static void NeoStep20_TC8_TrulyAsyncSuspendResume()
         {
-            Task<int> t = null;
-            Exception sync = null;
-            try { t = NeoStep20_IncompleteAwaitProbe(); }
-            catch (Exception ex) { sync = ex; }
+            Task<int> t = NeoStep20_IncompleteAwaitProbe();
 
-            int verdict = (sync != null)
-                ? TestCLRBinding.IsTaggedAsyncNIE(sync)
-                : TestCLRBinding.IsFaultedWithTaggedAsyncNIE(t);
+            // GATE 1: the await TRULY SUSPENDED. The bridge Task MUST be incomplete
+            // here (Start returned after registering the continuation, before the
+            // awaited task completed). A failure means the SM did NOT suspend.
+            if (t.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
 
-            if (verdict != 1) { int x = 1; int y = 0; int _ = x / y; }
+            int n = 11;
+            // Drive completion of the awaited Task. The continuation the Neo suspend
+            // path registered fires -> MoveNext resumes -> GetResult + continues +
+            // SetResult -> the bridge Task completes.
+            TestCLRBinding.CompleteIncompleteTask(n);
+
+            // Bounded spin-wait for the resume (NO real delay; capped iterations +
+            // periodic yields so a threadpool resume gets CPU). A stuck/deadlocked
+            // resume exhausts the budget and FAILS here (divide-by-zero) rather than
+            // hanging forever (the >10s rule would otherwise kill it).
+            bool resumed = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (t.IsCompleted) { resumed = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed) { int x = 1; int y = 0; int _ = x / y; }
+
+            // GATE 2: the resumed MoveNext ran GetResult (got n) + continued
+            // (return n + 3) + SetResult(n + 3) which routed to the bridge.
+            if (t.Result != n + 3) { int x = 1; int y = 0; int _ = x / y; }
         }
 
         // TC9 (CONTROL for TC8, adversarial specificity): same shape as the
@@ -219,6 +273,66 @@ namespace TestCases
             bool isc = incomplete.GetAwaiter().IsCompleted;
             // The permanently-incomplete Task MUST report IsCompleted == false.
             if (isc) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // TC11 (Finding A regression): a RESUMED state machine that, after resume,
+        // CALLS a SYNC-completing nested async (whose Start -> sync DriveMoveNext
+        // runs INSIDE the resume scope). GATES the one-line fix in DriveMoveNextCore
+        // (`_currentAsyncContext = sink;` UNCONDITIONAL). The probe has a SINGLE
+        // await (the deterministic incomplete Task, TC8-style); the nested sync
+        // async is invoked post-resume via a plain fire-and-forget call (reading a
+        // nested async's Task result during a resume hits a SEPARATE
+        // RecoverSmForGetTask scan limitation, documented as a deferred item -- NOT
+        // Finding A). Binding conjuncts:
+        //   * !t.IsCompleted before CompleteIncompleteTask -- the OUTER await truly
+        //     suspended.
+        //   * t.Result == n + 50 after resume -- sm_A's OWN SetResult reached the
+        //     outer bridge EXACTLY ONCE (the nested sync async's SetResult was NOT
+        //     misrouted to ctx_A, which would have completed the bridge early with
+        //     the nested's value 6 and then double-completed on sm_A's SetResult).
+        // PRE-FIX (the bug): the resumed sm_A's nested sync DriveMoveNext inherits
+        // _currentAsyncContext == ctx_A, so the nested sm_B's SetResult routes ITS
+        // result (6) to ctx_A (the outer bridge gets 6, the WRONG value); sm_A's own
+        // later SetResult(n+50) then double-completes ctx_A (InvalidOperationException).
+        // Observed as a WRONG bridge value (6 != n+50) -> FAIL.
+        // POST-FIX: the sync nested drive CLEARS _currentAsyncContext (sink == null
+        // assigned unconditionally), so sm_B's SetResult stashes in SmTaskMap (the
+        // correct sync path), sm_A returns n+50, and ctx_A is completed EXACTLY ONCE
+        // with n+50 -> PASS.
+        public static void NeoStep20_TC11_NestedSyncAsyncAfterSuspend()
+        {
+            Task<int> t = NeoStep20_NestedSyncAfterSuspendProbe();
+
+            // GATE 1: the OUTER await TRULY SUSPENDED (the bridge is incomplete;
+            // Start returned after registering the continuation).
+            if (t.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+
+            int n = 23;
+            // Drive completion of the OUTER awaited Task. The resume fires ->
+            // GetResult + continue -> CALL the SYNC nested async -> sm_B's SetResult
+            // (must stash in SmTaskMap, NOT misroute to ctx_A) -> sm_A returns n+50
+            // -> SetResult(n+50) routed to ctx_A exactly once.
+            TestCLRBinding.CompleteIncompleteTask(n);
+
+            // Bounded spin-wait for the resume (NO real delay; a stuck/deadlocked
+            // resume exhausts the budget and FAILS here rather than hanging).
+            bool resumed = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (t.IsCompleted) { resumed = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed) { int x = 1; int y = 0; int _ = x / y; }
+
+            // GATE 2 (Finding A): the bridge must NOT be faulted (sm_A's SetResult
+            // completed ctx_A cleanly, no double-complete). Pre-fix the double-
+            // complete may fault or escape as an unobserved exception.
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+
+            // GATE 3 (Finding A): the bridge value is sm_A's OWN result (n + 50),
+            // NOT the misrouted INNER result (6). Pre-fix, the nested sync's
+            // SetResult completes the bridge with 6 first -> t.Result == 6 != n+50.
+            if (t.Result != n + 50) { int x = 1; int y = 0; int _ = x / y; }
         }
     }
 }

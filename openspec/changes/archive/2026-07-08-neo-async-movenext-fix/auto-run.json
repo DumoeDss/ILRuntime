@@ -1,0 +1,25 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "child": "neo-async-movenext-fix",
+  "mandate": "TRUE COMPLETION -- truly-async await WORKS end-to-end",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner", "runtime": "claude", "name": "plan-async" } },
+    "apply": { "status": "done", "outcome": "TRUE COMPLETION (gated scope). 3 pieces + TC8 GREEN. NeoStep20 12/0/0; NeoStep 218/0/0; NeoStep25LoadExec 28/28; Legacy-neutral. LEAD-verified.", "worker": { "role": "implementer", "runtime": "claude", "name": "impl-async" } },
+    "verify": { "status": "done", "verdict": "APPROVE-WITH-FINDINGS (0 Blocker; 2 MEDIUM findings A+B to fix before ship). TC8-proof HOLDS (stash-toggle re-introduces hang EXIT=124).", "worker": { "role": "reviewer", "runtime": "claude", "name": "rev-async" } },
+    "review-loop": {
+      "status": "in_progress",
+      "round": 1,
+      "openFindings": [
+        "A (MEDIUM, one-line): _currentAsyncContext set only if sink!=null -> resumed SM awaiting a sync-completing nested async misroutes inner result + double-completes TCS. FIX: _currentAsyncContext = sink; unconditional. Add nested-async-after-suspend regression test.",
+        "B (MEDIUM, silent-wrong-result): GetAwaitedTaskFromSm reverse-scan returns highest-field-index Task, not 'currently awaited' -> multi-Task SMs SILENT-WRONG (forbidden class). FIX: fail-LOUD (tagged NIE) when the Task scan is ambiguous (multiple Task fields); single-Task is the supported shape; document multi-Task/transient/custom-awaiter limitations honestly."
+      ],
+      "acceptedKnown": ["C (LOW): Option A unconditional 8-byte write unsafe if IsCompleted slot ever 4 bytes (Option B is the proper fix, deferred)", "D (LOW): SmContextMap[sm] leaks on driver thread (bounded)", "E (INFO): custom/non-Task awaiters fault at suspend (document)"]
+    },
+    "ship": { "status": "pending" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 1,
+  "baseline": "NeoStep 218/0/0; NeoStep20 12/0/0 (TC8 GREEN); NeoStep25LoadExec 28/28"
+}
