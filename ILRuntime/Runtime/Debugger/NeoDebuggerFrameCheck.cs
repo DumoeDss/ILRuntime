@@ -86,7 +86,35 @@ namespace ILRuntime.Runtime.Debugger
                 },
                 /*thisExpect*/ new Expected("FieldInt", "7777"));
 
-            // ===== Cell 4: load-bearing gate -- assert LocalInfo is NOT the
+            // ===== Cell 4 (neo-debugger-ilvt-local): IL-value-type LOCAL
+            // reconstruction. ProbeVtLocal has a `VtLocal vt` in-frame struct
+            // (int X + string S). The reconstructed LocalInfo MUST render the
+            // struct's fields from the split primitive+reference sub-regions:
+            // X = VT_X (4242, the primitive sub-region) and S = VT_S ("vt-field-A",
+            // the reference sub-region). On HEAD (placeholder) neither value
+            // appears (the local renders "<IL value-type local: reconstruction
+            // deferred>") -- so both assertions MISS -> FAIL; with the fix -> PASS.
+            // This is the load-bearing stash-toggle gate for this child. =====
+            RunValueCell(res, appdomain, probeType, "ProbeVtLocal",
+                new Expected[] {
+                    new Expected("IL-VT local primitive field X", "4242"),
+                    new Expected("IL-VT local reference field S", "vt-field-A"),
+                },
+                /*thisExpect*/ new Expected("FieldInt", "7777"));
+
+            // ===== Cell 5 (neo-debugger-ilvt-local): ADVERSARIAL IL-VT local.
+            // ProbeVtLocalMutate assigns vt.X = 1111 then MUTATES it to 8888. The
+            // reconstruction MUST read the LIVE frame bytes (8888), NOT the stale
+            // 1111 -- proving the field-walk reads the live primitive sub-region,
+            // not a default/cached value. =====
+            RunValueCell(res, appdomain, probeType, "ProbeVtLocalMutate",
+                new Expected[] {
+                    new Expected("MUTATED IL-VT local primitive field X (live read)", "8888"),
+                    new Expected("IL-VT local reference field S", "vt-field-B"),
+                },
+                /*thisExpect*/ new Expected("FieldInt", "7777"));
+
+            // ===== Cell 6: load-bearing gate -- assert LocalInfo is NOT the
             // HEAD refusal string ("not supported yet"). A green value cell above
             // already implies this (the expected values are absent from the refusal
             // string), but this cell makes the guard-vs-arm distinction explicit

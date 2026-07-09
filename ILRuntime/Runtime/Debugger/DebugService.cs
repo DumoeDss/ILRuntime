@@ -339,6 +339,13 @@ namespace ILRuntime.Runtime.Debugger
                 byte* frameBase = (byte*)topFrame.LocalVarPointer;
                 ref readonly var nf = ref m.CompiledFrame;
                 AutoList mStack = intepreter.Stack.ManagedStack;
+                // frameRefBase = this frame's reference-region base (absolute mStack
+                // index). An IL-VT local's reference sub-region sits at
+                // mStack[frameRefBase + slot.RefOffset + field.ReferenceOffset]
+                // (JITCompiler AllocateLocalStackSpaces:1716-1728 + Step-12 Move_Vt
+                // at ILIntepreter.Neo.cs:1332). Recovered from the StackFrame
+                // (ManagedStackBase = frameRefBase, ILIntepreter.Neo.cs:909).
+                int frameRefBase = topFrame.ManagedStackBase;
                 // LocalInfos layout (AllocateLocalStackSpaces, JITCompiler.cs:
                 // 1654): [0]=this (if HasThis), [1..p)=explicit params, [p..p+varCnt)
                 // = locals, where p = ParameterCount + (HasThis?1:0). m.ParameterCount
@@ -352,7 +359,7 @@ namespace ILRuntime.Runtime.Debugger
                         var lv = m.Definition.Body.Variables[i];
                         CLR.TypeSystem.IType lt = ResolveLocalType(m, lv, domain);
                         var slot = nf.LocalInfos[paramCnt + i];
-                        var v = ReadNeoLocalValue(frameBase, mStack, slot, lt, domain);
+                        var v = ReadNeoLocalValue(frameBase, mStack, frameRefBase, slot, lt, domain);
                         if (v == null)
                             v = "null";
                         string vName = null;
@@ -427,9 +434,12 @@ namespace ILRuntime.Runtime.Debugger
             return domain.GetType(vt, m.DeclearingType, m);
         }
 
-        // The per-shape frame-local value read. Returns the boxed value, or a
-        // placeholder string for an IL value-type local (SEQUENCE).
-        unsafe object ReadNeoLocalValue(byte* frameBase, AutoList mStack,
+        // The per-shape frame-local value read. Returns the boxed value, OR a
+        // reconstructed field-by-field string for an IL value-type local
+        // (neo-debugger-ilvt-local: the in-frame VT's fields walked off the split
+        // primitive + reference sub-regions -- the frame-local analogue of the F-4
+        // ILTypeInstance indexer's field walk, ILTypeInstance.cs:421-444).
+        unsafe object ReadNeoLocalValue(byte* frameBase, AutoList mStack, int frameRefBase,
             StackSlotInfo slot, CLR.TypeSystem.IType localType, Runtime.Enviorment.AppDomain domain)
         {
             if (localType == null)
@@ -447,19 +457,105 @@ namespace ILRuntime.Runtime.Debugger
                 return (idx >= 0) ? mStack[idx] : null;
             }
             // value type
-            if (localType is CLR.TypeSystem.ILType)
+            if (localType is CLR.TypeSystem.ILType ilType)
             {
-                // IL value-type LOCAL spans BOTH a primitive sub-region AND a
-                // reference sub-region (JITCompiler.cs:1716-1728); the boxed
-                // instance is not recoverable without reconstruction. Emit a clear
-                // placeholder so the rest of the inspection stays correct. SEQUENCE
-                // (the frame-local analogue of F-4's IL-VT-FIELD reconstruction).
-                return "<IL value-type local: reconstruction deferred>";
+                // IL value-type LOCAL: reconstruct its fields. Under Neo an in-frame
+                // IL-VT spans BOTH a primitive sub-region (Size = il.TotalPrimitiveSize
+                // flat bytes at frameBase + slot.Offset) AND a reference sub-region
+                // (RefCount = il.TotalReferenceCount slots at
+                // mStack[frameRefBase + slot.RefOffset .. + RefCount)) -- the SAME split
+                // storage a HEAP ILTypeInstance uses (byte[] Primitives + AutoList
+                // ManagedObjects), only the region bases differ. So a field F at ILType
+                // index i lives at:
+                //   primitive: frameBase + slot.Offset + off.PrimitiveOffset
+                //   reference: mStack[frameRefBase + slot.RefOffset + off.ReferenceOffset]
+                // where off = ilType.GetFieldOffset(i) (the SAME offsets a heap
+                // instance's F-4 read uses -- ILType.cs:2657-2665). The per-field
+                // value-read mirrors the F-4 indexer branches
+                // (ILTypeInstance.cs:425-443) + the ReadNeoFramePrimitive helper above,
+                // only the byte*/mStack bases are frame-relative instead of instance-
+                // relative. Confirmed by Move_Vt (ILIntepreter.Neo.cs:1330-1334): a VT
+                // ref field at relative index r lives at mStack[frameRefBase + vtRefBase + r].
+                return ReadNeoIlVtLocalFields(frameBase, mStack, frameRefBase, slot, ilType, domain);
             }
             // CLR value type (F-MAJ-1 flat managed bytes) -> ReadNeoValueType boxes it.
             // The cursor is advanced by slot.Size (byte-consistent with the allocator).
             int cursor = 0;
             return Runtime.Intepreter.ILIntepreter.ReadNeoValueType(localType.TypeForCLR, frameBase + slot.Offset, ref cursor, slot.Size);
+        }
+
+        // Walk an IL value-type LOCAL's fields off the in-frame split storage and
+        // render "{ Type Name = Value, ... }". Mirrors the F-4 indexer's per-shape
+        // field dispatch (ILTypeInstance.cs:421-444) but with frame-relative bases.
+        // A nested IL-VT field recurses ONE level (cheap, bounded by the field set);
+        // a deeper nest falls back to a placeholder + note. A field read that throws
+        // is swallowed (the field renders "<unreadable>") so one bad field does not
+        // abort the whole struct -- mirrors the per-iteration resilience of the
+        // caller's loop (DebugService.cs:368-372) and GetThisInfo (DebugService.cs:259).
+        unsafe string ReadNeoIlVtLocalFields(byte* frameBase, AutoList mStack, int frameRefBase,
+            StackSlotInfo slot, CLR.TypeSystem.ILType ilType, Runtime.Enviorment.AppDomain domain)
+        {
+            byte* vtPrimBase = frameBase + slot.Offset;
+            int vtRefBase = frameRefBase + slot.RefOffset;
+            int fieldCount = ilType.TotalFieldCount;
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            sb.Append("{ ");
+            for (int i = 0; i < fieldCount; i++)
+            {
+                try
+                {
+                    var off = ilType.GetFieldOffset(i);
+                    var ft = ilType.GetField(i, out ILRuntime.Mono.Cecil.FieldDefinition fd);
+                    string fName = fd != null ? fd.Name : ("f" + i);
+                    object fv;
+                    if (ft.IsPrimitive)
+                    {
+                        fv = ReadNeoFramePrimitive(vtPrimBase + off.PrimitiveOffset, ft, domain);
+                    }
+                    else if (ft.IsValueType && ft is CLR.TypeSystem.ILType nestedIl)
+                    {
+                        // Nested IL-VT field: recurse ONE level by synthesizing a
+                        // sub-slot at the nested VT's primitive/ref bases (the nested
+                        // field's split storage lives at the parent's field offset).
+                        // Deeper nesting falls back to a placeholder + note.
+                        StackSlotInfo nestedSlot = new StackSlotInfo
+                        {
+                            Offset = (int)(slot.Offset + off.PrimitiveOffset),
+                            Size = nestedIl.TotalPrimitiveSize,
+                            RefOffset = slot.RefOffset + off.ReferenceOffset,
+                            RefCount = nestedIl.TotalReferenceCount
+                        };
+                        fv = ReadNeoIlVtLocalFields(frameBase, mStack, frameRefBase, nestedSlot, nestedIl, domain, depth: 1);
+                    }
+                    else
+                    {
+                        // Reference / enum (boxed) / CLR-struct (F-10 boxed) field.
+                        // The reference sub-region slot at the field's ReferenceOffset.
+                        int rIdx = vtRefBase + off.ReferenceOffset;
+                        fv = (rIdx >= 0 && rIdx < mStack.Count) ? mStack[rIdx] : null;
+                    }
+                    if (fv == null) fv = "null";
+                    sb.AppendFormat("{0} {1} = {2}", ft.Name, fName, fv);
+                }
+                catch (Exception)
+                {
+                    sb.AppendFormat("<unreadable f{0}>", i);
+                }
+                if (i < fieldCount - 1)
+                    sb.Append(", ");
+            }
+            sb.Append(" }");
+            return sb.ToString();
+        }
+
+        // Depth-limited overload for nested IL-VT fields. One level of recursion is
+        // rendered; deeper nesting renders a placeholder + note (cheap, bounded).
+        unsafe string ReadNeoIlVtLocalFields(byte* frameBase, AutoList mStack, int frameRefBase,
+            StackSlotInfo slot, CLR.TypeSystem.ILType ilType, Runtime.Enviorment.AppDomain domain, int depth)
+        {
+            if (depth > 1)
+                return "{ ... (nested IL value type: too deep to expand) }";
+            return ReadNeoIlVtLocalFields(frameBase, mStack, frameRefBase, slot, ilType, domain);
         }
 
         // The frame-local analogue of F-4's ReadNeoPrimitive (ILTypeInstance.cs:547-579),

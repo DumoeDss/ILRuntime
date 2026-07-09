@@ -27,6 +27,17 @@ namespace TestCases
     // NON-GENERIC + NON-NESTED + top-level: keeps the TypeRef full name == the
     // LoadedTypes key and avoids generic-param resolution noise in the inspector.
 
+    // neo-debugger-ilvt-local probe: an IL value type (struct) with a primitive
+    // field + a reference field. An in-frame local of this type spans BOTH the
+    // frame's primitive sub-region (the `int x` bytes) AND the reference sub-
+    // region (the `string s` slot) -- the shape neo-debugger-neo-frame left as a
+    // placeholder for this child to reconstruct.
+    public struct VtLocal
+    {
+        public int X;
+        public string S;
+    }
+
     public class NeoDebuggerFrameProbe
     {
         // IL-declared instance fields (exercised by GetThisInfo via the F-4
@@ -65,6 +76,31 @@ namespace TestCases
             long big = 0x123456789ABCDEF0L;
             string tag = "wide-probe-C";
             throw new Exception("ProbeMixedWidths fired");
+        }
+
+        // (d) IL-value-type LOCAL. `VtLocal vt` is an in-frame IL struct spanning
+        //     the primitive sub-region (X = VT_X = 4242) + the reference sub-
+        //     region (S = VT_S = "vt-field-A"). The debugger reconstructs the
+        //     struct's fields from the split storage. Throw unhandled so the
+        //     ILRuntimeException ctor inspects THIS frame.
+        public int ProbeVtLocal()
+        {
+            VtLocal vt;
+            vt.X = 4242;
+            vt.S = "vt-field-A";
+            throw new Exception("ProbeVtLocal fired");
+        }
+
+        // (e) ADVERSARIAL IL-value-type local: assign then MUTATE the struct's
+        //     primitive field, proving the reconstruction reads the LIVE frame
+        //     bytes (the MUTATED value), not a stale/default.
+        public int ProbeVtLocalMutate()
+        {
+            VtLocal vt;
+            vt.X = 1111;
+            vt.X = 8888;            // MUTATE -> the value reconstruction must see
+            vt.S = "vt-field-B";
+            throw new Exception("ProbeVtLocalMutate fired");
         }
     }
 }
