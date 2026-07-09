@@ -770,6 +770,36 @@ namespace ILRuntime.Runtime.Enviorment
                 catch (Exception ex) { report.Skipped.Add(("FinalizeFromNeoRecord threw: " + ex.GetType().Name, t.FullName)); }
             }
 
+            // ===== Step 25 neo-aot-multi-hotfix: cross-assembly IL-to-IL re-resolve.
+            // This is a SUBSEQUENT .neo load (a second "hotfix assembly") OR the
+            // first. Track every Cecil-free ILType built so far (this model's
+            // survivors + any from prior LoadNeoAssembly calls). Then re-resolve
+            // cross-assembly refs on ALL of them: a type built in an EARLIER load
+            // whose field/base/interface referenced a type in THIS load had those
+            // refs resolve to NULL at build time (the referenced type was absent
+            // from mapType). Now that THIS load's types are registered, those NULL
+            // slots can be re-resolved by NAME. Best-effort + idempotent (a slot
+            // that is still unresolvable stays null). =====
+            if (neoAotBuilt == null) neoAotBuilt = new List<(ILType, NeoAOT.NeoTypeDefRecord, NeoAOT.NeoAssemblyModel)>();
+            // add this model's survivors to the tracked set FIRST (so a self-
+            // contained .neo also benefits if it was loaded into an AppDomain that
+            // already had a prior load; the re-resolve is idempotent on already-
+            // resolved slots).
+            for (int i = 0; i < model.TypeDefs.Length; i++)
+            {
+                var t = built[i];
+                if (t == null) continue;
+                neoAotBuilt.Add((t, model.TypeDefs[i], model));
+            }
+            // re-resolve cross-assembly refs on every tracked Cecil-free type now
+            // that THIS load's types are in mapType. A type whose refs are all
+            // already resolved is a fast no-op (the per-slot null guards).
+            foreach (var entry in neoAotBuilt)
+            {
+                try { entry.type.ReResolveCrossAssemblyRefs(entry.model, entry.rec); }
+                catch (Exception ex) { report.Skipped.Add(("ReResolveCrossAssemblyRefs threw: " + ex.GetType().Name + ": " + ex.Message, entry.type.FullName)); }
+            }
+
             // (3) APPROACH 1 hash re-registration. For each recorded binding,
             // re-resolve the ref by NAME + rebind under the RECORDED compile-time
             // hash (an ALIAS key alongside the fresh hash). This makes the baked
@@ -850,6 +880,13 @@ namespace ILRuntime.Runtime.Enviorment
             doubleType = GetType("System.Double");
             objectType = GetType("System.Object");
         }
+
+        // Step 25 neo-aot-multi-hotfix: the Cecil-free ILTypes built by
+        // LoadNeoAssembly, each paired with its originating .neo record + model,
+        // so a SUBSEQUENT LoadNeoAssembly (a second "hotfix assembly") can
+        // re-resolve cross-assembly IL-to-IL refs on the EARLIER-built types now
+        // that the newly-loaded types are in mapType. Neo-only. Lazily allocated.
+        List<(ILType type, NeoAOT.NeoTypeDefRecord rec, NeoAOT.NeoAssemblyModel model)> neoAotBuilt;
 #endif
 
 

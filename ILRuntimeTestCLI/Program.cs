@@ -356,6 +356,33 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 25 neo-aot-multi-hotfix capstone (child 10): the Cecil-free load
+            // of a MULTI-hotfix-assembly setup. An IL type in "AssemblyA" references
+            // a TYPE in "AssemblyB" (field/param/call/isinst/castclass). Partitioned
+            // into TWO .neo models, Cecil-free-loaded into a FRESH AppDomain in BOTH
+            // orders (A-first gap-exposing + B-first). Exercises cross-assembly IL-
+            // to-IL type refs. + a body-mutation guard.
+            if (nameFilter == "NeoStep25CecilFreeMultiHotfix")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25CecilFreeMultiHotfixCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 multi-hotfix Cecil-free: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25CecilFreeMultiHotfix threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // Step 25 cross-process capstone (neo-aot-crossprocess, child 9):
             // the P1 orchestrator. Compiles a .neo in THIS process -> persists to
             // disk -> SPAWNS A SECOND `dotnet exec ILRuntimeTestCLI.dll ...

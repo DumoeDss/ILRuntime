@@ -1658,6 +1658,104 @@ namespace ILRuntime.CLR.TypeSystem
             }
             lst.Add(shell);
         }
+
+        /// <summary>
+        /// Step 25 neo-aot-multi-hotfix: re-resolve cross-assembly IL-to-IL refs
+        /// on a Cecil-free type AFTER more .neo assemblies have been loaded.
+        /// When THIS type was built (CreateFromNeoRecord) + finalized
+        /// (FinalizeFromNeoRecord), a referenced type that lives in ANOTHER .neo
+        /// (not yet loaded) was absent from mapType -> its field type / base type
+        /// / interface resolved to NULL. After a subsequent LoadNeoAssembly brings
+        /// that type into mapType, this method re-resolves those NULL slots by
+        /// NAME (mirroring ResolveNamedIType). Idempotent + best-effort: a slot
+        /// that is already non-null (resolved at build, or already re-resolved) is
+        /// left untouched; one that is STILL unresolvable stays null (the additive
+        /// contract). Neo-only; a no-op on a non-AOT type. The field-name -> type-
+        /// name map is re-read from the .neo record (the record is the source of
+        /// truth for a Cecil-free type, whose fieldReferences[] are null).
+        /// </summary>
+        internal void ReResolveCrossAssemblyRefs(
+            ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model,
+            ILRuntime.Runtime.NeoAOT.NeoTypeDefRecord rec)
+        {
+            if (!isNeoAotType) return;
+            if (model == null) return;
+
+            // (a) instance field types: re-resolve any still-null fieldTypes[]
+            // slot from its FieldRef's recorded type name.
+            if (fieldTypes != null && rec.Fields != null)
+            {
+                for (int i = 0; i < fieldTypes.Length && i < rec.Fields.Length; i++)
+                {
+                    if (fieldTypes[i] != null) continue;
+                    var f = rec.Fields[i];
+                    var ft = ResolveNamedIType(appdomain, FieldType(model, f.FieldRefIdx));
+                    if (ft != null)
+                    {
+                        fieldTypes[i] = ft;
+                        // re-derive the per-field alignment contribution (max).
+                        int sz = NaturalSizeOfFieldType(appdomain, ft);
+                        if (sz > naturalAlignment) naturalAlignment = sz;
+                    }
+                }
+            }
+            // (b) static field types: same re-resolution.
+            if (staticFieldTypes != null && rec.StaticFields != null)
+            {
+                for (int i = 0; i < staticFieldTypes.Length && i < rec.StaticFields.Length; i++)
+                {
+                    if (staticFieldTypes[i] != null) continue;
+                    var f = rec.StaticFields[i];
+                    staticFieldTypes[i] = ResolveNamedIType(appdomain, FieldType(model, f.FieldRefIdx));
+                }
+            }
+            // (c) baseType: if it is still null but a BaseTypeRefIdx is recorded,
+            // re-resolve by name + run the clrbase-iface adaptor install (mirrors
+            // FinalizeFromNeoRecord). fieldStartIdx / totalFieldCnt / firstCLRBase
+            // are recomputed so inherited-field indexing + the CLR-base chain are
+            // correct now that the base ILType exists.
+            if (baseType == null && rec.BaseTypeRefIdx >= 0 && rec.BaseTypeRefIdx < model.TypeRefs.Length)
+            {
+                var bt = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(appdomain, model, rec.BaseTypeRefIdx);
+                if (bt is CLRType clrBase)
+                {
+                    var clr = clrBase.TypeForCLR;
+                    if (clr != typeof(object) && clr != typeof(System.Enum) && clr != typeof(Enum)
+                        && clr != typeof(ValueType) && clr != typeof(MulticastDelegate))
+                    {
+                        CrossBindingAdaptor adaptor;
+                        if (appdomain.CrossBindingAdaptors.TryGetValue(clr, out adaptor)) bt = adaptor;
+                        else throw new TypeLoadException("Cannot find Adaptor for:" + clr);
+                    }
+                }
+                if (bt != null)
+                {
+                    baseType = bt;
+                    fieldStartIdx = (baseType is ILType bIL) ? bIL.TotalFieldCount : 0;
+                    totalFieldCnt = fieldStartIdx + (fieldTypes != null ? fieldTypes.Length : 0);
+                    firstCLRBaseType = ResolveFirstCLRBase(baseType);
+                }
+            }
+            // (d) interfaces: re-resolve any still-null interface slot + run the
+            // clrbase-iface adaptor install. Re-derives firstCLRInterface.
+            if (interfaces != null && rec.Interfaces != null)
+            {
+                bool anyResolved = false;
+                for (int i = 0; i < interfaces.Length && i < rec.Interfaces.Length; i++)
+                {
+                    if (interfaces[i] != null) continue;
+                    var it = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(appdomain, model, rec.Interfaces[i].InterfaceTypeRefIdx);
+                    if (it is CLRType clrIface)
+                    {
+                        CrossBindingAdaptor adaptor;
+                        if (appdomain.CrossBindingAdaptors.TryGetValue(clrIface.TypeForCLR, out adaptor)) it = adaptor;
+                        else throw new TypeLoadException("Cannot find Adaptor for:" + clrIface.TypeForCLR);
+                    }
+                    if (it != null) { interfaces[i] = it; anyResolved = true; }
+                }
+                if (anyResolved) firstCLRInterface = ResolveFirstCLRInterface(interfaces, baseType);
+            }
+        }
 #endif
 
         /// <summary>
