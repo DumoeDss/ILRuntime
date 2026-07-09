@@ -1,9 +1,11 @@
-# Handoff: neo-completion-portfolio — LEAD #3 (TRUE-COMPLETION PORTFOLIO DONE)
+# Handoff: neo-completion-portfolio — LEAD #3 (common-case shipped; harder variants = next session)
 
-> This session drove the **completion-2 wave**: every open functional gap in the Neo
-> overhaul was driven to TRUE COMPLETION (real + usable, not partial-ship), per the
-> user's "don't stop until all complete; tasks may be deferred but not left undone"
-> mandate. The portfolio is COMPLETE: `runnableFrontier` empty, 43 children archived.
+> This session drove the **completion-2 wave**: the COMMON case of every open functional
+> gap in the Neo overhaul was driven to real+usable completion. **Honest caveat:** the
+> harder variants of each feature were written off as "Non-Goals / deferred" — that
+> framing over-claimed "TRUE-COMPLETION". They are NOT done. Next session must drive them
+> to FULL completion (no more deferral). The portfolio's `runnableFrontier` is empty
+> (43 children archived) but the Remaining list below is the real open work.
 > Authoritative state = `portfolio-run.json` + `.trae/documents/neo-handoff.md` +
 > `.trae/documents/neo-deferred-items.md` + the `openspec/specs/` capability specs.
 
@@ -40,56 +42,57 @@ NeoStep24CliRoundtrip 5/5, NeoOptHardening 24/24). Legacy-neutral throughout.
 
 ## What "complete" means here (honest)
 
-**Every FUNCTIONAL gap is closed** (real + usable):
-- Async/await: truly-async (single-await) WORKS end-to-end (suspend + resume + GetResult + SetResult).
+**The COMMON case of every feature shipped** (real + usable):
+- Async/await: truly-async **single-await** Task<T> WORKS end-to-end (suspend + resume + GetResult + SetResult). [multi-await + ExecutionContext + ValueTask/async-void + Task.Run(ilLambda) remain — see Remaining]
 - Reflection: read IL fields/types/methods off a Neo instance (the indexer + GetType + parametrized-Run).
-- AOT standalone: the `.neo` loader + CLI are robust (Cecil-free load into a fresh AppDomain; full-TestCases compile no-fatal; .cctor seeding; host CLR resolution).
-- Debugger: Neo frame variable inspection.
-- Byref: primitive + reference + delegate + direct-Call, all with write-back.
+- AOT standalone: the `.neo` loader + CLI are robust (Cecil-free load for **self-contained IL types**; full-TestCases compile no-fatal; .cctor seeding; host CLR resolution). [CLR-base/generic on the Cecil-free path remain]
+- Debugger: Neo frame variable inspection (**primitive + reference + CLR-struct locals + this/fields**). [IL-VT-local + AOT-body + CLI protocol remain]
+- Byref: primitive + reference + delegate-Invoke + direct-Call, all with write-back. [CLR->IL delegate-callback-with-byref + the Step-17 ldind_ref heap-ref remain]
 
-**The optimizations/edges closed HONESTLY** (not left undone):
-- D-PEEP: evidence-based optimization-deferral (0/1071 box;isinst pairs; the compiler never emits the pattern; the framework + encoding answers recorded for a future hot-path-driven revival).
-- F-9/F-2: non-reproducible on HEAD (JIT-body-disproven; the Q-STRUCT/Q-LONG pattern).
+**Genuinely closed (honest — not bugs / not reproducible):**
+- D-PEEP: the box;isinst fusion has ZERO payoff (0/1071 pairs across 3 real DLLs; the compiler never emits the pattern). Closed on evidence.
+- F-9/F-2: non-reproducible on HEAD (JIT-body-disproven).
 - F-11: not-a-bug (stale-but-correct JIT body; an optimization gap).
 - F-13: disproven (the ip/frame/pool are isolated; the recorded corruption was the Step-6 Run shim).
 
-## Remaining (the COMPLETE next-to-do list — designed-but-not-done Non-Goals + unreproducible)
+## Remaining — the COMPLETE task list for the next session (drive to FULL completion; NO deferral)
 
-Every item below is a **designed Non-Goal / sequenced follow-on** (recorded in the respective
-child's `design.md` + `neo-deferred-items.md`), NOT an unplanned gap. Each is independently
-shippable as a future child. (The COMMON case of each feature shipped; these are the deeper
-variants.) Categorized:
+**User directive: these are ALL to be completed next session. Do not write them off as
+"Non-Goals" or "deferred" — that framing over-claimed completion this round. Each is a real
+task; ship it to functional completion (the COMMON case shipped this round; these are the rest).**
+Drive them like the completion-2 children: dump-gate -> implement -> adversarial verify ->
+Legacy-neutral. Categorized:
 
-**Async (`neo-async-movenext-fix` Non-Goals):**
-- Multi-await suspend/resume (single-await WORKS; an SM with >=2 incomplete awaits double-suspends).
-- `AwaitOnCompleted` ExecutionContext / SynchronizationContext capture (the `AwaitOnCompleted_Neo` body mirrors `AwaitUnsafeOnCompleted` WITHOUT the capture).
+**Async (complete the truly-async machinery beyond single-await Task<T>):**
+- Multi-await suspend/resume (an SM with >=2 incomplete awaits double-suspends -- the state-machine state/awaiter-slot issue).
+- `AwaitOnCompleted` ExecutionContext / SynchronizationContext capture (`AwaitOnCompleted_Neo` currently mirrors `AwaitUnsafeOnCompleted` without the capture).
 - `ValueTask<T>` suspend path + `async void` suspend path.
 - IL-delegate-through-CLR-method round-trip (`Task.Run(ilLambda)`).
-- A real zero-alloc `ValueTask<T>` (the suspend path may allocate a `Task<T>`/TCS bridge).
+- (perf) zero-alloc `ValueTask<T>` (the suspend path may allocate a `Task<T>`/TCS bridge).
 
-**AOT / S3-2 Cecil-free (`neo-step25-s3-cecil-free-load` + `neo-step25-s3-clr-registration` Non-Goals):**
-- CLR base/interface resolution on the Cecil-free path (a Cecil-free type whose base/interface is a CLR type needing a CrossBindingAdaptor -- the capstone's base/interface are IL types in the same `.neo`; needs the NEO-AOT-ADAPTOR-SKIP pattern inverted to RESOLVE, not skip).
-- Generic-method/type instances on the Cecil-free path (S2 T-identity-token re-resolution + cross-AppDomain generic-instance re-resolution; the capstone is non-generic).
-- Cross-PROCESS load (P1-built `.neo` in P2; APPROACH-1 hashes are already process-independent, but cross-process wasn't exercised).
+**AOT / S3-2 Cecil-free (complete the standalone-AOT coverage):**
+- CLR base/interface resolution on the Cecil-free path (a Cecil-free type whose base/interface is a CLR type needing a CrossBindingAdaptor).
+- Generic-method/type instances on the Cecil-free path (S2 T-identity-token re-resolution + cross-AppDomain generic-instance).
+- Cross-PROCESS load (P1-built `.neo` in P2; APPROACH-1 hashes are already process-independent).
 - Multi-hotfix-assembly cross-references (one IL hotfix referencing another IL hotfix's types).
 
-**Debugger (`neo-debugger-neo-frame` sequenced):**
-- IL-value-type-LOCAL reconstruction (the placeholder string -> the struct's fields; the frame-local analogue of F-4's IL-VT-FIELD reconstruction).
-- AOT-body variable inspection (`registerSymbols` null on AOT, `ILMethod.cs:997-998` -> serialize var metadata into `.neo`).
-- CLI debugger-protocol capstone (the VSCode DAP frontend `Debugging/VSCode/` + the ~6 protocol/frontend methods `AddStackFrameInfoVariables`/`ResolveCurrentFrameBasePointer`/`DumpStack`/`GetValueExpandable`/`VisitValueTypeReference`/`GetStackObjectText`; the host-side self-check is the binding gate that shipped).
+**Debugger (complete the variable-inspection surface):**
+- IL-value-type-LOCAL reconstruction (the placeholder string -> the struct's fields).
+- AOT-body variable inspection (`registerSymbols` null on AOT -> serialize var metadata into `.neo`).
+- CLI debugger-protocol capstone (the VSCode DAP frontend `Debugging/VS2022/` + the ~6 protocol/frontend methods).
 
-**Byref (`neo-f7-delegate-byref` Non-Goals):**
-- CLR->IL delegate callback with a byref param (`List.ForEach(ilActionWithRefParam)`) -- the REVERSE direction of F-7 (a CLR method invoking an IL delegate that takes a byref; F-7 shipped the IL->IL delegate-Invoke direction).
-- The Step-17 `ldind_ref` heap-IL-ref-field deferral (`ILIntepreter.Neo.cs:3862`) -- a heap IL-instance reference field read through a byref (distinct from the mStack-referent case that works).
-- AOT (`ilrt_neoc`) wire-up of the F-7 byref map (the JIT-only path is in scope; the AOT serialization of the byref param map).
+**Byref (complete the byref coverage):**
+- CLR->IL delegate callback with a byref param (`List.ForEach(ilActionWithRefParam)`) -- the reverse direction of F-7.
+- The Step-17 `ldind_ref` heap-IL-ref-field read (`ILIntepreter.Neo.cs:3862`).
+- AOT (`ilrt_neoc`) wire-up of the F-7 byref map.
 
-**Unreproducible (need a reproducer; may already be fixed by intervening work):**
-- Q-STRUCT (struct-local + field-mutation + element-read temp-renumber; not reproducible on HEAD).
-- Q-LONG (long default-zero compare / conv.i8 quirk; not reproducible on HEAD).
+**Need a reproducer first (construct one on current HEAD; if it reproduces -> fix; if not ->
+confirmed-closed, NOT deferred):**
+- Q-STRUCT (struct-local + field-mutation + element-read temp-renumber).
+- Q-LONG (long default-zero compare / conv.i8 quirk).
 
-**NOTE (doc consistency):** the 5 master-table rows that were stale after the completion-2 wave
-(F-2 / F-9 / F-11 / D-PEEP / F-7B-SIB) have been corrected to their actual 2026-07-09 completed
-state in `neo-deferred-items.md`.
+**NOTE (doc consistency, already done):** the 5 master-table rows stale after the completion-2 wave
+(F-2 / F-9 / F-11 / D-PEEP / F-7B-SIB) were corrected to their actual 2026-07-09 completed state.
 
 ## Key decisions + lessons (reaffirmed across the wave)
 
@@ -116,8 +119,12 @@ dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- \
 **State files:** `portfolio-run.json` (frontier EMPTY; 43 completedChildren), `.trae/documents/neo-handoff.md`,
 `.trae/documents/neo-deferred-items.md` (the deferred tail), `openspec/specs/` (10 capability specs incl. the new neo-debugger).
 
-## Next action
+## Next action — next session drives the Remaining list to FULL completion (no deferral)
 
-The TRUE-COMPLETION portfolio is DONE. If a future session resumes, the open work is the
-**deferred tail** above (the deepest items: async multi-await suspend; S3-2 CLR-base/generic
-on the Cecil-free path). Each is independently shippable. Pick from `neo-deferred-items.md`.
+The completion-2 wave shipped the COMMON case of every feature; it over-claimed "TRUE-COMPLETION"
+by writing the harder variants off as "Non-Goals". **Next session's job is to finish them all** —
+the complete task list above. Treat each as a real must-do child: dump-gate -> implement ->
+adversarial verify -> Legacy-neutral. Do NOT re-introduce the "Non-Goals / deferred" escape hatch
+(that framing is what left this tail). Pick the highest-value first (async multi-await; S3-2
+Cecil-free CLR-base/generic) and drive to functional completion. The only legitimate "close" is a
+reproducer that proves it's not a bug (the Q-* pattern) — anything else gets DONE.
