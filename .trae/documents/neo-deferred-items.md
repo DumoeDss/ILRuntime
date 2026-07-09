@@ -1191,6 +1191,32 @@ resume child (it must land BEFORE the tagged-NIE body is reachable). See
 `openspec/changes/neo-generic-redirect-resolution/{design.md, planning-context.md,
 handoff/implementer-1.md}`.
 
+**UPDATE 2026-07-09 (neo-async-multi-await landed — multi-await RESOLVED):** the
+multi-await gap (a state machine with >= 2 `await` expressions) is CLOSED. The
+prior art `neo-async-movenext-fix` (single-await truly-async) installed Finding
+B's tagged NIE for ">1 hoisted Task field" and routed multi-await here. This child
+shipped the `<>u__1` awaiter-field disambiguation:
+- `GetAwaitedTaskFromSm` is now AWAITER-FIRST (scans `ManagedObjects` for the
+  reused `<>u__1` awaiter field whose `GetAwaiterTask` yields the active Task;
+  highest-index non-null wins). Unambiguous for any number of awaits. The
+  single-Task scan is now a FALLBACK; Finding B's tagged NIE is NARROWED to "no
+  resolvable awaiter AND >1 Task field" only (the common multi-await shape
+  resolves via the awaiter and does NOT throw).
+- A load-bearing DEVIATION from the design's D5 was found + fixed at apply:
+  `SuspendStateMachine` constructed a FRESH `ILAsyncContext<T>` per suspend,
+  orphaning the first suspend's bridge (the `tcs.Task` the driver/test observes).
+  A multi-await SM suspends N times but the driver observes ONE bridge -> the
+  context MUST be REUSED across suspends (`SmContextMap[sm]` reuse). Fixed.
+- D4: `NeoStep20_TC12_TwoIncompleteAwaits` (deterministic, TWO independent TCS
+  host cells `s_incompleteTcs2`/`GetIncompleteTask2`/`CompleteIncompleteTask2` in
+  `TestClass3.cs` -- a single shared TCS cannot back two simultaneous incomplete
+  awaits). UN-IGNORED and GREEN.
+**Gates:** NeoStep20 14/0/0 (13 + TC12); NeoStep 239/0/0 (238 + TC12, 0
+regressions); NeoOptHardening 24/0/0. Legacy-neutral (AsyncNeo.cs `#if
+ENABLE_NEO_MODE`-gated). Stash-toggle: TC12 FAILs on HEAD (tagged NIE faults the
+bridge), PASSes with the fix. The multi-await bullet moves to RESOLVED. See
+`openspec/changes/neo-async-multi-await/design.md` "Apply findings".
+
 ### Q-STRUCT — struct-local + field-mutation + element-read temp-renumber (Step 16 -> deferred)
 A struct local, followed by a field mutation, followed by an element read, was
 suspected to hit an optimizer temp-renumber quirk (BCP/copy-prop). **OPT-HARDEN

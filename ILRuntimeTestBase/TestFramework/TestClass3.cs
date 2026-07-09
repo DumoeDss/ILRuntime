@@ -223,6 +223,23 @@ namespace ILRuntimeTest.TestFramework
             current.SetResult(value);
         }
 
+        // neo-async-multi-await (TC12): a SECOND independent self-resetting
+        // TaskCompletionSource<int>. A single shared TCS cannot back TWO
+        // simultaneous incomplete awaits -- completing it swaps in a fresh one,
+        // so the SM's FIRST await operand goes stale (it pointed at the now-
+        // completed/old TCS.Task). TC12's multi-await SM awaits TWO genuinely-
+        // incomplete Tasks at TWO distinct await points, so each await needs its
+        // OWN independent incomplete Task. Byte-identical contract to the first
+        // pair (self-resetting atomic swap -> deterministic across test order).
+        private static TaskCompletionSource<int> s_incompleteTcs2 = new TaskCompletionSource<int>();
+        public static Task<int> GetIncompleteTask2() { return s_incompleteTcs2.Task; }
+        public static void CompleteIncompleteTask2(int value)
+        {
+            TaskCompletionSource<int> current = System.Threading.Interlocked.Exchange(
+                ref s_incompleteTcs2, new TaskCompletionSource<int>());
+            current.SetResult(value);
+        }
+
         // B1 verdict inspectors. Returns 1 iff `ex` is the tagged Neo async-
         // suspend NIE (outcome 3: the 2-generic-arg redirect resolved on
         // RedirectMapNeo and dispatched to the tagged deferral).

@@ -528,20 +528,43 @@ namespace ILRuntime.Runtime.Enviorment
             // method.DeclearingType is AsyncTaskMethodBuilder<T> / AsyncValueTaskMethodBuilder<T>.
             Type resultType = GetResultClrType(method);
             if (resultType == null) resultType = typeof(object);
-
-            // Build ILAsyncContext<T> (T is runtime-determined -> reflect the ctor).
-            ILMethod moveNext = GetMoveNext(sm.Type);
-            if (moveNext == null)
-                throw new InvalidOperationException("Neo async suspend: state machine has no MoveNext: " + sm.Type.FullName);
             Type ctxType = typeof(ILAsyncContext<>).MakeGenericType(resultType);
-            object ctx = Activator.CreateInstance(ctxType,
-                BindingFlags.NonPublic | BindingFlags.Instance, null,
-                new object[] { sm, moveNext }, null);
-            IAsyncContextSink sink = (IAsyncContextSink)ctx;
 
-            // Park on SmContextMap so get_Task (which runs in the driver frame after
-            // Start returns) finds the suspended context and returns its Task<T> bridge.
-            SmContextMap[sm] = sink;
+            // REUSE the existing context across suspends (neo-async-multi-await).
+            // A multi-await SM suspends N times (once per genuinely-incomplete await),
+            // and the driver / get_Task observes the FIRST suspend's context bridge
+            // (the TaskCompletionSource<T> the test polls). The bridge lives ON the
+            // context, so each suspend MUST register its continuation on the SAME
+            // context -- a fresh context per suspend orphans the prior bridge (the
+            // test's t never completes) and a resumed SetResult routes to the wrong
+            // (orphaned) bridge. SmContextMap[sm] is the context parked at the PRIOR
+            // suspend (get_Task already returned its bridge); reuse it. Its
+            // stateMachine + moveNextMethod are identical (same SM) and its tcs bridge
+            // is the one the driver observes. The sink is unboxed from
+            // SmContextMap[sm] WITHOUT reflection (the map is typed IAsyncContextSink);
+            // the ctxType reflection is only for the delegate bind on the FIRST suspend.
+            IAsyncContextSink sink;
+            if (SmContextMap.TryGetValue(sm, out sink) && sink != null)
+            {
+                // Reuse the prior context (its tcs bridge is the one the driver holds).
+                // Re-bind the resume delegate onto the existing instance (cheap;
+                // avoids a per-SM-ctor cache; the Action is consumed once per suspend).
+            }
+            else
+            {
+                ILMethod moveNext = GetMoveNext(sm.Type);
+                if (moveNext == null)
+                    throw new InvalidOperationException("Neo async suspend: state machine has no MoveNext: " + sm.Type.FullName);
+                object ctx = Activator.CreateInstance(ctxType,
+                    BindingFlags.NonPublic | BindingFlags.Instance, null,
+                    new object[] { sm, moveNext }, null);
+                sink = (IAsyncContextSink)ctx;
+                // Park on SmContextMap so get_Task (which runs in the driver frame
+                // after Start returns) finds the suspended context and returns its
+                // Task<T> bridge. Subsequent suspends REUSE this entry.
+                SmContextMap[sm] = sink;
+            }
+            object ctxInstance = sink;
 
             // Register the continuation on the awaited Task. The resume fires on the
             // thread that completes the task. If the task raced to completion between
@@ -551,55 +574,84 @@ namespace ILRuntime.Runtime.Enviorment
             // (typed Task); its (non-generic) GetAwaiter's UnsafeOnCompleted is the
             // standard await hook (TaskAwaiter implements ICriticalNotifyCompletion).
             MethodInfo resumeMi = ctxType.GetMethod("MoveNextInternal", BindingFlags.Instance | BindingFlags.NonPublic);
-            Action resumeAction = (Action)Delegate.CreateDelegate(typeof(Action), ctx, resumeMi);
+            Action resumeAction = (Action)Delegate.CreateDelegate(typeof(Action), ctxInstance, resumeMi);
             task.GetAwaiter().UnsafeOnCompleted(resumeAction);
             // Return WITHOUT SetResult/SetException -- the SM is suspended.
         }
 
-        // Recover the awaited Task from the SM's heap fields. The awaited Task is
-        // either hoisted directly onto the SM (a Task/Task<T> reference field --
-        // Roslyn hoists the await operand when it outlives the GetAwaiter call) OR
-        // carried inside the <>u__1 awaiter's m_task field. Prefer a DIRECT Task
-        // reference (robust to the SM field layout / count, which varies with the
-        // number of hoisted locals); fall back to reading the awaiter's m_task.
+        // Recover the awaited Task from the SM's heap fields.
         //
-        // SINGLE-TASK SHAPE ONLY (review fixer Finding B): when the SM hoists MORE
-        // THAN ONE Task reference field, the currently-awaited Task CANNOT be
-        // disambiguated -- ManagedObjects is FIELD-DECLARATION order, NOT assignment
-        // order, so the reverse-scan "highest-index wins" heuristic is silent-wrong
-        // (it would register the continuation on the wrong Task + read the wrong
-        // GetResult at resume). A recovery-miss MUST fail the SAME way across all
-        // shapes (the stobj-refloop M1 lesson: loud NIE, never silent-skip). So an
-        // AMBIGUOUS scan (directTaskCount > 1) throws a TAGGED NIE that routes the
-        // multi-Task case to the deferred multi-await follow-up. The single-Task
-        // shape (TC8 / explicit-local single await) keeps working -- the common case.
+        // AWAITER-FIRST (neo-async-multi-await, design D1): the PRIMARY source is
+        // the compiler-generated awaiter FIELD. Roslyn REUSES a single <>u__1
+        // awaiter field for awaits of the same awaiter type, OVERWRITING it with
+        // the CURRENT awaiter before each AwaitUnsafeOnCompleted call (for awaits
+        // of DIFFERENT awaiter types Roslyn generates <>u__2, <>u__3, ..., but
+        // ONLY the active one is non-default at suspend time -- a default
+        // TaskAwaiter has m_task == null and is skipped). So the awaiter field
+        // ALWAYS holds the active awaiter at suspend -> its m_task is the active
+        // Task, UNAMBIGUOUS regardless of how many Task operand fields the SM
+        // hoists. The scan prefers the HIGHEST-index non-null awaiter (the most-
+        // recently-written field = the active one; consistent with Roslyn's
+        // overwrite-before-suspend, and robust to a stale non-null <>u__2 from a
+        // prior await of a different type -- OQ1 mitigation).
+        //
+        // FALLBACK (single-Task shape, the TC8 / explicit-local case): if NO
+        // awaiter yielded a Task (the awaiter was not hoisted as a boxed object --
+        // e.g. it lived only in a frame local and the SM hoisted just the Task
+        // operand), scan for a directly-hoisted Task. EXACTLY ONE -> return it
+        // (the common single-await shape). MORE THAN ONE -> the scan is genuinely
+        // ambiguous (no awaiter disambiguator AND >1 Task field) -> throw the
+        // NARROWED tagged NIE (design D3; review fixer Finding B's fail-loud,
+        // narrowed from "fires for >1 Task field" to "fires only when no awaiter
+        // resolves AND the scan is ambiguous"). The common multi-await shape
+        // (resolvable awaiter) does NOT reach this branch.
+        //
+        // LAST FALLBACK: the awaiter's m_task via a fresh scan (defensive; the
+        // awaiter-first pass already covered this, retained for shapes where the
+        // awaiter box appears but GetAwaiterTask returned a non-Task). Returns null
+        // if nothing resolves (SuspendStateMachine throws the InvalidOperationException).
         private static Task GetAwaitedTaskFromSm(ILTypeInstance sm)
         {
             var mo = sm.ManagedObjects;
             if (mo == null) return null;
-            // 1) A directly-hoisted Task reference (the common case for the await
-            //    operand). Count them: >1 is ambiguous -> fail loud. Exactly 1 ->
-            //    return it (the reverse scan remembers the single hit).
+            // 1) AWAITER-FIRST: scan ManagedObjects for a boxed awaiter whose
+            //    GetAwaiterTask yields a non-null Task. The awaiter field is the
+            //    active one (<>u__1 reused / overwritten before each suspend).
+            //    Highest-index non-null wins (most-recently-written = active).
+            Task awaiterTask = null;
+            for (int i = mo.Count - 1; i >= 0; i--)
+            {
+                Task t = GetAwaiterTask(mo[i]) as Task;
+                if (t != null)
+                {
+                    awaiterTask = t;
+                    break; // highest-index non-null awaiter task = active
+                }
+            }
+            if (awaiterTask != null) return awaiterTask;
+            // 2) SINGLE-TASK FALLBACK: no awaiter resolved. Scan for a directly-
+            //    hoisted Task. Exactly 1 -> return it; >1 -> ambiguous NIE (D3).
             Task directTask = null;
             int directTaskCount = 0;
             for (int i = mo.Count - 1; i >= 0; i--)
             {
                 if (mo[i] is Task direct)
                 {
-                    directTask = direct;
+                    if (directTask == null) directTask = direct;
                     directTaskCount++;
                 }
             }
             if (directTaskCount > 1)
             {
                 throw new NotImplementedException(
-                    "Neo async multi-Task awaiter not supported (single-Task shape only); " +
-                    "the currently-awaited Task cannot be disambiguated. " +
-                    "State machine hoists " + directTaskCount + " Task fields. " +
-                    "(neo-async-movenext-fix finding B -> deferred multi-await follow-up)");
+                    "Neo async multi-Task awaiter not supported (no resolvable awaiter and " +
+                    "an ambiguous multi-Task scan); the currently-awaited Task cannot be " +
+                    "disambiguated. State machine hoists " + directTaskCount + " Task fields " +
+                    "and no awaiter field (<>u__1) yielded a Task. " +
+                    "(neo-async-movenext-fix finding B, narrowed by neo-async-multi-await D3)");
             }
             if (directTask != null) return directTask;
-            // 2) The awaiter's m_task (<>u__1 boxed TaskAwaiter/TaskAwaiter<T>).
+            // 3) LAST FALLBACK: the awaiter m_task scan (defensive; covered by 1).
             for (int i = 0; i < mo.Count; i++)
             {
                 Task t = GetAwaiterTask(mo[i]) as Task;

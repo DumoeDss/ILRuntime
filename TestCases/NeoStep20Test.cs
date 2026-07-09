@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using ILRuntimeTest;
 using ILRuntimeTest.TestFramework;
 
 namespace TestCases
@@ -161,6 +162,29 @@ namespace TestCases
             Task<int> completed = Task.FromResult(42);
             int v = await completed;
             return v + 1;
+        }
+
+        // TC12 probe body: a MULTI-AWAIT state machine with TWO genuinely-
+        // incomplete awaits at TWO distinct await points (neo-async-multi-await).
+        // Awaits GetIncompleteTask() (Roslyn state 0 -> <>1__state = 0) then
+        // GetIncompleteTask2() (state 1 -> <>1__state = 1) -- TWO INDEPENDENT
+        // TaskCompletionSource-backed Tasks, so BOTH awaits are genuinely
+        // incomplete when the SM reaches them (a single shared TCS cannot back
+        // two simultaneous incomplete awaits -- completing it swaps in a fresh
+        // one, making the first operand stale). The SM hoists TWO Task<int>
+        // reference fields (<a>5__1, <b>5__1), so the OLD count-based
+        // GetAwaitedTaskFromSm scan was ambiguous (>1 Task field -> tagged NIE);
+        // the awaiter-first fix (D1) reads the SINGLE reused <>u__1 awaiter
+        // Roslyn overwrites before each AwaitUnsafeOnCompleted -> the active Task
+        // at EACH suspend. Returns va + vb so BOTH resumes are provably observed.
+        // PRIVATE (the harness must not auto-discover it; only TC12 calls it).
+        private static async Task<int> NeoStep20_TwoIncompleteAwaitsProbe()
+        {
+            Task<int> a = TestCLRBinding.GetIncompleteTask();
+            int va = await a;                                      // SUSPEND #1 (<>1__state = 0)
+            Task<int> b = TestCLRBinding.GetIncompleteTask2();
+            int vb = await b;                                      // SUSPEND #2 (<>1__state = 1)
+            return va + vb;
         }
 
         // ---- driver entry-points (parameterless public static = a test) ----
@@ -333,6 +357,83 @@ namespace TestCases
             // NOT the misrouted INNER result (6). Pre-fix, the nested sync's
             // SetResult completes the bridge with 6 first -> t.Result == 6 != n+50.
             if (t.Result != n + 50) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // TC12 (neo-async-multi-await): the BINDING success criterion -- a state
+        // machine with TWO genuinely-incomplete awaits (>= 2 await expressions)
+        // suspends -> resumes -> suspends AGAIN -> resumes -> SetResult, with the
+        // CORRECT Task awaited at EACH suspend (the <>u__1 awaiter-field
+        // disambiguation, design D1) and the CORRECT awaiter's GetResult read at
+        // EACH resume (design D2). On HEAD the OLD count-based scan in
+        // GetAwaitedTaskFromSm is ambiguous for >1 hoisted Task field and throws
+        // the tagged NIE ("multi-Task awaiter not supported ... State machine
+        // hoists 2 Task fields") during the FIRST suspend, which faults the bridge
+        // Task. Binding conjuncts:
+        //   * GATE 1 !t.IsCompleted -- await1 TRULY SUSPENDED (Start returned after
+        //     registering the continuation on task A; the bridge is incomplete).
+        //   * GATE 2 t.Result == va + vb -- BOTH resumes ran GetResult at the
+        //     CORRECT await point (resume #1 read task A's result va via await1's
+        //     awaiter; resume #2 read task B's result vb via await2's awaiter) and
+        //     the final SetResult(va + vb) routed to the bridge. A stale-awaiter
+        //     shadow, a wrong-Task continuation, or a single-resume short-circuit
+        //     makes this FAIL (the wrong sum or a hang).
+        // Stash-toggle: on HEAD (fix out) the tagged NIE faults the bridge at the
+        // first suspend -> t.IsFaulted OR the wrong/incomplete result; after the
+        // fix (D1) the SM suspends/resumes/resumes correctly. The probe is
+        // deterministic (TCS-backed, NO Task.Delay race). [Ignored] until the fix
+        // lands (a hanging/faulting test cannot live in the smoke); UN-IGNORED by
+        // the implementer once green.
+        [ILRuntimeTest(Ignored = false)]
+        public static void NeoStep20_TC12_TwoIncompleteAwaits()
+        {
+            int va = 31;
+            int vb = 17;
+            Task<int> t = NeoStep20_TwoIncompleteAwaitsProbe();
+
+            // GATE 1: await1 (task A) TRULY SUSPENDED. The bridge MUST be
+            // incomplete here (Start returned after registering the continuation
+            // on task A, before CompleteIncompleteTask). On HEAD the tagged NIE
+            // faults the bridge during this first suspend -> t.IsFaulted -> FAIL.
+            if (t.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+
+            // Drive completion of task A (await1's Task). The continuation fires
+            // -> resume #1: MoveNext reloads await1's awaiter from <>u__1 (state
+            // 0), calls GetResult -> va, then runs the second await -> task B is
+            // genuinely incomplete -> SUSPEND #2 (registers a continuation on
+            // task B; <>u__1 is now overwritten with await2's awaiter).
+            TestCLRBinding.CompleteIncompleteTask(va);
+
+            // Bounded spin-wait (NO real delay) for the resume to settle. A
+            // stuck/deadlocked resume #1 exhausts the budget and FAILs here.
+            bool resumed1 = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (t.IsCompleted || t.IsFaulted) { resumed1 = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed1) { int x = 1; int y = 0; int _ = x / y; }
+
+            // Drive completion of task B (await2's Task). The continuation fires
+            // -> resume #2: MoveNext reloads await2's awaiter from <>u__1 (state
+            // 1), calls GetResult -> vb, then SetResult(va + vb) -> the bridge.
+            TestCLRBinding.CompleteIncompleteTask2(vb);
+
+            // Bounded spin-wait for resume #2 + SetResult. A stuck/deadlocked
+            // resume #2 exhausts the budget and FAILs here (the >10s rule would
+            // otherwise kill it).
+            bool resumed2 = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (t.IsCompleted) { resumed2 = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed2) { int x = 1; int y = 0; int _ = x / y; }
+
+            // GATE 2: BOTH resumes ran GetResult at the CORRECT await point with
+            // the CORRECT awaiter. A wrong-Task continuation (resume #1 read task
+            // B, or resume #2 read a stale task A) gives the wrong sum.
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (t.Result != va + vb) { int x = 1; int y = 0; int _ = x / y; }
         }
     }
 }
