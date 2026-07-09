@@ -141,13 +141,20 @@ Derived steps all archived/done except their sequenced sub-children.
 - `portfolio-run.json` `runnableFrontier` still says `["neo-async-multi-await"]` (stale -- done).
 
 ## Durable findings (carry forward; record into `planning-context.md` if not already)
-- **SUBAGENT DOTNET LIMITATION (critical for orchestration):** spawned agents (Agent tool) CANNOT
-  run `dotnet` here (auto-mode permission layer denies it in every form). Subagents can READ/Grep/
-  Write but NOT build/run tests. So author!=verifier role isolation for review/verify must be done by
-  the LEAD in the main session, OR the lead authors + adversarially self-verifies with a stash-toggle
-  proof (which a code-reading review cannot fake -- child 3 used this). Do NOT spawn a reviewer/
-  implementer subagent expecting it to build/run. A read-only AUDIT subagent works fine (used for the
-  step-completion audit above).
+- **SUBAGENTS CAN RUN DOTNET (CORRECTED -- lead-5's earlier "limitation" was WRONG):** a fresh test
+  (lead-5, same session) confirmed subagents CAN run `dotnet build`/`dotnet run` (bare commands matching
+  the project allowlist `Bash(dotnet build *)` / `Bash(dotnet run *)` in `.claude/settings.local.json`)
+  AND `dotnet --version` -- all succeeded (build 0 errors, test passed). The original reviewer's "all
+  dotnet denied" was a COMMAND-FORM issue: it used COMPOUND commands (`dotnet build ... | grep`,
+  `cd ...; dotnet build`) where the NON-dotnet sub-commands (`grep`/`tail`/`cd`/`awk`) were NOT
+  allowlisted -> those sub-commands prompted -> denied in the non-interactive subagent. (Also possible:
+  the allowlist was not yet populated early in the session; it grew as the user approved main-session
+  dotnet runs.) IMPLICATION: author!=verifier role isolation IS achievable -- spawn a fresh reviewer
+  subagent that runs BARE `dotnet build`/`dotnet run` (allowlisted) and uses the dedicated Grep/Read
+  TOOLS (NOT bash `grep`/`tail`) for output filtering. To allow compound bash, add `Bash(grep *)`/
+  `Bash(tail *)`/etc. to `.claude/settings.local.json`. The stash-toggle self-verification (child 3)
+  remains a valid fallback. (This corrects the same claim in lead-5.md, which is left as-is per the
+  append-only handoff convention.)
 - **EC-flow / AsyncLocal-flow test lesson:** only valid if the continuation resumes on a thread whose
   EC is NOT the caller's. `TaskCompletionSource.SetResult` on the caller thread runs the await
   continuation SYNCHRONOUSLY on that thread (EC preserved -- masks the capture); `Task.Run` FLOWS the
