@@ -435,5 +435,80 @@ namespace TestCases
             if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
             if (t.Result != va + vb) { int x = 1; int y = 0; int _ = x / y; }
         }
+
+        // TC13 (neo-async-execctx-capture): drive a suspend/resume through a CUSTOM
+        // awaiter (ECProbeAwaiter -- INotifyCompletion, NOT ICriticalNotifyCompletion),
+        // which the C# compiler lowers to AwaitOnCompleted (the EC-capturing path),
+        // NOT AwaitUnsafeOnCompleted. This is the FIRST test to exercise the
+        // AwaitOnCompleted_Neo redirect at all (TaskAwaiter is ICritical, so a plain
+        // `await task` always takes AwaitUnsafeOnCompleted). Proves the custom-awaiter
+        // suspend machinery (GetAwaiterTask duck-types the awaiter's m_task) and the
+        // AwaitOnCompleted suspend/resume work end-to-end.
+        private static async Task<int> NeoStep20_ExecCtxSuspendProbe()
+        {
+            int v = await TestCLRBinding.GetECProbeAwaitable();
+            return v + 1;
+        }
+        public static void NeoStep20_TC13_ExecCtxCustomAwaiterSuspend()
+        {
+            Task<int> t = NeoStep20_ExecCtxSuspendProbe();
+            // GATE 1: the custom-awaiter await TRULY SUSPENDED (AwaitOnCompleted path).
+            if (t.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+            // Drive completion of the wrapped Task -> the continuation (registered on
+            // the underlying Task via GetAwaiterTask) fires -> resume -> GetResult.
+            TestCLRBinding.CompleteIncompleteTask(7);
+            bool resumed = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (t.IsCompleted) { resumed = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed) { int x = 1; int y = 0; int _ = x / y; }
+            // GATE 2: GetResult read the wrapped Task's result (7); probe returned 7+1.
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (t.Result != 8) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // TC14 (neo-async-execctx-capture): the EC-capture semantics. AwaitOnCompleted
+        // (the custom-awaiter path) SHALL capture the current ExecutionContext and flow
+        // it to the resume, so an AsyncLocal value set before the await is VISIBLE in
+        // the continuation. The probe sets a host AsyncLocal to 42, awaits the custom
+        // (AwaitOnCompleted) awaitable, then reads the AsyncLocal in the continuation.
+        // With EC flow: 42 (the captured EC restores it). Without EC flow: 0 (the
+        // threadpool resume runs under a default EC). Binding conjunct:
+        //   * GATE 1 the SM suspended (AwaitOnCompleted path, EC captured).
+        //   * GATE 2 t.Result == 7*1000 + 42 == 7042 (AsyncLocal flowed -> 42).
+        // Stash-toggle (revert the EC-capture): the resume runs WITHOUT EC flow ->
+        // GetAL()==0 -> t.Result == 7000 -> FAIL.
+        private static async Task<int> NeoStep20_ExecCtxFlowProbe()
+        {
+            TestCLRBinding.SetAL(42);                                   // set before the await
+            int v = await TestCLRBinding.GetECProbeAwaitable();         // AwaitOnCompleted (EC captured)
+            int after = TestCLRBinding.GetAL();                         // read in the continuation
+            return v * 1000 + after;
+        }
+        public static void NeoStep20_TC14_ExecCtxFlowsAsyncLocal()
+        {
+            Task<int> t = NeoStep20_ExecCtxFlowProbe();
+            if (t.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+            // Complete from a threadpool thread queued WITHOUT EC flow. The
+            // continuation resumes there under a DEFAULT EC, so AsyncLocal==42 is
+            // visible ONLY because AwaitOnCompleted captured the caller's EC and the
+            // resume runs it via ExecutionContext.Run. Stash-toggle (no EC capture)
+            // -> the resume runs under the default EC -> AsyncLocal==0 -> t.Result
+            // == 7000 -> FAIL (the binding proof the capture is load-bearing).
+            TestCLRBinding.CompleteIncompleteTaskNoECFlow(7);
+            bool resumed = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (t.IsCompleted) { resumed = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed) { int x = 1; int y = 0; int _ = x / y; }
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            // 7*1000 + 42 == 7042: the AsyncLocal value (42) flowed through the
+            // captured ExecutionContext into the continuation.
+            if (t.Result != 7042) { int x = 1; int y = 0; int _ = x / y; }
+        }
     }
 }

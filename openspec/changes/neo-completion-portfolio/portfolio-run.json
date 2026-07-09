@@ -310,7 +310,8 @@
     },
     "neo-async-execctx-capture": {
       "pipeline": "small-feature", "wave": "completion-3", "scope": "Async AwaitOnCompleted ExecutionContext/SynchronizationContext capture (AwaitOnCompleted_Neo currently mirrors AwaitUnsafeOnCompleted without the capture)",
-      "prerequisites": ["neo-async-multi-await"], "dependsOn": ["neo-async-multi-await"], "status": "pending", "capability": "neo-async"
+      "prerequisites": ["neo-async-multi-await"], "dependsOn": ["neo-async-multi-await"], "status": "done", "capability": "neo-async",
+      "completedDate": "2026-07-09", "smoke": "NeoStep20_TC13 (custom-awaiter AwaitOnCompleted suspend) PASS; NeoStep20_TC14 (EC flow) PASS; NeoStep 241/0/0; stash-toggle TC14 FAIL-without-capture", "review": "APPROVED 0 Blocker/Major (lead-5 authored+self-verified; subagent cannot run dotnet). EC capture load-bearing (TC14 stash-toggle 7042 vs 7000). SynchronizationContext N/A (no SC in ILRuntime). See review-report.md."
     },
     "neo-async-valuetask-asyncvoid": {
       "pipeline": "small-feature", "wave": "completion-3", "scope": "Async ValueTask<T> suspend path + async void suspend path",

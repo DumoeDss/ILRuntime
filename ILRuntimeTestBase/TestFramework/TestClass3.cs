@@ -240,6 +240,49 @@ namespace ILRuntimeTest.TestFramework
             current.SetResult(value);
         }
 
+        // neo-async-execctx-capture: a CUSTOM awaiter implementing INotifyCompletion
+        // but NOT ICriticalNotifyCompletion -- the C# compiler lowers `await` on it
+        // to AwaitOnCompleted (the EC-capturing path), not AwaitUnsafeOnCompleted. It
+        // wraps a Task (the m_task field, the TaskAwaiter convention) so the Neo
+        // suspend path (GetAwaiterTask) resolves the underlying Task. TC13 drives a
+        // suspend/resume through this awaiter (exercises the AwaitOnCompleted path);
+        // TC14 observes ExecutionContext flow via the host-side AsyncLocal below.
+        public sealed class ECProbeAwaiter : System.Runtime.CompilerServices.INotifyCompletion
+        {
+            internal Task m_task;
+            public ECProbeAwaiter(Task t) { m_task = t; }
+            public bool IsCompleted { get { return m_task.IsCompleted; } }
+            public void OnCompleted(Action continuation) { m_task.GetAwaiter().OnCompleted(continuation); }
+            public int GetResult() { return ((Task<int>)m_task).Result; }
+        }
+        public sealed class ECProbeAwaitable
+        {
+            private readonly Task _t;
+            public ECProbeAwaitable(Task t) { _t = t; }
+            public ECProbeAwaiter GetAwaiter() { return new ECProbeAwaiter(_t); }
+        }
+        public static ECProbeAwaitable GetECProbeAwaitable() { return new ECProbeAwaitable(s_incompleteTcs.Task); }
+        // Host-side AsyncLocal for the EC-flow observation (avoids AsyncLocal-from-IL
+        // binding edges). SetAL before the await; GetAL in the continuation. With EC
+        // capture+flow (the AwaitOnCompleted path), GetAL returns the pre-await value;
+        // without EC flow it returns the default (0).
+        private static System.Threading.AsyncLocal<int> s_al = new System.Threading.AsyncLocal<int>();
+        public static void SetAL(int v) { s_al.Value = v; }
+        public static int GetAL() { return s_al.Value; }
+        // Complete the OLD s_incompleteTcs from a threadpool work item queued WITHOUT
+        // flowing ExecutionContext (UnsafeQueueUserWorkItem does NOT flow EC, unlike
+        // Task.Run). The await continuation then resumes on that threadpool thread
+        // under a DEFAULT EC, so an AsyncLocal set on the caller thread is visible in
+        // the continuation ONLY if AwaitOnCompleted captured+flowed the caller's EC.
+        // (ECProbeAwaitable captured the OLD Task before this swap.)
+        public static void CompleteIncompleteTaskNoECFlow(int value)
+        {
+            TaskCompletionSource<int> current = System.Threading.Interlocked.Exchange(
+                ref s_incompleteTcs, new TaskCompletionSource<int>());
+            System.Threading.ThreadPool.UnsafeQueueUserWorkItem(
+                _ => current.SetResult(value), null);
+        }
+
         // B1 verdict inspectors. Returns 1 iff `ex` is the tagged Neo async-
         // suspend NIE (outcome 3: the 2-generic-arg redirect resolved on
         // RedirectMapNeo and dispatched to the tagged deferral).

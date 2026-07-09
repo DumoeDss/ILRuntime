@@ -499,10 +499,19 @@ namespace ILRuntime.Runtime.Enviorment
         public static void AwaitOnCompleted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
-            // AwaitOnCompleted semantics differ from AwaitUnsafeOnCompleted by
-            // capturing the ExecutionContext. The capture is a deferred concern
-            // (design Non-Goal); the suspend body is otherwise identical.
-            SuspendStateMachine(method);
+            // AwaitOnCompleted (the awaiter implements INotifyCompletion but NOT
+            // ICriticalNotifyCompletion) SHALL capture the current ExecutionContext
+            // and flow it to the resume so AsyncLocal values are visible in the
+            // continuation. AwaitUnsafeOnCompleted (ICritical awaiters such as
+            // TaskAwaiter) intentionally does NOT capture EC. SynchronizationContext
+            // is N/A here -- ILRuntime runs no SC (it would be captured by the
+            // builder at Start, not per-await, and SC.Current is always null). The
+            // captured EC is flowed to the resume via ExecutionContext.Run in
+            // SuspendStateMachine (neo-async-execctx-capture).
+            System.Threading.ExecutionContext ec = null;
+            try { ec = System.Threading.ExecutionContext.Capture(); }
+            catch { ec = null; } // capture unavailable (suppressed-flow / sandbox) -> resume without EC flow
+            SuspendStateMachine(method, ec);
         }
 
         // The SUSPEND body (design D2). Recovers the heap SM (CurrentAsyncSm),
@@ -514,7 +523,7 @@ namespace ILRuntime.Runtime.Enviorment
         // is already a heap ILTypeInstance (dump-confirmed), so its state (<>1__state)
         // and awaiter (<>u__1) survive across the suspension; HoistNeoILValueToHeap
         // is NOT needed for the SM (retained for the in-frame-VT-local edge).
-        private static void SuspendStateMachine(CLRMethod method)
+        private static void SuspendStateMachine(CLRMethod method, System.Threading.ExecutionContext ecToFlow = null)
         {
             ILTypeInstance sm = CurrentAsyncSm;
             if (sm == null)
@@ -575,7 +584,19 @@ namespace ILRuntime.Runtime.Enviorment
             // standard await hook (TaskAwaiter implements ICriticalNotifyCompletion).
             MethodInfo resumeMi = ctxType.GetMethod("MoveNextInternal", BindingFlags.Instance | BindingFlags.NonPublic);
             Action resumeAction = (Action)Delegate.CreateDelegate(typeof(Action), ctxInstance, resumeMi);
-            task.GetAwaiter().UnsafeOnCompleted(resumeAction);
+            // Flow the captured ExecutionContext (the AwaitOnCompleted path) into the
+            // resume so AsyncLocal values are visible. AwaitUnsafeOnCompleted passes
+            // null (no flow -- ICritical awaiters opt out). ExecutionContext.Run
+            // restores the captured EC for the resume callback (neo-async-execctx-capture).
+            if (ecToFlow != null)
+            {
+                Action raw = resumeAction;
+                task.GetAwaiter().UnsafeOnCompleted(() => System.Threading.ExecutionContext.Run(ecToFlow, _ => raw(), null));
+            }
+            else
+            {
+                task.GetAwaiter().UnsafeOnCompleted(resumeAction);
+            }
             // Return WITHOUT SetResult/SetException -- the SM is suspended.
         }
 
@@ -690,7 +711,22 @@ namespace ILRuntime.Runtime.Enviorment
             bool isAwaiter = t == typeof(System.Runtime.CompilerServices.TaskAwaiter);
             if (!isAwaiter && t.IsGenericType)
                 isAwaiter = t.GetGenericTypeDefinition() == typeof(System.Runtime.CompilerServices.TaskAwaiter<>);
-            if (!isAwaiter) return null;
+            if (!isAwaiter)
+            {
+                // neo-async-execctx-capture: a CUSTOM awaiter (e.g. one implementing
+                // only INotifyCompletion, which triggers AwaitOnCompleted) is
+                // recognized if it exposes an instance field of type Task named
+                // m_task (the TaskAwaiter convention). Duck-typed + defended so a
+                // non-awaiter object (a hoisted Task local, the builder) does not
+                // throw -- it is simply not a suspensible awaiter.
+                FieldInfo custom = t.GetField("m_task", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (custom != null && custom.FieldType == typeof(Task))
+                {
+                    try { return custom.GetValue(boxedAwaiter); }
+                    catch { return null; }
+                }
+                return null;
+            }
             FieldInfo fi = t.GetField("m_task", BindingFlags.NonPublic | BindingFlags.Instance);
             if (fi == null)
             {
