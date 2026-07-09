@@ -53,15 +53,43 @@ NeoStep24CliRoundtrip 5/5, NeoOptHardening 24/24). Legacy-neutral throughout.
 - F-11: not-a-bug (stale-but-correct JIT body; an optimization gap).
 - F-13: disproven (the ip/frame/pool are isolated; the recorded corruption was the Step-6 Run shim).
 
-## Remaining (the honest deferred tail — deeper features / unreproducible / edge extensions)
+## Remaining (the COMPLETE next-to-do list — designed-but-not-done Non-Goals + unreproducible)
 
-These are NOT "left undone" — they are explicitly deferred (deeper features needing their own
-children) or unreproducible (need a reproducer), recorded in `neo-deferred-items.md`:
-- **Async multi-await suspend** (single-await works; an SM with >=2 incomplete awaits double-suspends) + ExecutionContext/SynchronizationContext capture + ValueTask<T>/async-void suspend.
-- **S3-2 Cecil-free follow-ons**: CLR base/interface resolution on the Cecil-free path (needs a CrossBindingAdaptor); generic-method/type instances on the Cecil-free path (S2 T-identity-token); cross-PROCESS load.
-- **Debugger**: IL-VT-local reconstruction; AOT-body inspection; the CLI debugger-protocol capstone.
-- **Q-STRUCT / Q-LONG**: unreproducible on HEAD (need a reproducer; may already be fixed).
-- The async-call-sibling + multi-byref/ref-struct edges (F-7B-SIB sequencing notes).
+Every item below is a **designed Non-Goal / sequenced follow-on** (recorded in the respective
+child's `design.md` + `neo-deferred-items.md`), NOT an unplanned gap. Each is independently
+shippable as a future child. (The COMMON case of each feature shipped; these are the deeper
+variants.) Categorized:
+
+**Async (`neo-async-movenext-fix` Non-Goals):**
+- Multi-await suspend/resume (single-await WORKS; an SM with >=2 incomplete awaits double-suspends).
+- `AwaitOnCompleted` ExecutionContext / SynchronizationContext capture (the `AwaitOnCompleted_Neo` body mirrors `AwaitUnsafeOnCompleted` WITHOUT the capture).
+- `ValueTask<T>` suspend path + `async void` suspend path.
+- IL-delegate-through-CLR-method round-trip (`Task.Run(ilLambda)`).
+- A real zero-alloc `ValueTask<T>` (the suspend path may allocate a `Task<T>`/TCS bridge).
+
+**AOT / S3-2 Cecil-free (`neo-step25-s3-cecil-free-load` + `neo-step25-s3-clr-registration` Non-Goals):**
+- CLR base/interface resolution on the Cecil-free path (a Cecil-free type whose base/interface is a CLR type needing a CrossBindingAdaptor -- the capstone's base/interface are IL types in the same `.neo`; needs the NEO-AOT-ADAPTOR-SKIP pattern inverted to RESOLVE, not skip).
+- Generic-method/type instances on the Cecil-free path (S2 T-identity-token re-resolution + cross-AppDomain generic-instance re-resolution; the capstone is non-generic).
+- Cross-PROCESS load (P1-built `.neo` in P2; APPROACH-1 hashes are already process-independent, but cross-process wasn't exercised).
+- Multi-hotfix-assembly cross-references (one IL hotfix referencing another IL hotfix's types).
+
+**Debugger (`neo-debugger-neo-frame` sequenced):**
+- IL-value-type-LOCAL reconstruction (the placeholder string -> the struct's fields; the frame-local analogue of F-4's IL-VT-FIELD reconstruction).
+- AOT-body variable inspection (`registerSymbols` null on AOT, `ILMethod.cs:997-998` -> serialize var metadata into `.neo`).
+- CLI debugger-protocol capstone (the VSCode DAP frontend `Debugging/VSCode/` + the ~6 protocol/frontend methods `AddStackFrameInfoVariables`/`ResolveCurrentFrameBasePointer`/`DumpStack`/`GetValueExpandable`/`VisitValueTypeReference`/`GetStackObjectText`; the host-side self-check is the binding gate that shipped).
+
+**Byref (`neo-f7-delegate-byref` Non-Goals):**
+- CLR->IL delegate callback with a byref param (`List.ForEach(ilActionWithRefParam)`) -- the REVERSE direction of F-7 (a CLR method invoking an IL delegate that takes a byref; F-7 shipped the IL->IL delegate-Invoke direction).
+- The Step-17 `ldind_ref` heap-IL-ref-field deferral (`ILIntepreter.Neo.cs:3862`) -- a heap IL-instance reference field read through a byref (distinct from the mStack-referent case that works).
+- AOT (`ilrt_neoc`) wire-up of the F-7 byref map (the JIT-only path is in scope; the AOT serialization of the byref param map).
+
+**Unreproducible (need a reproducer; may already be fixed by intervening work):**
+- Q-STRUCT (struct-local + field-mutation + element-read temp-renumber; not reproducible on HEAD).
+- Q-LONG (long default-zero compare / conv.i8 quirk; not reproducible on HEAD).
+
+**NOTE (doc consistency):** the 5 master-table rows that were stale after the completion-2 wave
+(F-2 / F-9 / F-11 / D-PEEP / F-7B-SIB) have been corrected to their actual 2026-07-09 completed
+state in `neo-deferred-items.md`.
 
 ## Key decisions + lessons (reaffirmed across the wave)
 
