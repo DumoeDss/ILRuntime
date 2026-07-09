@@ -2937,18 +2937,50 @@ namespace ILRuntime.Runtime.Intepreter
                                             returnPrimitiveSize == 4 &&
                                             returnRefCount == 1;
                                         if (!isSingleReferenceReturn)
-                                            throw new NotImplementedException("Neo return with value-type reference fields requires Step 12/13 return layout support.");
-
-                                        int retSrcIdx = *(int*)(frameBase + ip->DstOffset);
-                                        if (retSrcIdx >= 0)
                                         {
-                                            mStack[retRefBase] = mStack[retSrcIdx];
-                                            *(int*)retDst = retRefBase;
+                                            // neo-ret-vt-with-ref-fields: a value-
+                                            // type return WITH reference fields
+                                            // (e.g. `struct S { int x; string s; }
+                                            // S Make(){...}`). The return value
+                                            // lives in a callee-frame register whose
+                                            // primitive bytes are at
+                                            // `frameBase + ip->DstOffset` and whose
+                                            // ref slots are at
+                                            // `mStack[frameRefBase + ip->Operand3]`
+                                            // (ip->Operand3 = the return register's
+                                            // RefOffset, stamped by LowerNeoOffsets).
+                                            // Mirror Step 12b Move_Vt: byte CopyBlock
+                                            // of returnPrimitiveSize to the caller's
+                                            // dest + a ref-slot loop copying
+                                            // returnRefCount slots from the callee's
+                                            // return ref region to the caller's
+                                            // retRefBase. Shallow copy: refs are
+                                            // shared (C# struct-copy semantics).
+                                            int retSrcRefOff = ip->Operand3;
+                                            if (returnPrimitiveSize > 0)
+                                                Unsafe.CopyBlock(retDst, frameBase + ip->DstOffset, (uint)returnPrimitiveSize);
+                                            for (int i = 0; i < returnRefCount; i++)
+                                                mStack[retRefBase + i] = mStack[frameRefBase + retSrcRefOff + i];
                                         }
                                         else
                                         {
-                                            mStack[retRefBase] = null;
-                                            *(int*)retDst = -1;
+                                            // Single reference-type return (a class /
+                                            // ref-type return: returnPrimitiveSize==4,
+                                            // returnRefCount==1). The return slot holds
+                                            // an mStack index; copy that object to the
+                                            // caller's retRefBase and write retRefBase
+                                            // into the caller's dest.
+                                            int retSrcIdx = *(int*)(frameBase + ip->DstOffset);
+                                            if (retSrcIdx >= 0)
+                                            {
+                                                mStack[retRefBase] = mStack[retSrcIdx];
+                                                *(int*)retDst = retRefBase;
+                                            }
+                                            else
+                                            {
+                                                mStack[retRefBase] = null;
+                                                *(int*)retDst = -1;
+                                            }
                                         }
                                     }
                                 }

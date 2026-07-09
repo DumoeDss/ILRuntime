@@ -853,7 +853,24 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         break;
                     case OpCodeREnum.Ret:
                         if (op.Register1 >= 0)
+                        {
+                            // neo-ret-vt-with-ref-fields: stamp the return
+                            // register's RefOffset into the spare Operand3
+                            // (@16) so the ExecuteNeo Ret arm can locate the
+                            // return value's callee-side ref region for a
+                            // value-type return WITH reference fields. Ret uses
+                            // only Register1/DstOffset (the return value's
+                            // primitive byte offset); Operand/Operand2/Operand3/
+                            // Operand4 are all spare. Operand3 mirrors the
+                            // convention used by Initobj (its target RefOffset)
+                            // and Move_Vt/Box (their ref-run bases). The return
+                            // register is the eval-stack top (never an ldloca
+                            // alias dest), but ResolveLiveAlias is harmless +
+                            // symmetric with Initobj.
+                            short retR1 = ResolveLiveAlias(op.Register1).Reg;
+                            op.Operand3 = localInfos[retR1].RefOffset;
                             LowerR1(ref op, localInfos);
+                        }
                         break;
                     case OpCodeREnum.Box:
                     case OpCodeREnum.Unbox:

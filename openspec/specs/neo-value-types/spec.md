@@ -599,3 +599,50 @@ Legacy `Ldflda` arm is the semantic reference and is NOT modified.
   struct field, F-10 was never stamped -- `Operand4` is `0x1` before and after).
   The runtime check order is unchanged, so the `objIdx == -1` -> shape 1/2
   routing every reachable VT `this`/arg uses today is preserved.
+
+### Requirement: IL method returning a value type with reference fields
+
+The Neo `Ret` opcode SHALL return a value type that contains reference fields
+(a `struct` with `TotalReferenceCount > 0`) by copying BOTH the primitive byte
+region AND the reference-slot run to the caller's return destination -- mirroring
+the `Move_Vt` whole-value-type copy. This closes the prior
+`NotImplementedException` gap (the `Ret` arm only handled pure-primitive value
+types and single-reference class returns).
+
+The return value's callee-side reference offset is NOT stored on `CompiledFrame`
+(only `ReturnPrimitiveSize` / `ReturnRefCount` are). The `LowerNeoOffsets` pass
+SHALL stamp the return register's `RefOffset` (read from `localInfos[retReg]`)
+into the `Ret` opcode's spare `Operand3` field BEFORE `LowerR1` converts the
+register index to a byte offset -- mirroring the `Initobj` / `Move_Vt`
+convention. The runtime `Ret` arm reads `mStack[frameRefBase + ip->Operand3 + i]`
+for the `returnRefCount` source reference slots.
+
+#### Scenario: a struct with one reference field is returned and read
+
+- **WHEN** an IL method `S Make() { ... }` returns a `struct S { int x; string s; }`
+  (primitive size 4, reference count 1) with a non-null `s`, and the caller reads
+  both `x` and `s` off the returned value
+- **THEN** the `Ret` arm SHALL `CopyBlock` 4 primitive bytes to the caller's dest
+  AND copy 1 reference slot from `mStack[frameRefBase + returnRefOffset]` to
+  `mStack[retRefBase]`, so both `x` and `s` are correct after return (the
+  reference-slot copy is load-bearing -- a null `s` would pass even if the copy
+  were broken).
+
+#### Scenario: a struct with multiple reference fields and a ref-only struct
+
+- **WHEN** a method returns a struct with multiple reference fields (e.g.
+  `{ int; string; object }`, reference count 2) OR a ref-only struct
+  (`{ string a; string b; }`, primitive size 0, reference count 2)
+- **THEN** the `Ret` arm SHALL copy `returnRefCount` contiguous reference slots,
+  and when `returnPrimitiveSize == 0` the byte `CopyBlock` SHALL be skipped (the
+  `if (returnPrimitiveSize > 0)` guard) while the reference-slot loop still runs.
+
+#### Scenario: the caller consumes the value-type-with-refs return without a post-call move
+
+- **WHEN** the optimizer's copy-prop eliminates the post-call `move` (the call
+  writes directly into the caller's typed local, sized with `returnRefCount`
+  reference slots by `BuildInitialRegisterTypes`)
+- **THEN** no caller-side `Move` -> `Move_Vt` rewrite is required; the call dest
+  IS the typed local and a subsequent `ldfld.ref.inline` reads from the same
+  region the `Ret` arm wrote. (The pure-primitive value-type return and the
+  single-reference class return paths are unchanged.)
