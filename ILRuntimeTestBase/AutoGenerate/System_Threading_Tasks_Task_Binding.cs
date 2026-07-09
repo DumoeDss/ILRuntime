@@ -134,7 +134,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<System.Threading.Tasks.Task> @function = (System.Func<System.Threading.Tasks.Task>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<System.Threading.Tasks.Task> @function = (System.Func<System.Threading.Tasks.Task>)typeof(System.Func<System.Threading.Tasks.Task>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             var result_of_this_method = System.Threading.Tasks.Task.Run(@function);
             if (__retDst != null)
             {
@@ -270,7 +270,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<System.Threading.Tasks.Task<System.Int32>> @function = (System.Func<System.Threading.Tasks.Task<System.Int32>>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<System.Threading.Tasks.Task<System.Int32>> @function = (System.Func<System.Threading.Tasks.Task<System.Int32>>)typeof(System.Func<System.Threading.Tasks.Task<System.Int32>>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             var result_of_this_method = System.Threading.Tasks.Task.Run<System.Int32>(@function);
             if (__retDst != null)
             {
@@ -309,7 +309,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<System.Int32> @function = (System.Func<System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<System.Int32> @function = (System.Func<System.Int32>)typeof(System.Func<System.Int32>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             var result_of_this_method = System.Threading.Tasks.Task.Run<System.Int32>(@function);
             if (__retDst != null)
             {

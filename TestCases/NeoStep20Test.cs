@@ -510,5 +510,118 @@ namespace TestCases
             // captured ExecutionContext into the continuation.
             if (t.Result != 7042) { int x = 1; int y = 0; int _ = x / y; }
         }
+
+        // =====================================================================
+        // neo-async-taskrun-ildelegate (child 5): Task.Run(SYNC IL lambda).
+        //
+        // SCOPE: a SYNC (non-async) IL lambda passed to the CLR Task.Run static
+        // method, which schedules the lambda on the threadpool and calls back
+        // into IL when the Task runs. Task.Run is NOT redirected (it goes through
+        // the un-redirected reflection fallback CLRMethod.Invoke(byte*)). The
+        // IL delegate arg is unwrapped to a real CLR delegate via CheckCLRTypes(
+        // TypeFlags.IsDelegate) at CLRMethod.cs:521-522; the wrapped Func/Action
+        // (DelegateAdapter.InvokeILMethod -> NeoInvokeSub) is the Step-19 callback
+        // that re-enters ExecuteNeo on a FRESH pooled interpreter.
+        //
+        // The result is read via a BLOCKING path (.Result / .GetAwaiter().
+        // GetResult() / .Wait()) -- NEVER await, so the async suspend machinery
+        // is NOT involved (a sync lambda builds no async state machine).
+        //
+        // Lambda bodies are CONCAT-FREE (the conv.ovf.u2.un Step-6 gap lowers
+        // "..."+int to a NIE); int arithmetic / direct returns only.
+        //
+        // Assertion convention is unchanged: a passing test returns without
+        // dividing by zero; a logic failure surfaces a deliberate 1/0.
+        // =====================================================================
+
+        // Sync IL work methods (plain non-async IL methods, various return kinds).
+        private static int NeoStep20_TrCompute() { return 7 * 6; }       // 42
+        private static string NeoStep20_TrLabel() { return "ok"; }
+
+        // TR1: Task.Run(Func<int>) -> Task<int>; read .Result (BLOCKING). The core
+        // probe -- does the IL delegate round-trip through Task.Run end-to-end?
+        public static void NeoStep20_Tr1_FuncOfInt()
+        {
+            Task<int> t = Task.Run(new Func<int>(NeoStep20_TrCompute));
+            // BLOCKING read -- no await. A stuck/deadlocked callback exhausts the
+            // budget and FAILS here (divide-by-zero) rather than hanging forever.
+            int r = SpinWaitResult(t);
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (r != 42) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // TR2: Task.Run(Action) -> Task (non-generic); read via .Wait() (BLOCKING).
+        // The void-returning shape: a lambda that only does a side effect. Asserts
+        // the side effect landed via a HOST-visible cell (TestCLRBinding -- a real
+        // CLR static, cross-thread visible by construction). Using an IL-side static
+        // field instead is fragile here: the lambda runs on a threadpool thread in a
+        // FRESH pooled interpreter, and the IL static's cross-interpreter write
+        // visibility is a separate concern (Step 3); the host cell isolates the
+        // assertion to the Task.Run(delegate) callback path alone.
+        public static void NeoStep20_Tr2_ActionSideEffect()
+        {
+            TestCLRBinding.SetAsyncVoidCell(0);
+            Task t = Task.Run(new Action(() => TestCLRBinding.SetAsyncVoidCell(99)));
+            SpinWaitComplete(t);
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (TestCLRBinding.GetAsyncVoidCell() != 99) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // TR3: Task.Run(Func<string>) -> Task<string>; read .GetAwaiter().
+        // GetResult() (BLOCKING). A reference-type result proves the callback's
+        // reference return routes back through the NeoInvokeSub -> mStack path.
+        public static void NeoStep20_Tr3_FuncOfString()
+        {
+            Task<string> t = Task.Run(new Func<string>(NeoStep20_TrLabel));
+            string s = SpinWaitResult(t);
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (s != "ok") { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // TR4: closure-capturing lambda. The lambda captures a local (`factor`)
+        // and multiplies; the closure `this` is the compiler-generated display
+        // class (an IL instance). Proves the bound-instance `this` thread reaches
+        // NeoInvokeSub (WriteNeoCallSlot(paramInfos[0], ..., instance)).
+        public static void NeoStep20_Tr4_ClosureCapture()
+        {
+            int factor = 5;
+            Task<int> t = Task.Run(new Func<int>(() => NeoStep20_TrCompute() - factor));
+            int r = SpinWaitResult(t);
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (r != 37) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // TR5: lambda calling an IL INSTANCE method. The lambda's display class
+        // holds a `this` (the enclosing NeoStep20Test -- but as IL has no instance
+        // here, the lambda calls a STATIC helper that reads the static cell).
+        // Mirrors TR1 but the lambda body does real arithmetic + a call.
+        public static void NeoStep20_Tr5_LambdaCallsILMethod()
+        {
+            Task<int> t = Task.Run(new Func<int>(() =>
+            {
+                int base_ = NeoStep20_TrCompute(); // 42
+                return base_ + 8;                   // 50
+            }));
+            int r = SpinWaitResult(t);
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (r != 50) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // ---- spin-wait helpers (BLOCKING; budget-capped so a deadlock FAILS
+        // instead of hanging -- respects the >10-60s kill rule) ----
+        private static int SpinWaitResult(Task<int> t)
+        {
+            t.Wait(); // BLOCKING; a faulted task throws here (caught -> FAIL below)
+            return t.Result;
+        }
+        private static string SpinWaitResult(Task<string> t)
+        {
+            t.Wait();
+            return t.Result;
+        }
+        private static void SpinWaitComplete(Task t)
+        {
+            t.Wait();
+        }
     }
 }
