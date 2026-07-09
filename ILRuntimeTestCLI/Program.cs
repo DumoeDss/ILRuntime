@@ -253,6 +253,48 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 25 neo-aot-clrbase-iface host-side self-check: the Cecil-free
+            // LOAD/EXECUTE gate for an IL type whose CLR base needs a
+            // CrossBindingAdaptor (the inverse of NeoStep25ClrAdaptor's COMPILE
+            // side). Compiles NeoClrProbe.ExceptionProbe : System.Exception ->
+            // .neo (built-in ExceptionAdaptor resolves -> compiles), Cecil-free-
+            // loads into a fresh AppDomain B, asserts the adaptor is INSTALLED
+            // on the Cecil-free ILType (FirstCLRBaseType is CrossBindingAdaptor)
+            // + the CLRInstance bridge (is System.Exception) + end-to-end exec
+            // (Invoke Tag == 42) + an adversarial body-mutation cell.
+            if (nameFilter == "NeoStep25ClrBaseIface")
+            {
+                int failed;
+                try
+                {
+                    // Locate NeoClrProbe.dll + ILRuntimeTestBase.dll relative to
+                    // the TestCases.dll path (mirrors NeoStep25ClrAdaptor).
+                    string testCasesDir = System.IO.Path.GetDirectoryName(path);
+                    string repoRoot = testCasesDir;
+                    for (int i = 0; i < 4 && repoRoot != null; i++)
+                        repoRoot = System.IO.Path.GetDirectoryName(repoRoot);
+                    string probeDll = System.IO.Path.Combine(
+                        repoRoot ?? "", "NeoClrProbe", "bin", "Debug", "netstandard2.1", "NeoClrProbe.dll");
+                    string testBaseDll = System.IO.Path.Combine(testCasesDir, "ILRuntimeTestBase.dll");
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25ClrBaseIfaceCheck.Run(
+                        session.Appdomain, probeDll, testBaseDll);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 CLR-base-iface: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed. Attach: {r.AttachedCount} attached, {r.SkippedCount} skipped.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                    foreach (var s in r.Skipped)
+                        Console.WriteLine($"  SKIP: {s}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25ClrBaseIface threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // perf-validation capstone; the LAST numbered AOT-chain step).
             // Drives 5 bench workloads via appdomain.Invoke, host-times each
             // with a real Stopwatch, asserts each returned its expected

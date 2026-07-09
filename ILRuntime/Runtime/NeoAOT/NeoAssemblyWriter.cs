@@ -903,7 +903,26 @@ namespace ILRuntime.Runtime.NeoAOT
         {
             var rec = new NeoTypeDefRecord();
             rec.TypeRefIdx = b.IndexTypeRef(type.TypeReference, type);
-            rec.BaseTypeRefIdx = type.BaseType is ILType bt ? b.IndexTypeRef(bt.TypeReference, bt) : -1;
+            // Step 25 neo-aot-clrbase-iface: record the base type for BOTH an IL
+            // base (the existing path) AND a CLR base resolved via a
+            // CrossBindingAdaptor (a `class X : System.Exception` shape). The
+            // Cecil path InitializeBaseType REPLACES a CLR base with its adaptor,
+            // so type.BaseType is the CrossBindingAdaptor (an IType, NOT an
+            // ILType) -> the old `is ILType` check dropped it (BaseTypeRefIdx =
+            // -1) -> the Cecil-free factory could not resolve the CLR base ->
+            // FirstCLRBaseType was null -> no CLR bridge. Record the adaptor's
+            // BaseCLRType (e.g. System.Exception) as a Cecil TypeRef so the
+            // Cecil-free factory resolves it by name + re-installs the adaptor.
+            if (type.BaseType is ILType bt)
+                rec.BaseTypeRefIdx = b.IndexTypeRef(bt.TypeReference, bt);
+            else if (type.BaseType is ILRuntime.Runtime.Enviorment.CrossBindingAdaptor cba && cba.BaseCLRType != null)
+            {
+                TypeReference clrBaseRef = null;
+                try { clrBaseRef = module != null ? module.ImportReference(cba.BaseCLRType) : null; } catch { }
+                rec.BaseTypeRefIdx = clrBaseRef != null ? b.IndexTypeRef(clrBaseRef, type.BaseType) : -1;
+            }
+            else
+                rec.BaseTypeRefIdx = -1;
             rec.TotalPrimitiveSize = type.TotalPrimitiveSize;
             rec.TotalReferenceCount = type.TotalReferenceCount;
             rec.StaticTotalPrimitiveSize = type.StaticTotalPrimitiveSize;
@@ -916,7 +935,7 @@ namespace ILRuntime.Runtime.NeoAOT
             // type with no static fields.
             rec.StaticFields = BuildStaticFieldLayouts(type, b);
             rec.VTableMethodRefIdxs = BuildVTable(type, b, module);
-            rec.Interfaces = BuildInterfaces(type, b);
+            rec.Interfaces = BuildInterfaces(type, b, module);
             rec.StaticCtorMethodRefIdx = BuildStaticCtorRef(type, b, module);
             return rec;
         }
@@ -986,7 +1005,7 @@ namespace ILRuntime.Runtime.NeoAOT
             return res;
         }
 
-        static NeoInterfaceEntryRecord[] BuildInterfaces(ILType type, NeoRefTableBuilder b)
+        static NeoInterfaceEntryRecord[] BuildInterfaces(ILType type, NeoRefTableBuilder b, ModuleDefinition module)
         {
             var map = type.NeoInterfaceMapForAOT;
             if (map == null || map.Length == 0) return null;
@@ -997,10 +1016,22 @@ namespace ILRuntime.Runtime.NeoAOT
                 // IL interface type -> its Cecil TypeReference -> TypeRef index.
                 // CLR interface type -> -1 for V1 (CLR types index by assembly-
                 // qualified name at Step 25; the slot layout is still recorded).
+                // Step 25 neo-aot-clrbase-iface: a CLR interface resolved via a
+                // CrossBindingAdaptor (the Cecil path InitializeInterfaces
+                // REPLACES it with the adaptor) is recorded by the adaptor's
+                // BaseCLRType so the Cecil-free factory resolves it by name +
+                // re-installs the adaptor (mirrors the BaseTypeRefIdx fix).
                 var ilIface = e.InterfaceType as ILType;
+                int ifaceRefIdx = ilIface != null ? b.IndexTypeRef(ilIface.TypeReference, ilIface) : -1;
+                if (ifaceRefIdx < 0 && e.InterfaceType is ILRuntime.Runtime.Enviorment.CrossBindingAdaptor ifcA && ifcA.BaseCLRType != null)
+                {
+                    TypeReference clrIfaceRef = null;
+                    try { clrIfaceRef = module != null ? module.ImportReference(ifcA.BaseCLRType) : null; } catch { }
+                    ifaceRefIdx = clrIfaceRef != null ? b.IndexTypeRef(clrIfaceRef, e.InterfaceType) : -1;
+                }
                 res[i] = new NeoInterfaceEntryRecord
                 {
-                    InterfaceTypeRefIdx = ilIface != null ? b.IndexTypeRef(ilIface.TypeReference, ilIface) : -1,
+                    InterfaceTypeRefIdx = ifaceRefIdx,
                     VTableOffset = e.VTableOffset,
                     MethodSlotKeys = e.MethodSlotKeys,
                     ClassSlotRemap = e.ClassSlotRemap,

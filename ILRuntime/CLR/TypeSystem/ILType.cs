@@ -1470,12 +1470,50 @@ namespace ILRuntime.CLR.TypeSystem
             {
                 baseType = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(appdomain, model, rec.BaseTypeRefIdx);
             }
+            // ---- Step 25 neo-aot-clrbase-iface: if the resolved baseType is a
+            // CLRType that needs a CrossBindingAdaptor, install the adaptor
+            // (mirrors the Cecil path InitializeBaseType :1996-2007). System.
+            // Object / Enum / ValueType / MulticastDelegate are NOT adaptor-
+            // requiring (the Cecil path nulls them at :1985-1993) -> left as-is.
+            // A CLR base with NO registered adaptor throws TypeLoadException
+            // (loud, mirrors the Cecil path -- a harness-adaptor base never
+            // reaches a Cecil-free load because the COMPILE side skip-lists it,
+            // but the throw is the documented behavior if it ever does). ----
+            if (baseType is CLRType clrBase)
+            {
+                var clr = clrBase.TypeForCLR;
+                if (clr != typeof(object) && clr != typeof(System.Enum) && clr != typeof(Enum)
+                    && clr != typeof(ValueType) && clr != typeof(MulticastDelegate))
+                {
+                    CrossBindingAdaptor adaptor;
+                    if (appdomain.CrossBindingAdaptors.TryGetValue(clr, out adaptor))
+                        baseType = adaptor;
+                    else
+                        throw new TypeLoadException("Cannot find Adaptor for:" + clr);
+                }
+            }
             // ---- interfaces: resolve each by NAME. ----
             if (rec.Interfaces != null && rec.Interfaces.Length > 0)
             {
                 interfaces = new IType[rec.Interfaces.Length];
                 for (int i = 0; i < rec.Interfaces.Length; i++)
-                    interfaces[i] = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(appdomain, model, rec.Interfaces[i].InterfaceTypeRefIdx);
+                {
+                    var it = ILRuntime.Runtime.NeoAOT.NeoAssemblyLoader.ResolveTypeRefToIType(appdomain, model, rec.Interfaces[i].InterfaceTypeRefIdx);
+                    // Step 25 neo-aot-clrbase-iface: a CLR interface needing an
+                    // adaptor is replaced with the adaptor (mirrors
+                    // InitializeInterfaces :1900-1910). Only one CLR interface
+                    // is valid (the Cecil path's constraint); a missing adaptor
+                    // throws TypeLoadException (loud).
+                    if (it is CLRType clrIface)
+                    {
+                        CrossBindingAdaptor adaptor;
+                        if (appdomain.CrossBindingAdaptors.TryGetValue(clrIface.TypeForCLR, out adaptor))
+                            it = adaptor;
+                        else
+                            throw new TypeLoadException("Cannot find Adaptor for:" + clrIface.TypeForCLR);
+                    }
+                    interfaces[i] = it;
+                }
             }
             else interfaces = new IType[0];
 
@@ -1537,8 +1575,15 @@ namespace ILRuntime.CLR.TypeSystem
         // Resolve the first CLR base type walking the IL base chain (mirrors the
         // tail of InitializeBaseType). For an IL base that itself has a CLR base,
         // recurses; System.Object resolves to its CLRType. Neo-only.
+        // Step 25 neo-aot-clrbase-iface: a CrossBindingAdaptor base IS the first
+        // CLR base type (it bridges to the CLR type); return it directly instead
+        // of recursing into the adaptor's own base (which is the Cecil-loaded
+        // CLR base, NOT the bridge we want). An adaptor is an ILType subclass,
+        // so the `is CLRType` check below would NOT catch it without this short-
+        // circuit.
         static IType ResolveFirstCLRBase(IType baseType)
         {
+            if (baseType is CrossBindingAdaptor cba) return cba;
             IType bt = baseType;
             while (bt != null)
             {
@@ -1557,12 +1602,15 @@ namespace ILRuntime.CLR.TypeSystem
         // Resolve the first CLR interface (mirrors InitializeInterfaces). For
         // the capstone probe's IL interface, returns null (an IL interface has
         // no CLR adaptor). Neo-only.
+        // Step 25 neo-aot-clrbase-iface: a CrossBindingAdaptor interface IS the
+        // first CLR interface (it bridges to the CLR interface); return it.
         static IType ResolveFirstCLRInterface(IType[] interfaces, IType baseType)
         {
             if (interfaces != null)
             {
                 foreach (var it in interfaces)
                 {
+                    if (it is CrossBindingAdaptor) return it;
                     if (it is CLRType) return it;
                 }
             }
