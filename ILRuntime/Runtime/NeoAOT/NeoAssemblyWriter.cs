@@ -747,6 +747,20 @@ namespace ILRuntime.Runtime.NeoAOT
 
         // ===== record assembly (in-memory -> record, using the builder) =====
 
+        // Resolve a method return IType to its Cecil TypeReference for the
+        // ReturnTypeRefIdx TypeRef entry. ILType -> its Cecil TypeReference;
+        // ILGenericParameterType (the return of an OPEN generic method, e.g.
+        // `T Foo<T>()`) -> its Cecil TypeReference; everything else is assumed
+        // a CLRType -> import the host TypeForCLR. Returns null for a null IType.
+        // (Neo-only; the ILGenericParameterType arm is the fix for the
+        // NeoStep23Roundtrip GenericProbe/FullModel InvalidCastException.)
+        static TypeReference ResolveReturnTypeCecilRef(IType retType, ModuleDefinition module)
+        {
+            if (retType is ILType ilt) return ilt.TypeReference;
+            if (retType is ILGenericParameterType gpt) return gpt.TypeReference;
+            return module.ImportReference(((CLRType)retType).TypeForCLR);
+        }
+
         public static NeoMethodDefRecord BuildMethodDef(ILMethod method, CompiledFrame frame,
             Dictionary<Instruction, int> addr, NeoRefTableBuilder b, ModuleDefinition module)
         {
@@ -754,9 +768,16 @@ namespace ILRuntime.Runtime.NeoAOT
             rec.MethodRefIdx = b.IndexMethodRef(method, module);
             // Step 25 S3-2: record the return type (MethodRef omits it; a Cecil-
             // free ILMethod shell needs it for Run's return-read).
+            // An OPEN generic method's return type is an ILGenericParameterType
+            // (e.g. GenericProbe<T> returns T) -- it is NEITHER an ILType NOR a
+            // CLRType, but it carries a Cecil TypeReference (the GenericParameter
+            // token), so route it through the same ILType branch. The previous
+            // ternary's false arm assumed every non-ILType return was a CLRType and
+            // cast ((CLRType)retType), which threw InvalidCastException on the
+            // generic-parameter case (the NeoStep23 GenericProbe/FullModel cells).
             var retType = method.ReturnType;
             rec.ReturnTypeRefIdx = retType != null
-                ? b.IndexTypeRef(retType is ILType irt ? irt.TypeReference : module.ImportReference(((CLRType)retType).TypeForCLR), retType)
+                ? b.IndexTypeRef(ResolveReturnTypeCecilRef(retType, module), retType)
                 : -1;
             rec.NeoExecuteBody = frame.NeoExecuteBody;
             rec.LocalInfos = frame.LocalInfos;

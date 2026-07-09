@@ -5,26 +5,32 @@
   "childPipeline": "small-feature",
   "tier": "A",
   "createdAt": "2026-07-05",
-  "policy": "serial-by-default (shared interpreter/JIT files); parallel only on proven file-disjoint independence + Tier A. User authorized full autonomy: skip gates, commit+push after each clean child. WAVE-2 (2026-07-08): TRUE-COMPLETION mandate -- every open deferred item driven to FUNCTIONAL completion (real + usable), NOT partial-ship/scoped-deferral terminals. 'Tasks may be deferred [sequenced] but not left undone.' Drive continuously; session-relay (not stop) for context limits.",
+  "policy": "serial-by-default (shared interpreter/JIT files); parallel only on proven file-disjoint independence + Tier A. User authorized full autonomy: skip gates, commit+push after each clean child. WAVE-2 (2026-07-08): TRUE-COMPLETION mandate -- every open deferred item driven to FUNCTIONAL completion (real + usable), NOT partial-ship/scoped-deferral terminals. 'Tasks may be deferred [sequenced] but not left undone.' Drive continuously; session-relay (not stop) for context limits. WAVE-3 / completion-3 (2026-07-09, lead-4): the lead-3 handoff exposed the completion-2 'Non-Goals/deferred' over-claim -- the 18 harder variants are REAL must-do children (NO deferral). Serial chain (shared interpreter/JIT files), full autonomy; relay (not stop) on context limit.",
   "completionPlan": {
     "mandate": "TRUE COMPLETION -- no partial-ship terminals. Each item reaches functional done (real + usable), verified adversarially, Legacy-neutral.",
     "orderedFrontier": [
-      { "id": "neo-f12-run-ref-return", "scope": "F-12: Run NeoBoxReturnValue ref/struct return (paramless-shim limitation)", "deps": [], "size": "small" },
-      { "id": "neo-step25-s3-clr-registration", "scope": "S3-5: full CLR aqname/host-CLR-assembly registration (Step-24 TestCLREnum gap)", "deps": ["neo-step25-s3-full-decoupling"], "size": "small-mod" },
-      { "id": "neo-f11-eager-compile-cache", "scope": "F-11: generic-instance eager-compile stale JIT bodyRegister (load-order/per-instance refresh)", "deps": [], "size": "mod" },
-      { "id": "neo-async-movenext-fix", "scope": "Step 20 Phase-2: MoveNext control-flow fix (state machine hangs after IsCompleted=false before AwaitUnsafeOnCompleted) -- the highest-value real gap; truly-async await must work", "deps": ["neo-generic-redirect-resolution"], "size": "LARGE" },
-      { "id": "neo-step25-s3-cecil-free-load", "scope": "S3-2: Cecil-free AppDomain load (.neo-only, no Mono.Cecil TypeDefinition) -- makes the AOT chain deployable standalone", "deps": ["neo-step25-s3-full-decoupling"], "size": "LARGE" },
-      { "id": "neo-step25-s3-cross-appdomain", "scope": "S3-3: cross-AppDomain token-hash re-resolution (Approach 1: record compile-time GetHashCode per ref)", "deps": ["neo-step25-s3-cecil-free-load"], "size": "LARGE" },
-      { "id": "neo-step25-s3-ccctor", "scope": "S3-4: static .cctor seeding at AOT load", "deps": ["neo-step25-s3-full-decoupling"], "size": "mod" },
-      { "id": "neo-debugger-neo-frame", "scope": "Neo debugger variable inspection (DebugService reads byte* frame + AutoList mStack + CompiledFrame.LocalInfos; ~8 methods)", "deps": [], "size": "LARGE" },
-      { "id": "neo-f4-reflection-on-neo", "scope": "F-4: reflection-on-Neo field reads (4 broken paths: callvirt-on-CLR-interface ILInstance bridge; callvirt.clr GetType; appdomain.Invoke instance re-entry; ILTypeInstance Neo indexer)", "deps": [], "size": "mod-large" },
-      { "id": "neo-peephole-pass", "scope": "D-PEEP: new additive peephole-pass framework + liveness + box;isinst fusion on standalone OpCodeR field", "deps": [], "size": "LARGE" },
-      { "id": "neo-f9-inlined-return-move", "scope": "F-9: trivial-inliner return-value classification (int moved as ref -> mStack OOB)", "deps": [], "size": "mod" },
-      { "id": "neo-f7-delegate-byref", "scope": "F-7: byref-aware DelegateAdapter.NeoInvokeSub (delegate ref/out params)", "deps": [], "size": "mod" },
-      { "id": "neo-f2-refonly-vt-inliner", "scope": "F-2: ref-only VT (prim-size 0) local newobj inliner mis-compile", "deps": [], "size": "mod" }
+      { "id": "neo-step23-24-roundtrip-regression", "scope": "REGRESSION (red baseline discovered 2026-07-09, lead-4): NeoStep23Roundtrip 13/15 (GenericProbe + FullModel InvalidCastException ILGenericParameterType -> CLRType on the generic-constrained-on-VT roundtrip) + NeoStep24CliRoundtrip 4/5 (Cell1 .cctor IndexOutOfRangeException). lead-3 over-claimed 15/15 + 5/5. Dump-gate triage -> fix to restore the green baseline.", "deps": [], "size": "mod" },
+      { "id": "neo-async-multi-await", "scope": "Async multi-await suspend/resume (an SM with >=2 incomplete awaits double-suspends -- the state-machine state/awaiter-slot issue)", "deps": ["neo-step23-24-roundtrip-regression"], "size": "LARGE" },
+      { "id": "neo-async-execctx-capture", "scope": "Async AwaitOnCompleted ExecutionContext/SynchronizationContext capture (AwaitOnCompleted_Neo mirrors AwaitUnsafeOnCompleted without capture)", "deps": ["neo-async-multi-await"], "size": "mod" },
+      { "id": "neo-async-valuetask-asyncvoid", "scope": "Async ValueTask<T> suspend path + async void suspend path", "deps": ["neo-async-multi-await"], "size": "mod" },
+      { "id": "neo-async-taskrun-ildelegate", "scope": "Async IL-delegate-through-CLR-method round-trip (Task.Run(ilLambda))", "deps": ["neo-async-multi-await"], "size": "mod-large" },
+      { "id": "neo-async-valuetask-zeroalloc", "scope": "Async perf: zero-alloc ValueTask<T> (the suspend path may allocate a Task<T>/TCS bridge)", "deps": ["neo-async-valuetask-asyncvoid"], "size": "mod" },
+      { "id": "neo-aot-clrbase-iface", "scope": "AOT/S3-2 Cecil-free: CLR base/interface resolution (a Cecil-free type whose base/interface is a CLR type needing a CrossBindingAdaptor)", "deps": ["neo-async-valuetask-zeroalloc"], "size": "LARGE" },
+      { "id": "neo-aot-generic-cecilfree", "scope": "AOT/S3-2 Cecil-free: generic-method/type instances (S2 T-identity-token re-resolution + cross-AppDomain generic-instance)", "deps": ["neo-aot-clrbase-iface"], "size": "LARGE" },
+      { "id": "neo-aot-crossprocess", "scope": "AOT/S3-2 Cecil-free: cross-PROCESS load (P1-built .neo in P2; APPROACH-1 hashes already process-independent)", "deps": ["neo-aot-generic-cecilfree"], "size": "mod" },
+      { "id": "neo-aot-multi-hotfix", "scope": "AOT/S3-2 Cecil-free: multi-hotfix-assembly cross-references (one IL hotfix referencing another IL hotfix's types)", "deps": ["neo-aot-crossprocess"], "size": "mod-large" },
+      { "id": "neo-debugger-ilvt-local", "scope": "Debugger: IL-value-type-LOCAL reconstruction (placeholder string -> the struct's fields)", "deps": ["neo-aot-multi-hotfix"], "size": "mod" },
+      { "id": "neo-debugger-aot-body", "scope": "Debugger: AOT-body variable inspection (registerSymbols null on AOT -> serialize var metadata into .neo)", "deps": ["neo-debugger-ilvt-local"], "size": "mod-large" },
+      { "id": "neo-debugger-cli-protocol", "scope": "Debugger: CLI debugger-protocol capstone (VSCode DAP frontend Debugging/VS2022/ + ~6 protocol/frontend methods)", "deps": ["neo-debugger-aot-body"], "size": "LARGE" },
+      { "id": "neo-byref-clr2il-delegate", "scope": "Byref: CLR->IL delegate callback with a byref param (List.ForEach(ilActionWithRefParam)) -- reverse direction of F-7", "deps": ["neo-debugger-cli-protocol"], "size": "mod-large" },
+      { "id": "neo-byref-ldind-ref-heap", "scope": "Byref: the Step-17 ldind_ref heap-IL-ref-field read (ILIntepreter.Neo.cs:3862)", "deps": ["neo-byref-clr2il-delegate"], "size": "mod" },
+      { "id": "neo-aot-byref-wireup", "scope": "Byref: AOT (ilrt_neoc) wire-up of the F-7 byref map", "deps": ["neo-byref-ldind-ref-heap"], "size": "mod" },
+      { "id": "neo-array-multidim-ilvt", "scope": "Array: IL VT-element multi-dim array [,] + multi-dim Address (ldelema) -- real remaining gaps from neo-array-multidim", "deps": ["neo-aot-byref-wireup"], "size": "mod-large" },
+      { "id": "neo-qstruct-reproducer", "scope": "Reproducer: Q-STRUCT (struct-local + field-mutation + element-read temp-renumber) -- construct on HEAD; fix if reproduces else confirmed-closed", "deps": ["neo-array-multidim-ilvt"], "size": "mod" },
+      { "id": "neo-qlong-reproducer", "scope": "Reproducer: Q-LONG (long default-zero compare / conv.i8 quirk) -- construct on HEAD; fix if reproduces else confirmed-closed", "deps": ["neo-qstruct-reproducer"], "size": "mod" }
     ],
     "blockedNeedsReproducer": ["Q-STRUCT", "Q-LONG"],
-    "blockedNote": "Q-STRUCT/Q-LONG are NOT reproducible on HEAD (probes pass); genuinely unactionable until a reproducer lands -- recorded, not 'left undone'."
+    "blockedNote": "completion-3 (lead-4): Q-STRUCT/Q-LONG now have dedicated reproducer children (neo-qstruct-reproducer / neo-qlong-reproducer) -- construct a reproducer on HEAD; fix if it reproduces, else confirmed-closed (the only legitimate close)."
   },
   "planner": null,
   "sessionHandoff": { "path": "handoff/lead-3.md", "afterStage": "completion-2 wave: COMMON case of every feature shipped (15 children); the harder variants were over-claimed as Non-Goals and are NOT done -- next session drives them to FULL completion (no deferral). frontier EMPTY but Remaining list is the real open work", "at": "2026-07-09", "head": "903dd261", "baseline": "NeoStep 238/0/0; NeoStep25CecilFreeLoad 5/5; NeoStep25LoadExec 28/28; NeoStep26Bench 5/5; NeoDebuggerFrame 4/4; NeoF4ParamRun 2/2; NeoStep22/23/24 green; NeoOptHardening 24/24", "note": "COMMON-case complete (async single-await, reflection, AOT-standalone Cecil-free load + .cctor, debugger var inspection, byref incl. write-back). Harder variants remain (async multi-await/ExecCtx/ValueTask/Task.Run; S3-2 Cecil-free CLR-base/generic/cross-process; debugger IL-VT-local/AOT-body/CLI-protocol; byref CLR->IL-callback/ldind_ref). The Non-Goals framing that left this tail is REMOVED from the handoff -- next session treats them as must-do. lead-3.md 'Remaining' = the complete task list." },
@@ -291,10 +297,87 @@
       "prerequisites": ["neo-step20-async", "neo-step25-runtime-loader"], "dependsOn": ["neo-step20-async", "neo-step25-runtime-loader"], "status": "done", "capability": "neo-optimizer",
       "completedDate": "2026-07-08", "smoke": "NeoStep26Bench 5/5 (adversarial correctness-gate proven load-bearing) + NeoStep 215/215 + NeoStep25LoadExec 21/21 + NeoStep22 55/55; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major; Minor dead-divide-assert + 3 Minor/Trivial accepted-known). Last numbered AOT-chain step."
+    },
+    "neo-step23-24-roundtrip-regression": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "REGRESSION (red baseline discovered 2026-07-09, lead-4): NeoStep23Roundtrip 13/15 (GenericProbe + FullModel throw InvalidCastException ILGenericParameterType -> CLRType on the generic-constrained-on-VT roundtrip) + NeoStep24CliRoundtrip 4/5 (Cell1 .cctor IndexOutOfRangeException). lead-3 over-claimed 15/15 + 5/5. Dump-gate triage first; fix to restore the green baseline before driving new features.",
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-09", "smoke": "NeoStep23Roundtrip 15/15 + NeoStep24CliRoundtrip 5/5 + NeoStep 238/0/0 (LEAD re-verified post-concurrent-workers); stash-toggle RED->GREEN proven", "review": "LEAD-verify (non-author re-ran gates on the post-concurrent-worker tree; 3 files +41/-2, all #if ENABLE_NEO_MODE, Legacy-neutral)"
+    },
+    "neo-async-multi-await": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Async multi-await suspend/resume (an SM with >=2 incomplete awaits double-suspends -- the state-machine state/awaiter-slot issue)",
+      "prerequisites": ["neo-step23-24-roundtrip-regression"], "dependsOn": ["neo-step23-24-roundtrip-regression"], "status": "pending", "capability": "neo-async"
+    },
+    "neo-async-execctx-capture": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Async AwaitOnCompleted ExecutionContext/SynchronizationContext capture (AwaitOnCompleted_Neo currently mirrors AwaitUnsafeOnCompleted without the capture)",
+      "prerequisites": ["neo-async-multi-await"], "dependsOn": ["neo-async-multi-await"], "status": "pending", "capability": "neo-async"
+    },
+    "neo-async-valuetask-asyncvoid": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Async ValueTask<T> suspend path + async void suspend path",
+      "prerequisites": ["neo-async-execctx-capture"], "dependsOn": ["neo-async-execctx-capture"], "status": "pending", "capability": "neo-async"
+    },
+    "neo-async-taskrun-ildelegate": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Async IL-delegate-through-CLR-method round-trip (Task.Run(ilLambda))",
+      "prerequisites": ["neo-async-valuetask-asyncvoid"], "dependsOn": ["neo-async-valuetask-asyncvoid"], "status": "pending", "capability": "neo-async"
+    },
+    "neo-async-valuetask-zeroalloc": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Async perf: zero-alloc ValueTask<T> (the suspend path may allocate a Task<T>/TCS bridge)",
+      "prerequisites": ["neo-async-taskrun-ildelegate"], "dependsOn": ["neo-async-taskrun-ildelegate"], "status": "pending", "capability": "neo-async"
+    },
+    "neo-aot-clrbase-iface": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "AOT/S3-2 Cecil-free: CLR base/interface resolution (a Cecil-free type whose base/interface is a CLR type needing a CrossBindingAdaptor) -- the NEO-AOT-ADAPTOR-SKIP inverse",
+      "prerequisites": ["neo-async-valuetask-zeroalloc"], "dependsOn": ["neo-async-valuetask-zeroalloc"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-aot-generic-cecilfree": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "AOT/S3-2 Cecil-free: generic-method/type instances (S2 T-identity-token re-resolution + cross-AppDomain generic-instance)",
+      "prerequisites": ["neo-aot-clrbase-iface"], "dependsOn": ["neo-aot-clrbase-iface"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-aot-crossprocess": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "AOT/S3-2 Cecil-free: cross-PROCESS load (P1-built .neo in P2; APPROACH-1 hashes are already process-independent)",
+      "prerequisites": ["neo-aot-generic-cecilfree"], "dependsOn": ["neo-aot-generic-cecilfree"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-aot-multi-hotfix": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "AOT/S3-2 Cecil-free: multi-hotfix-assembly cross-references (one IL hotfix referencing another IL hotfix's types)",
+      "prerequisites": ["neo-aot-crossprocess"], "dependsOn": ["neo-aot-crossprocess"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-debugger-ilvt-local": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Debugger: IL-value-type-LOCAL reconstruction (the placeholder string -> the struct's fields)",
+      "prerequisites": ["neo-aot-multi-hotfix"], "dependsOn": ["neo-aot-multi-hotfix"], "status": "pending", "capability": "neo-debugger"
+    },
+    "neo-debugger-aot-body": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Debugger: AOT-body variable inspection (registerSymbols null on AOT -> serialize var metadata into .neo)",
+      "prerequisites": ["neo-debugger-ilvt-local"], "dependsOn": ["neo-debugger-ilvt-local"], "status": "pending", "capability": "neo-debugger"
+    },
+    "neo-debugger-cli-protocol": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Debugger: CLI debugger-protocol capstone (VSCode DAP frontend Debugging/VS2022/ + ~6 protocol/frontend methods)",
+      "prerequisites": ["neo-debugger-aot-body"], "dependsOn": ["neo-debugger-aot-body"], "status": "pending", "capability": "neo-debugger"
+    },
+    "neo-byref-clr2il-delegate": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Byref: CLR->IL delegate callback with a byref param (List.ForEach(ilActionWithRefParam)) -- the reverse direction of F-7",
+      "prerequisites": ["neo-debugger-cli-protocol"], "dependsOn": ["neo-debugger-cli-protocol"], "status": "pending", "capability": "neo-byref"
+    },
+    "neo-byref-ldind-ref-heap": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Byref: the Step-17 ldind_ref heap-IL-ref-field read (ILIntepreter.Neo.cs:3862)",
+      "prerequisites": ["neo-byref-clr2il-delegate"], "dependsOn": ["neo-byref-clr2il-delegate"], "status": "pending", "capability": "neo-byref"
+    },
+    "neo-aot-byref-wireup": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Byref: AOT (ilrt_neoc) wire-up of the F-7 byref map",
+      "prerequisites": ["neo-byref-ldind-ref-heap"], "dependsOn": ["neo-byref-ldind-ref-heap"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-array-multidim-ilvt": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Array: IL VT-element multi-dim array [,] (a multi-dim array with IL value-type elements) + multi-dim Address (ldelema) -- real remaining gaps from neo-array-multidim",
+      "prerequisites": ["neo-aot-byref-wireup"], "dependsOn": ["neo-aot-byref-wireup"], "status": "pending", "capability": "neo-arrays"
+    },
+    "neo-qstruct-reproducer": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Reproducer: Q-STRUCT (struct-local + field-mutation + element-read temp-renumber) -- construct on HEAD; fix if reproduces else confirmed-closed",
+      "prerequisites": ["neo-array-multidim-ilvt"], "dependsOn": ["neo-array-multidim-ilvt"], "status": "pending", "capability": "neo-optimizer"
+    },
+    "neo-qlong-reproducer": {
+      "pipeline": "small-feature", "wave": "completion-3", "scope": "Reproducer: Q-LONG (long default-zero compare / conv.i8 quirk) -- construct on HEAD; fix if reproduces else confirmed-closed",
+      "prerequisites": ["neo-qstruct-reproducer"], "dependsOn": ["neo-qstruct-reproducer"], "status": "pending", "capability": "neo-optimizer"
     }
   },
-  "runnableFrontier": [],
-  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling", "neo-peephole-isinst", "neo-async-movenext-fix", "neo-step25-s3-clr-registration", "neo-step25-clr-adaptor", "neo-f4-reflection-on-neo", "neo-f4-parametrized-run-entry", "neo-step25-s3-cecil-free-load", "neo-step25-s3-ccctor", "neo-f4-surfaced-gaps", "neo-debugger-neo-frame", "neo-f13-nested-run-executeneo", "neo-latent-edges", "neo-f7-delegate-byref", "neo-f7b-reftype-writeback", "neo-peephole-pass", "neo-f7b-sib-direct-call"],
+  "runnableFrontier": ["neo-async-multi-await"],
+  "completedChildren": ["neo-vt-this-addr", "neo-opt-harden-2", "neo-il-exception-throw", "neo-step13-area4", "neo-step17-completion", "neo-step19-delegate", "neo-k2fam-bridge", "neo-vt-ldflda-inline", "neo-opportunistic-cleanup", "neo-array-completion", "neo-double-combine-quirk", "neo-step13-area4-refandstind", "neo-step17-stobj-refloop", "neo-step20-async", "neo-clrstruct-field-of-il", "neo-array-multidim", "neo-step17-generic-byref-etc", "neo-step20-async-suspend", "neo-async-controlflow-iscompleted", "neo-step22-generic-template", "neo-step23-neoassembly", "neo-step24-ilrt-neoc", "neo-step25-runtime-loader", "neo-step25-s2-generic-at-load", "neo-step26-perf-validation", "neo-generic-redirect-resolution", "neo-step25-s3-full-decoupling", "neo-peephole-isinst", "neo-async-movenext-fix", "neo-step25-s3-clr-registration", "neo-step25-clr-adaptor", "neo-f4-reflection-on-neo", "neo-f4-parametrized-run-entry", "neo-step25-s3-cecil-free-load", "neo-step25-s3-ccctor", "neo-f4-surfaced-gaps", "neo-debugger-neo-frame", "neo-f13-nested-run-executeneo", "neo-latent-edges", "neo-f7-delegate-byref", "neo-f7b-reftype-writeback", "neo-peephole-pass", "neo-f7b-sib-direct-call", "neo-step23-24-roundtrip-regression"],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "notes": "Wave 1 children are independent roots but run SERIAL (shared files). Frontier advances one child at a time per user autonomy directive.Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push."

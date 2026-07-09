@@ -1453,7 +1453,15 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         static void LowerR1(ref OpCodeR op, StackSlotInfo[] localInfos)
         {
             short r1 = op.Register1;
-            int off1 = localInfos[r1].Offset;
+            // A void method's `ret` (JIT Code.Ret leaves Register1 at its default
+            // 0 when hasReturn==false) reaches here with r1 pointing past the
+            // (possibly empty) localInfos -- a phantom register that holds no
+            // value. ExecuteNeo only reads DstOffset when there IS a return value,
+            // so an out-of-range index resolves to offset 0 (harmless). Mirrors the
+            // defensive `reg >= 0 && reg < localInfos.Length` pattern already used
+            // by the comparison/lower sites below. Fixes the empty static .cctor
+            // IndexOutOfRangeException (NeoStep24CliProbe..cctor).
+            int off1 = (r1 >= 0 && r1 < localInfos.Length) ? localInfos[r1].Offset : 0;
             op.DstOffset = (ushort)off1;
         }
 

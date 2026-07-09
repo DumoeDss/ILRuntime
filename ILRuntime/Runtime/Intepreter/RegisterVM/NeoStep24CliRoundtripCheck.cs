@@ -111,6 +111,16 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 if (t.GetMethods() != null)
                     foreach (var m in t.GetMethods()) { var ilm = m as ILMethod; if (ilm != null) tm.Add(ilm); }
                 if (t.GetConstructors() != null) tm.AddRange(t.GetConstructors());
+                // Mirror the driver (NeoCompiler.CompileCore): the static .cctor
+                // is NOT in GetConstructors() (it routes to the separate
+                // staticConstructor field), so the driver appends it explicitly via
+                // GetStaticConstroctor() and force-compiles it into methods[]. The
+                // replication MUST do the same or ngen is short by the cctor count
+                // (Cell3 counts+split + the positional Cell5 fresh-body check).
+                {
+                    var cctor = t.GetStaticConstroctor() as ILMethod;
+                    if (cctor != null) tm.Add(cctor);
+                }
                 foreach (var ilm in tm)
                 {
                     if (ilm.IsGenericInstance) continue;

@@ -4069,3 +4069,19 @@ accepted-known-deferred entry + §4 Resolved bullet). The follow-ups to track:
   Non-blocking but recurring; flag for any future change that adds new test
   symbols.
 
+
+## completion-3 durable findings (lead-4, 2026-07-09)
+
+Appended as each child's workers report durable findings (constraints/conventions true for FUTURE work). Feed these into the next planner.
+
+### neo-step23-24-roundtrip-regression (DONE) -- investigator findings
+- ILGenericParameterType is a THIRD IType kind (alongside ILType/CLRType) -- it carries a Cecil TypeReference. Any code that switches on IType and falls through to a (CLRType) cast will throw on open-generic method/type surfaces. Route it like ILType (use its .TypeReference). Match the HybridPatch TypeReferencePatchInfo.Create(IType,...) convention.
+- dotnet run --no-build runs the LAST successful build's binary -- if your edit fails to compile, the run silently executes a STALE binary and your diagnostics won't appear. Always confirm 0 errors before trusting --no-build output.
+- The shared JIT Code.Ret leaves Register1 = 0 for void methods (only sets it when hasReturn). This is a latent phantom-register source; Neo-only lowering consumers that index frame.LocalInfos[register] must bounds-check (LowerR1/LowerR1R2/LowerR1R2R3 + inline Box/Unbox/Ldstr/Ldftn sites do not). The empty-.cctor path (S3-4 force-compiles it) is the current trigger.
+- CONCURRENCY LESSON (lead-4): the regression-fixer + async-planner ran concurrently; the planner observed debug cruft in a file the fixer had edited and 'restored to HEAD'. Always RE-VERIFY the working tree (git diff --stat + grep fix markers + re-run gates) before committing after concurrent workers -- a co-worker cleanup can mask/revert an uncommitted fix. Here benign (planner removed only non-logic WriteLine cruft; fix survived); LEAD re-ran the gates to prove it.
+
+### neo-async-multi-await (planner DONE, impl next) -- async-machinery findings
+- The active await's identity lives in the SM's single reused <>u__1 AWAITER FIELD, NOT the Task operand fields. Roslyn reuses one <>u__1 (overwriting it before each AwaitUnsafeOnCompleted); ManagedObjects is field-declaration order, so any 'pick a Task field' heuristic over operand fields is AMBIGUOUS for multi-await. GetAwaiterTask(<>u__1) = the currently-awaited Task. Future async recovery code MUST key off the awaiter field, never a Task-field scan.
+- <>1__state is the resume discriminator (Roslyn writes the await's state number before each suspend): 0 at await1, 1 at await2, ... Read via FieldMapping['<>1__state'] -> GetFieldOffset(idx).PrimitiveOffset -> Marshal.ReadInt32(sm.Primitives, off). At resume MoveNext reloads the correct awaiter into <>u__1 driven by <>1__state.
+- The suspend frame's awaiter argument is NOT a clean (objIdx,off) Ref Slot at frameBase+8 (unlike SetResult's builder byref at slot 0) -- measured a garbage objIdx. Do NOT read the awaiter from the AwaitUnsafeOnCompleted frame args; use the heap <>u__1 field.
+- A single shared TaskCompletionSource host cell cannot back two simultaneous incomplete awaits (completing swaps a fresh one, staling the first operand). A multi-await deterministic probe needs >=2 independent TCS host cells.
