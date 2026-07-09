@@ -295,6 +295,38 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 25 neo-aot-generic-cecilfree host-side self-check (child 8): the
+            // cross-section of the S3-2 Cecil-free load + the S2 generic-instantiation-
+            // at-load machinery. Compiles a type with a generic method Echo<T> +
+            // wrappers -> .neo in A (Cecil), Cecil-free-LOADS into a fresh AppDomain B,
+            // invokes the wrappers via domainB.Invoke, asserts each == expected. The
+            // generic arg T is re-resolved Cecil-free + the call routes through Step-22
+            // CloneAndPatch against the AOT template. Guards: G1 template-bind coverage
+            // (FAILs on HEAD); G2 template body-mutation (distinguishes AOT-template
+            // from a JIT/Cecil fallback).
+            if (nameFilter == "NeoStep25CecilFreeGeneric")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25CecilFreeGenericCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 Cecil-free generic: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed. Attach: {r.AttachedCount} attached, {r.SkippedCount} skipped.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                    foreach (var s in r.Skipped)
+                        Console.WriteLine($"  SKIP: {s}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25CecilFreeGeneric threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // perf-validation capstone; the LAST numbered AOT-chain step).
             // Drives 5 bench workloads via appdomain.Invoke, host-times each
             // with a real Stopwatch, asserts each returned its expected
