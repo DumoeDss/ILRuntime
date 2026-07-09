@@ -145,6 +145,22 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // case (astronomically rare; falls back to the pre-F-10 path, does not
         // corrupt other fields).
         public const int NeoLdfldaClrStructFieldMarker = 0x2;
+        // neo-byref-ldind-ref-heap: a HEAP IL REFERENCE-typed field (string /
+        // IL-class / object field declared on an IL heap class) is laid out as a
+        // ManagedObjects slot at ReferenceOffset (NOT a Primitives byte offset).
+        // Stamped on Ldflda's standalone Operand4 (bit 0x4) when the declaring
+        // type is an ILType AND the field is a non-value, non-primitive type (a
+        // reference field). Mutually exclusive with F-6 (0x1, in-frame-VT source)
+        // and F-10 (0x2, CLR-struct field) -- a reference field is neither an
+        // in-frame VT nor a CLR value type. The runtime Ldflda arm produces a
+        // byref carrying (objIdx, ReferenceOffset) (NO offset-flag); the
+        // ldind_ref/stind_ref consumer arms dispatch on `mStack[objIdx] is
+        // ILTypeInstance` (content-based) to route to ManagedObjects[refOff].
+        // (A bit-flag in the offset half was REJECTED: CLR field-hash offset
+        //  values are non-deterministic and can set high bits, colliding with any
+        //  flag bit and causing intermittent mis-dispatch on the 4d CLR-object
+        //  path. Content-based dispatch avoids the collision entirely.)
+        public const int NeoLdfldaHeapIlRefFieldMarker = 0x4;
         // The runtime byref offset-half flag for an F-10 byref (set by the
         // Ldflda arm): the offset half carries (ReferenceOffset | this flag) so
         // the consumer arms can distinguish "this offset is a ManagedObjects
@@ -1043,6 +1059,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 // but the operand is a heap boxed object that
                                 // correctly needs F-10).
                                 op.Operand4 &= ~NeoLdfldaClrStructFieldMarker;
+                                // neo-byref-ldind-ref-heap: same gate for the
+                                // heap-IL-ref-field marker. An in-frame-VT source
+                                // (e.g. an IL struct `struct S { public string s; }`
+                                // with `ldflda this.s`) must route through the F-6
+                                // frame-native branch (the ref field sits in the
+                                // frame ref region at a frame-relative offset), NOT
+                                // the heap-ManagedObjects branch. The body stamps
+                                // bit 0x4 for any IL-declared reference field; clear
+                                // it here for the in-frame-VT operand (same condition
+                                // as the F-10 clear above; boxed-IL-VT-with-ref-field
+                                // keeps the marker -- the operand is a heap object).
+                                op.Operand4 &= ~NeoLdfldaHeapIlRefFieldMarker;
                             }
                         }
                         break;
@@ -2600,6 +2628,16 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         // ManagedObjects[refOff].
                         if (IsClrStructFieldOfIL(type, fieldType))
                             op.Operand4 |= NeoLdfldaClrStructFieldMarker;
+                        // neo-byref-ldind-ref-heap: a reference-typed field of a
+                        // heap IL class (string / IL-class / object) is stored in
+                        // ManagedObjects[ReferenceOffset], NOT Primitives. Stamp
+                        // bit 0x4 so the runtime Ldflda arm produces a byref
+                        // carrying ReferenceOffset (unflagged; ldind_ref/stind_ref
+                        // dispatch on `mStack[objIdx] is ILTypeInstance`).
+                        // Mutually exclusive with F-6/F-10 (a ref field is neither
+                        // an in-frame VT nor a CLR value type).
+                        else if (type is ILType && !fieldType.IsValueType && !fieldType.IsPrimitive)
+                            op.Operand4 |= NeoLdfldaHeapIlRefFieldMarker;
                     }
 #else
                     op.OperandLong = appdomain.GetStaticFieldIndex(token, declaringType, method);

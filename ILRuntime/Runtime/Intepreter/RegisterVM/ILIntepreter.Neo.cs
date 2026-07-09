@@ -1411,8 +1411,29 @@ namespace ILRuntime.Runtime.Intepreter
                                     int fieldPrimOff = ip->Operand2;
                                     bool inlineMarker = (ip->Operand4 & JITCompiler.NeoLdfldaInlineMarker) != 0;
                                     bool clrStructFieldMarker = (ip->Operand4 & JITCompiler.NeoLdfldaClrStructFieldMarker) != 0;
+                                    bool heapIlRefFieldMarker = (ip->Operand4 & JITCompiler.NeoLdfldaHeapIlRefFieldMarker) != 0;
                                     int objIdx = *(int*)(frameBase + operandSlotOff + 0);
-                                    if (clrStructFieldMarker && objIdx >= 0)
+                                    if (heapIlRefFieldMarker && objIdx >= 0)
+                                    {
+                                        // neo-byref-ldind-ref-heap: the operand is a HEAP IL
+                                        // reference instance and the addressed field is a
+                                        // REFERENCE-typed field (string / IL-class / object)
+                                        // laid out as a ManagedObjects slot at ReferenceOffset
+                                        // (NOT a Primitives byte offset). Produce a byref
+                                        // (objIdx, ReferenceOffset). No bit-flag is needed: a
+                                        // reference load/store (ldind_ref/stind_ref) on a heap
+                                        // IL instance ALWAYS targets ManagedObjects (a ref
+                                        // field's storage), so the consumer arms dispatch on
+                                        // `mStack[objIdx] is ILTypeInstance` (content-based,
+                                        // AFTER the F-7B bit-30 caller-owned-slot flag and the
+                                        // CLR-array/CLR-object arms), avoiding any collision
+                                        // with non-deterministic CLR field-hash offset values
+                                        // that may set high bits. objIdx is the IL instance's
+                                        // mStack index (>= 0).
+                                        *(int*)(frameBase + dst + 0) = objIdx;
+                                        *(int*)(frameBase + dst + 4) = ip->Operand3;
+                                    }
+                                    else if (clrStructFieldMarker && objIdx >= 0)
                                     {
                                         // F-10 / NEO-CLRSTRUCT-FIELD-OF-IL (shape 4): the
                                         // operand is a HEAP IL reference instance and the
@@ -4206,8 +4227,9 @@ namespace ILRuntime.Runtime.Intepreter
                                     // hash accessor (off is the FieldInfo hash). Heap-
                                     // IL ref field: write the ManagedObjects entry (off
                                     // is the field's reference offset, stamped by Ldflda
-                                    // via the Operand3 marker -- not yet wired, so NIE
-                                    // for the heap-ref sub-case this step).
+                                    // via the heapIlRefFieldMarker; dispatch is content-
+                                    // based `mStack[objIdx] is ILTypeInstance` -- the
+                                    // neo-byref-ldind-ref-heap child).
                                     int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     int vIdx = *(int*)(frameBase + ip->SrcOffset);
@@ -4235,10 +4257,30 @@ namespace ILRuntime.Runtime.Intepreter
                                     {
                                         NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, vIdx >= 0 ? mStack[vIdx] : null);
                                     }
+                                    else if (mStack[objIdx] is ILTypeInstance refIns)
+                                    {
+                                        // neo-byref-ldind-ref-heap: a byref produced by
+                                        // `ldflda &heapInstance.<refField>` (a reference field of
+                                        // a heap IL class). objIdx is the IL instance's mStack
+                                        // index; off is the field's ReferenceOffset (stamped by
+                                        // the Ldflda heap arm via the heapIlRefFieldMarker).
+                                        // Store the NEW object into the instance's
+                                        // ManagedObjects[off]. Dispatch is content-based
+                                        // (mStack[objIdx] is ILTypeInstance), placed AFTER the
+                                        // F-7B bit-30 caller-owned-slot flag + the CLR-array /
+                                        // CLR-object arms, so it never collides with non-
+                                        // deterministic CLR field-hash offset values. (A heap IL
+                                        // ref field is the ONLY `ldind_ref`/`stind_ref` target
+                                        // whose mStack slot is an ILTypeInstance; the F-7B
+                                        // caller-owned-slot reference-byref sets the bit-30 flag
+                                        // and is handled above, so an F-7B-promoted IL-class
+                                        // referent never reaches this branch.)
+                                        refIns.ManagedObjects[off] = vIdx >= 0 ? mStack[vIdx] : null;
+                                    }
                                     else
                                     {
                                         throw new NotImplementedException(
-                                            "Step 17: stind_ref on a heap IL ref field is deferred (ref-field Ref Slot encoding)");
+                                            "Step 17: stind_ref on an unsupported byref shape (not frame-native / caller-owned-slot / CLR-array / CLR-object / heap-IL-ref-field)");
                                     }
                                 }
                                 break;
@@ -4307,10 +4349,33 @@ namespace ILRuntime.Runtime.Intepreter
                                         else
                                             *(int*)(frameBase + ip->DstOffset) = -1;
                                     }
+                                    else if (mStack[objIdx] is ILTypeInstance refIns)
+                                    {
+                                        // neo-byref-ldind-ref-heap: a byref produced by
+                                        // `ldflda &heapInstance.<refField>` (a reference field of
+                                        // a heap IL class). objIdx is the IL instance's mStack
+                                        // index; off is the field's ReferenceOffset (stamped by
+                                        // the Ldflda heap arm via the heapIlRefFieldMarker).
+                                        // Read ManagedObjects[off] and materialize into the dest
+                                        // ref slot. Content-based dispatch (placed AFTER the
+                                        // F-7B bit-30 caller-owned-slot flag + the CLR-array /
+                                        // CLR-object arms) avoids collision with non-deterministic
+                                        // CLR field-hash offset values. (See Stind_Ref for the
+                                        // F-7B-promoted-IL-class-referent rationale.)
+                                        object elem = refIns.ManagedObjects[off];
+                                        if (elem != null)
+                                        {
+                                            dstIdx = frameRefBase + ip->Operand3;
+                                            mStack[dstIdx] = elem;
+                                            *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                        }
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
+                                    }
                                     else
                                     {
                                         throw new NotImplementedException(
-                                            "Step 17: ldind_ref on a heap IL ref field is deferred (ref-field Ref Slot encoding)");
+                                            "Step 17: ldind_ref on an unsupported byref shape (not frame-native / caller-owned-slot / CLR-array / CLR-object / heap-IL-ref-field)");
                                     }
                                 }
                                 break;

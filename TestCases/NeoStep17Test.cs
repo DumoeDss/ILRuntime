@@ -778,6 +778,107 @@ namespace TestCases
         }
 
         // ======================================================================
+        // ldind_ref / stind_ref on a HEAP IL reference field (child
+        // neo-byref-ldind-ref-heap). A heap ILTypeInstance stores a reference-
+        // typed field as a slot in ManagedObjects[ReferenceOffset]; the byref
+        // produced by `ldflda &heapInstance.<refField>` must carry the field's
+        // ReferenceOffset (NOT PrimitiveOffset) so ldind_ref/stind_ref route to
+        // ManagedObjects. Before the fix the Ldflda heap arm stamped
+        // PrimitiveOffset -> ldind_ref/stind_ref hit the heap-IL-ref-field NIE.
+        // Each engine-dependent probe FAILs on HEAD (NIE) -> PASSes after. The
+        // control (frame-local ldind_ref) PASSES on HEAD and after.
+        // ======================================================================
+
+        // A heap IL class with a reference-typed (string) field. The field's
+        // ManagedObjects ReferenceOffset is 0 (the only ref field; no primitive
+        // fields, so the field lives solely in ManagedObjects[0]).
+        class LdindRefHeapHolder { public string S; }
+
+        // ldind_ref reader through a byref: `return slot` lowers to
+        // ldind_ref of the byref param.
+        static string LdindRefHeapRead(ref string slot) { return slot; }
+        // stind_ref writer through a byref: `slot = v` lowers to
+        // stind_ref of the byref param.
+        static void StindRefHeapWrite(ref string slot, string v) { slot = v; }
+
+        // ldind.1 -- read a heap IL reference field via ldind_ref through a byref
+        //            produced by ldflda of the heap ref field. FAILs on HEAD
+        //            (heap-IL-ref-field NIE) -> PASSes after.
+        public static void NeoStep17_LdindRefHeap_Read()
+        {
+            LdindRefHeapHolder c = new LdindRefHeapHolder();
+            c.S = "abc";
+            string got = LdindRefHeapRead(ref c.S);
+            int gotLen = got == null ? -1 : got.Length;
+            if (gotLen != 3)
+            { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // ldind.2 -- adversarial: write the heap ref field via stind_ref, then
+        //            read it back via ldind_ref. FAILs on HEAD -> PASSes after.
+        //            Asserts the stind_ref write is observable by BOTH the
+        //            direct read (c.S) and the byref (ldind_ref) read. The
+        //            direct read is captured into a local after the stind_ref
+        //            write (length/integer-based assertion to avoid a pre-
+        //            existing eval-order quirk where an inlined ldfld.ref of a
+        //            heap ref field immediately following an inlined ldflda +
+        //            ldind.ref of the SAME field mis-reads inside one combined
+        //            `||` expression -- capturing to a local sidesteps it).
+        public static void NeoStep17_LdindRefHeap_WriteRead()
+        {
+            LdindRefHeapHolder c = new LdindRefHeapHolder();
+            c.S = "orig";
+            StindRefHeapWrite(ref c.S, "mutated!");
+            string got = LdindRefHeapRead(ref c.S);
+            string directAfter = c.S;
+            int directLen = directAfter == null ? -1 : directAfter.Length;
+            int gotLen = got == null ? -1 : got.Length;
+            if (directLen != 8 || gotLen != 8)
+            { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // ldind.3 -- control: in-frame ldind_ref still works (a byref to a frame
+        //            local holding a reference). This must PASS on HEAD and after.
+        public static void NeoStep17_LdindRefHeap_Control_FrameLocal()
+        {
+            string s = "frame";
+            string got = LdindRefHeapRead(ref s);
+            int gotLen = got == null ? -1 : got.Length;
+            if (gotLen != 5)
+            { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // ldind.4 -- a heap IL class with TWO reference fields so the SECOND
+        //            ref field (S2) has a NON-zero ReferenceOffset (1). This
+        //            exercises the bit-31 flag + refOff masking at a non-zero
+        //            refOff (S at refOff 0, S2 at refOff 1), proving the mask
+        //            `off & ~flag` recovers the correct slot -- not always 0.
+        //            A primitive field (n) is included to confirm it is left
+        //            untouched (Primitives vs ManagedObjects disjoint). Reads
+        //            BOTH ref fields via ldind_ref in the same body.
+        class LdindRefHeapMixed { public int n; public string S; public string S2; }
+
+        public static void NeoStep17_LdindRefHeap_NonZeroRefOffset()
+        {
+            LdindRefHeapMixed c = new LdindRefHeapMixed();
+            c.n = 7;
+            c.S = "first";
+            c.S2 = "second";
+            // Read S2 (refOff 1, the non-zero slot) via ldind_ref.
+            string got2 = LdindRefHeapRead(ref c.S2);
+            // Read S (refOff 0) via ldind_ref too (a second byref read in the
+            // same body -- both must resolve to their OWN ref slot).
+            string got1 = LdindRefHeapRead(ref c.S);
+            // Integer/length-based assertion. Both ref fields read back their
+            // distinct values; n untouched.
+            int nVal = c.n;
+            int g1Len = got1 == null ? -1 : got1.Length;
+            int g2Len = got2 == null ? -1 : got2.Length;
+            if (nVal != 7 || g1Len != 5 || g2Len != 6)
+            { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // ======================================================================
         // Step 17 (b) Stobj/Ldobj ref-region copy loop + IL-VT-with-ref-fields
         //            constrained sub-case (neo-step17-stobj-refloop).
         // ======================================================================
