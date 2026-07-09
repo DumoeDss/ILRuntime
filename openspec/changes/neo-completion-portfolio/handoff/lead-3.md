@@ -81,10 +81,11 @@ Legacy-neutral. Categorized:
 - AOT-body variable inspection (`registerSymbols` null on AOT -> serialize var metadata into `.neo`).
 - CLI debugger-protocol capstone (the VSCode DAP frontend `Debugging/VS2022/` + the ~6 protocol/frontend methods).
 
-**Byref (complete the byref coverage):**
+**Byref / array (complete the byref + multi-dim-IL-VT coverage):**
 - CLR->IL delegate callback with a byref param (`List.ForEach(ilActionWithRefParam)`) -- the reverse direction of F-7.
 - The Step-17 `ldind_ref` heap-IL-ref-field read (`ILIntepreter.Neo.cs:3862`).
 - AOT (`ilrt_neoc`) wire-up of the F-7 byref map.
+- IL VT-element multi-dim array `[,]` (a multi-dim array with IL value-type elements) + multi-dim `Address` (ldelema) -- real remaining gaps from neo-array-multidim.
 
 **Need a reproducer first (construct one on current HEAD; if it reproduces -> fix; if not ->
 confirmed-closed, NOT deferred):**

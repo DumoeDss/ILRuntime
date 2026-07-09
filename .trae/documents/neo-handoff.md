@@ -345,7 +345,7 @@ is the source of truth; this section is a quick orientation.
   (autogen-binder path already worked; closed 3 reflection-fallback defects in
   `CLRMethod.cs`/`ILIntepreter.Neo.cs`: null-ref-return encoding, null-`this` NRE
   guard, shared `TargetInvocationException` unwrap at 6 sites — Legacy-neutral).
-  Neo 198/198. IL VT-element `[,]` stays a Non-Goal.
+  Neo 198/198. IL VT-element `[,]` (a multi-dim array with IL value-type elements) is a real remaining gap -- next session should complete it (not defer it).
 - **neo-step17-generic-byref-etc** — generic-byref (`ref T`/`out T` with `T`
   generic), `fixed` unmanaged-pinning, interface-on-VT-constrained (the Step 17 (c)
   edges) + **F-10-R1**. **RESOLVED 2026-07-06**: per-sub-item dump-gate found 3/4

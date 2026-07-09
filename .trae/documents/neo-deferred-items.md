@@ -1342,7 +1342,8 @@ false-positive `!= null` via `cgt.un`); (Gap 2) Neo null-`this` guard
 `TargetInvocationException` unwrap on BOTH engines (rethrow InnerException via
 ExceptionDispatchInfo). Neo smoke 198/198; Legacy stash-toggle 723/11 -> 723/10
 (OutOfRange now passes on both engines; 0 regression). IL VT-element `[,]` +
-multi-dim `Address` (ldelema) stay deferred (Non-Goals; neo-byref follow-up).
+multi-dim `Address` (ldelema) are real remaining gaps -- next session should complete them
+(neo-byref follow-up), not defer them.
 See `openspec/changes/neo-array-multidim/planning-context.md`.
 
 ---
