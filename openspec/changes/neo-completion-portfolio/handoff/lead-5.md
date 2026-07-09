@@ -128,7 +128,46 @@ Legacy plain-Debug CLI build RESTORED (0 errors; the /unsafe fix). Legacy NeoSte
 runs (1 pre-existing Neo-async-specific failure under the Legacy engine, unrelated).
 
 ## Next action — successor (lead-6)
-Drive child 4 (`neo-async-valuetask-asyncvoid`): scope empirically (temp probes), then
-implement/verify/ship, then child 5 onward. Read `portfolio-run.json`
-(`completionPlan.orderedFrontier` + each child's scope) for the plan. Commit + push after
-each clean child. **Drive DEEP (1M context) -- relay only near the limit, not at ~20%.**
+Child 4 (`neo-async-valuetask-asyncvoid`) was EMPIRICALLY SCOPED by lead-5 (same session,
+after the handoff above was written). Findings below -- do NOT re-scope; act on them.
+
+## Child-4 scope findings (lead-5, same session) -- the ValueTask part is BLOCKED upstream
+lead-5 built temp probes (`async ValueTask<int>` suspend + `async void` suspend), ran them,
+then REVERTED all child-4 engine changes (clean tree; NeoStep 241/0/0 confirmed). Findings:
+1. **`async void` suspend ALREADY WORKS** (pre-existing). The AV probe (async void awaiting
+   a genuinely-incomplete Task) PASSED unchanged. The AsyncVoidMethodBuilder suspend path is
+   already correct -- child 4's async-void half is a non-change (capability already exists).
+2. **`async ValueTask<int>` suspend is BLOCKED by a GENERAL Neo return gap.** Two layers:
+   - **(a) the get_Task suspend-case is missing** (DESIGNED + tested by lead-5, REVERTED as
+     incomplete): `AsyncValueTaskMethodBuilder_T_GetTask_Neo` (`CLRRedirections.AsyncNeo.cs`
+     ~line 388) only handles the SYNC case (SmTaskMap); it lacks the SUSPEND case
+     (SmContextMap) that the Task builder has (`AsyncTaskMethodBuilder_T_GetTask_Neo`
+     ~line 280: `if (task == null && sm != null && SmContextMap.TryGetValue(sm, out ctx))
+     task = ctx.GetTaskBridge();`). Without it, a suspended ValueTask method's get_Task calls
+     `CreateValueTaskFromResult(null)` -> NRE at `CreateValueTaskFromResult:1361`
+     (`GetMethod("FromResult")` path). **The fix lead-5 designed + verified removes the NRE:**
+     add the `else if (SmContextMap.TryGetValue(sm, out ctx)) vt = WrapBridgeAsValueTask
+     (method, ctx.GetTaskBridge());` branch + a `WrapBridgeAsValueTask` helper that wraps the
+     bridge `Task<T>` as a `ValueTask<T>` via the public `ValueTask<T>(Task<T>)` ctor. With
+     it the NRE is gone -- but it reveals layer (b).
+   - **(b) the BLOCKER: returning `ValueTask<T>` from an IL method throws** at
+     `ILIntepreter.Neo.cs:2940` (the `Ret` opcode): `"Neo return with value-type reference
+     fields requires Step 12/13 return layout support."` `ValueTask<T>` is a STRUCT holding a
+     `Task` reference field; the `Ret` opcode only handles primitive returns + single-
+     reference (class) returns -- value-type-WITH-reference-fields returns are unsupported
+     (Step 12/13 return-layout gap). This is a GENERAL gap (ANY IL method returning a struct
+     with a ref field fails), NOT async-specific.
+
+**Recommended sequencing (for lead-6 to register in `portfolio-run.json`):**
+- Register a NEW child **`neo-ret-vt-with-ref-fields`** = general Neo "return a value-type
+  with reference fields from an IL method" support (the `Ret` opcode value-type-with-refs
+  copy-back branch: copy `returnPrimitiveSize` bytes + `returnRefCount` ref slots to the
+  dest; mirrors Step 12b `Move_Vt`). This unblocks not just async ValueTask but ANY such
+  return. HIGH general value. Sequence it BEFORE child 4's ValueTask half.
+- Then child 4 = `async void` (already done -- verify + close as no-op, or drop) + the
+  ValueTask get_Task suspend-case (lead-5's designed fix above) + a probe. Sequence child 4's
+  ValueTask half AFTER `neo-ret-vt-with-ref-fields`.
+
+Drive child 5+ in parallel if `neo-ret-vt-with-ref-fields` is large. Read `portfolio-run.json`
+for the plan. Commit + push after each clean child. **Drive DEEP (1M context) -- relay only
+near the limit, not at ~20%.**
