@@ -647,6 +647,58 @@ namespace ILRuntime.Runtime.NeoAOT
             }
         }
 
+        // ===== Step 25 cross-process (neo-aot-crossprocess, child 9): re-serialize
+        // an already-deserialized NeoAssemblyModel to a stream. Used by the
+        // cross-process body-mutation cell: read a .neo -> mutate a body in the
+        // model -> write the MUTATED model back to disk -> spawn a fresh process
+        // that loads + executes the mutated bytes. Proves the spawned process
+        // runs the genuine PERSISTED bytes (not an in-memory fallback). Mirrors
+        // the instance WriteModel's assembly (header + 7 V1 tables + 2 V2
+        // APPROACH-1 binding tables) but draws from a model's tables instead of
+        // freshly-built records. Neo-only.
+        public static void WriteModelStandalone(NeoAssemblyModel model, Stream stream)
+        {
+            if (model == null) throw new ArgumentNullException(nameof(model));
+            byte[] stringBlob = Buf(WriteStringTable, model.StringTable);
+            byte[] typeRefBlob = BufTypeRefs(model.TypeRefs, model.TypeRefKinds);
+            byte[] methodRefBlob = BufMethodRefs(model.MethodRefs);
+            byte[] fieldRefBlob = BufFieldRefs(model.FieldRefs);
+            byte[] typeDefBlob = BufTypeDefs(model.TypeDefs);
+            byte[] methodDefBlob = BufMethodDefs(model.MethodDefs);
+            byte[] templateBlob = BufTemplates(model.Templates);
+            byte[] typeBindingBlob = BufTokenBindings(model.TypeTokenBindings);
+            byte[] methodBindingBlob = BufTokenBindings(model.MethodTokenBindings);
+
+            const int HeaderSize = 4 + 2 + 1 + 1 + sizeof(int) * NeoAssemblyFormat.TableCount;
+            var header = NeoHeader.Create();
+            int cursor = HeaderSize;
+            header.TableOffsets[(int)NeoTableId.String] = cursor; cursor += stringBlob.Length;
+            header.TableOffsets[(int)NeoTableId.TypeRef] = cursor; cursor += typeRefBlob.Length;
+            header.TableOffsets[(int)NeoTableId.MethodRef] = cursor; cursor += methodRefBlob.Length;
+            header.TableOffsets[(int)NeoTableId.FieldRef] = cursor; cursor += fieldRefBlob.Length;
+            header.TableOffsets[(int)NeoTableId.TypeDef] = cursor; cursor += typeDefBlob.Length;
+            header.TableOffsets[(int)NeoTableId.MethodDef] = cursor; cursor += methodDefBlob.Length;
+            header.TableOffsets[(int)NeoTableId.Template] = cursor;
+
+            using (var bw = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true))
+            {
+                bw.Write(header.Magic);
+                bw.Write(header.Version);
+                bw.Write(header.Endianness);
+                bw.Write(header.Reserved);
+                for (int i = 0; i < NeoAssemblyFormat.TableCount; i++) bw.Write(header.TableOffsets[i]);
+                bw.Write(stringBlob);
+                bw.Write(typeRefBlob);
+                bw.Write(methodRefBlob);
+                bw.Write(fieldRefBlob);
+                bw.Write(typeDefBlob);
+                bw.Write(methodDefBlob);
+                bw.Write(templateBlob);
+                bw.Write(typeBindingBlob);
+                bw.Write(methodBindingBlob);
+            }
+        }
+
         // Step 25 S3-2 (APPROACH 1): serialize a NeoTokenBinding[] as
         // (count, [Hash, RefIdx] per entry). null -> count 0.
         static byte[] BufTokenBindings(NeoTokenBinding[] bindings)

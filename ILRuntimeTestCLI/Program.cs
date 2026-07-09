@@ -44,6 +44,35 @@ namespace ILRuntimeTestCLI
             string patchPath = args[1];
             bool useRegister = args[2].ToLower() == "true";
             string nameFilter = args.Length >= 4 ? args[3] : null;
+#if ENABLE_NEO_MODE
+            // Step 25 cross-process P2 mode (neo-aot-crossprocess, child 9): the
+            // spawned-by-P1 SECOND process. Reads a persisted .neo from disk (the
+            // cross-process medium) + Cecil-free-loads it into a FRESH AppDomain
+            // (NO Cecil module for the probe -- the genuine cross-process Cecil-
+            // free claim) + invokes the probe's Compute() + prints CROSSPROC:
+            // PASS/FAIL. Deliberately runs BEFORE session.Load so P2 NEVER Cecil-
+            // loads TestCases (that would give P2 Cecil and undermine the claim).
+            // Args: <TestCasesDll> <patch> <useRegister> NeoStep25CrossProcLoad
+            //       <neoPath> <expectedInt>. The first 3 are inert here (kept so
+            // the argv shape is uniform across modes).
+            if (nameFilter == "NeoStep25CrossProcLoad" && args.Length >= 6)
+            {
+                int exitCode;
+                try
+                {
+                    exitCode = NeoCrossProcLoadP2.Run(args[4], args[5]);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25CrossProcLoad threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    Console.WriteLine("CROSSPROC: FAIL (threw " + ex.GetType().Name + ": " + ex.Message + ")");
+                    exitCode = -1;
+                }
+                session.Dispose();
+                return exitCode;
+            }
+#endif
             session.Load(path, patchPath, useRegister);
 #if ENABLE_NEO_MODE
             // Step 22 host-side V1 structural-equivalence self-check.
@@ -321,6 +350,37 @@ namespace ILRuntimeTestCLI
                 catch (Exception ex)
                 {
                     Console.Error.WriteLine("=== NeoStep25CecilFreeGeneric threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
+            // Step 25 cross-process capstone (neo-aot-crossprocess, child 9):
+            // the P1 orchestrator. Compiles a .neo in THIS process -> persists to
+            // disk -> SPAWNS A SECOND `dotnet exec ILRuntimeTestCLI.dll ...
+            // NeoStep25CrossProcLoad <neoPath>` process -> captures its stdout ->
+            // asserts it printed CROSSPROC: PASS (the separate process Cecil-free-
+            // loaded the persisted .neo + ran Compute() == 155). A genuine OS-
+            // process boundary, NOT a thread/AppDomain. Plus a cross-process body-
+            // mutation cell (mutate the persisted body -> P2 yields the mutated
+            // value) + a determinism cell (two P1 compiles byte-identical).
+            if (nameFilter == "NeoStep25CrossProcess")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25CrossProcessCheck.Run(
+                        session.Appdomain, path, patchPath);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 cross-process: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25CrossProcess threw ===");
                     Console.Error.WriteLine(ex.ToString());
                     failed = -1;
                 }
