@@ -4,6 +4,7 @@
     <OutputType>Exe</OutputType>
      <TargetFrameworks>net8.0;netcoreapp3.0</TargetFrameworks>
      <Configurations>Debug;Release;Debug_Neo;Release_Neo</Configurations>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
@@ -27,7 +28,6 @@
     <Prefer32Bit>false</Prefer32Bit>
     <PlatformTarget>AnyCPU</PlatformTarget>
     <DefineConstants>DEBUG;TRACE;ENABLE_NEO_MODE</DefineConstants>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release_Neo|AnyCPU'">
