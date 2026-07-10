@@ -356,6 +356,46 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 25 neo-aot-byref-wireup host-side self-check (child 16): the AOT
+            // (ilrt_neoc) wire-up gate for the child-14 CLR->IL delegate-byref map.
+            // Drives the SAME public NeoCompiler the standalone CLI uses over
+            // NeoStep19Test (the child-14 byref-delegate IL callees + entry points),
+            // asserts the byref-delegate methods precompile WITHOUT skip, Attach-es
+            // the .neo, and executes the 4 byref-delegate entry points via the AOT
+            // bodies (which round-trip because the EXECUTION AppDomain has the
+            // converter registered via ILRuntimeHelper.Init). Proves the byref map
+            // is a RUNTIME-only concern: ilrt_neoc needs NO converter registration
+            // to PRECOMPILE -- the .neo carries the IL bodies; the converter is
+            // consulted when the AOT body RUNS.
+            if (nameFilter == "NeoStep25ByrefWireup")
+            {
+                int failed;
+                try
+                {
+                    // TestCases.dll is the <path> arg; ILRuntimeTestBase.dll is its
+                    // project-ref, copied next to it in bin output (the host CLR ref
+                    // -- holds TestCLRBinding: the byref delegate types + helpers).
+                    string testCasesDir = System.IO.Path.GetDirectoryName(path);
+                    string testBaseDll = System.IO.Path.Combine(testCasesDir, "ILRuntimeTestBase.dll");
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25ByrefWireupCheck.Run(
+                        session.Appdomain, path, testBaseDll);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 byref-wireup: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed. Compile: {r.MethodsCompiled} methods / {r.MethodSkipped} skipped. Attach: {r.AttachedCount} attached, {r.SkippedCount} skipped.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                    foreach (var s in r.Skipped)
+                        Console.WriteLine($"  SKIP: {s}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25ByrefWireup threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // Step 25 neo-aot-multi-hotfix capstone (child 10): the Cecil-free load
             // of a MULTI-hotfix-assembly setup. An IL type in "AssemblyA" references
             // a TYPE in "AssemblyB" (field/param/call/isinst/castclass). Partitioned
