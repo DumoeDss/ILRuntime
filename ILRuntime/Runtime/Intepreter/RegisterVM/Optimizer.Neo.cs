@@ -868,7 +868,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             // alias dest), but ResolveLiveAlias is harmless +
                             // symmetric with Initobj.
                             short retR1 = ResolveLiveAlias(op.Register1).Reg;
-                            op.Operand3 = localInfos[retR1].RefOffset;
+                            // A VOID method's `ret` (JIT Code.Ret leaves
+                            // Register1 at its default 0 when hasReturn==false)
+                            // reaches here with retR1 pointing past the (possibly
+                            // empty) localInfos -- a phantom register that holds
+                            // no value, so there is NO return ref region to stamp.
+                            // ExecuteNeo only reads Operand3 when there IS a
+                            // return value (a value-type WITH ref fields), so an
+                            // out-of-range index resolves to RefOffset 0 (the
+                            // Operand3 default; harmless). Mirrors the defensive
+                            // `reg >= 0 && reg < localInfos.Length` guard already
+                            // in LowerR1 (which runs on the NEXT line for the
+                            // DstOffset stamp) -- without this guard the operand3
+                            // read threw IndexOutOfRangeException on the empty
+                            // static .cctor (NeoStep24CliProbe..cctor), a
+                            // regression from the ret-vt-with-ref-fields change.
+                            op.Operand3 = (retR1 >= 0 && retR1 < localInfos.Length)
+                                ? localInfos[retR1].RefOffset : 0;
                             LowerR1(ref op, localInfos);
                         }
                         break;
