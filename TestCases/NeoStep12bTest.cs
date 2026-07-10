@@ -51,6 +51,46 @@ namespace TestCases
         public int y;
     }
 
+    // Whole-VT-field store/load probes (Step 12b deferred item: stfld.value /
+    // ldfld.value). A struct field that is ITSELF a struct (an Outer with an
+    // Inner field) accessed as a WHOLE value via a HEAP owner. The JIT lowers
+    // `o.inner = new Inner(...)` to Stfld_Value and `Inner i = o.inner;` to
+    // Ldfld_Value -- both are Step-12b-tagged opcodes that ExecuteNeo had NO
+    // case for (they fell through to the default "not yet implemented (Step 6)"
+    // NIE). These structs exercise both the pure-primitive nested VT and the
+    // load-bearing nested-VT-WITH-ref-field case (the ref copy).
+
+    // Pure-primitive inner struct (TotalReferenceCount == 0). The whole-Inner
+    // store/load is a pure byte CopyBlock on the field's Primitives region.
+    public struct NeoStep12bFieldInnerPrim
+    {
+        public int a;
+        public int b;
+    }
+
+    public class NeoStep12bFieldOuterPrim
+    {
+        public NeoStep12bFieldInnerPrim inner;
+        public int tag;
+    }
+
+    // Inner struct WITH a reference field (TotalReferenceCount == 1). This is
+    // the load-bearing case: the whole-Inner store/load must copy BOTH the
+    // primitive bytes AND the reference slot between the field's storage region
+    // (the heap owner's Primitives[field.PrimitiveOffset..] +
+    // ManagedObjects[field.ReferenceOffset..]) and the dest/source in-frame VT.
+    public struct NeoStep12bFieldInnerWithRef
+    {
+        public int a;
+        public string s;
+    }
+
+    public class NeoStep12bFieldOuterWithRef
+    {
+        public NeoStep12bFieldInnerWithRef inner;
+        public int tag;
+    }
+
     public class NeoStep12bTest
     {
         // Pure-primitive value-type copy: Vector3 b = a; (refCount 0). Plain
@@ -178,5 +218,68 @@ namespace TestCases
         // Move_Vt's own correctness (value copy of primitives + per-ref mStack
         // copy, shallow identity) is covered by NeoTestVtWithOneRefCopy and
         // NeoTestVtWithManyRefsCopy above, which copy and read back all fields.
+
+        // ---- Step 12b deferred item: whole-VT-field store/load (stfld.value /
+        // ldfld.value) ---- A struct field that is itself a struct, accessed as
+        // a WHOLE value through a HEAP owner. `o.inner = new Inner(1,2)` lowers
+        // to Stfld_Value; `Inner i = o.inner;` lowers to Ldfld_Value. Both were
+        // Step-12b-tagged NIEs (no ExecuteNeo case). The probes confirm the
+        // whole-VT field store+load round-trips all fields.
+
+        // Pure-primitive nested VT field store+load. TotalReferenceCount == 0,
+        // so the copy is a pure byte CopyBlock on the field's Primitives region.
+        public static void NeoStep12b_StfldLdfldValue_Prim()
+        {
+            NeoStep12bFieldOuterPrim o = new NeoStep12bFieldOuterPrim();
+            o.tag = 5;
+            // whole-Inner STORE into the heap field (Stfld_Value).
+            NeoStep12bFieldInnerPrim src = default(NeoStep12bFieldInnerPrim);
+            src.a = 1;
+            src.b = 2;
+            o.inner = src;
+            // whole-Inner LOAD from the heap field (Ldfld_Value).
+            NeoStep12bFieldInnerPrim i = o.inner;
+            if (i.a != 1)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+            if (i.b != 2)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+            // The sibling top-level field must be untouched (independent storage).
+            if (o.tag != 5)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // Nested-VT-WITH-REF-field store+load -- the load-bearing case. The
+        // whole-Inner copy must propagate BOTH the primitive bytes AND the
+        // reference slot between the field's storage region and the in-frame VT.
+        public static void NeoStep12b_StfldLdfldValue_WithRef()
+        {
+            NeoStep12bFieldOuterWithRef o = new NeoStep12bFieldOuterWithRef();
+            o.tag = 7;
+            // whole-Inner STORE (Stfld_Value) -- copies prim bytes + the ref slot.
+            NeoStep12bFieldInnerWithRef src = default(NeoStep12bFieldInnerWithRef);
+            src.a = 11;
+            src.s = "hello";
+            o.inner = src;
+            // whole-Inner LOAD (Ldfld_Value) -- copies prim bytes + the ref slot out.
+            NeoStep12bFieldInnerWithRef i = o.inner;
+            if (i.a != 11)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+            if (i.s != "hello")
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+            if (o.tag != 7)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
     }
 }

@@ -917,6 +917,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldfld_R4:
                     case OpCodeREnum.Ldfld_R8:
                     case OpCodeREnum.Ldfld_Ref:
+                    case OpCodeREnum.Ldfld_Value:
                     case OpCodeREnum.Ldloca:
                     case OpCodeREnum.Ldloca_S:
                     case OpCodeREnum.Ldarga:
@@ -942,6 +943,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Stfld_R4:
                     case OpCodeREnum.Stfld_R8:
                     case OpCodeREnum.Stfld_Ref:
+                    case OpCodeREnum.Stfld_Value:
                         {
                             short r1 = op.Register1;
                             short r2 = op.Register2;

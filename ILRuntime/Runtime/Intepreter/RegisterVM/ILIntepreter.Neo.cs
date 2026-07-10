@@ -3571,6 +3571,104 @@ namespace ILRuntime.Runtime.Intepreter
                                     ins.ManagedObjects[ip->Operand3] = srcIdx >= 0 ? mStack[srcIdx] : null;
                                 }
                                 break;
+                            // ---- Step 12b deferred item: whole-IL-VT field store/load
+                            // (stfld.value / ldfld.value). A struct field that is ITSELF an
+                            // IL struct (e.g. `Outer { Inner inner; }`) accessed as a WHOLE
+                            // value through a HEAP owner. The owner is a heap ILTypeInstance
+                            // (its mStack index sits in the owner slot); the field lives at
+                            // Primitives[field.PrimitiveOffset..+primSize] +
+                            // ManagedObjects[field.ReferenceOffset..+refCount]. The value
+                            // register (SrcOffset for Stfld / DstOffset for Ldfld) is an in-
+                            // frame flat-bytes VT region whose ref-run base is recovered via
+                            // the runtime localInfos scan (the established R2 pattern shared
+                            // with the Stobj/Ldobj Step-17(b) arms). Mirror Move_Vt: a byte
+                            // CopyBlock for the primitive region + an mStack-to-mStack copy of
+                            // refCount reference slots (shallow copy, C# struct-copy
+                            // semantics). Operand2 = field.PrimitiveOffset; Operand3 =
+                            // field.ReferenceOffset; Operand4 = the FIELD's ILType hash
+                            // (stamped by the JIT so the arm resolves
+                            // TotalPrimitiveSize / TotalReferenceCount). These are HEAP-only
+                            // opcodes (the in-frame-VT field path folds through the _Inline
+                            // variants; Stfld_Value/Ldfld_Value have no _Inline form by
+                            // design). ----
+                            case OpCodeREnum.Stfld_Value:
+                                {
+                                    // DstOffset = owner slot (mStack index of the heap
+                                    // ILTypeInstance); SrcOffset = source in-frame VT region.
+                                    ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->DstOffset));
+                                    var ftFld = AppDomain.GetType(ip->Operand4) as ILType;
+                                    if (ftFld == null)
+                                        throw new NotImplementedException("neo-stfld-value: field type not resolved (Operand4=" + ip->Operand4 + ")");
+                                    int fldPrimOff = ip->Operand2;
+                                    int fldRefOff = ip->Operand3;
+                                    int fldPrimSize = ftFld.TotalPrimitiveSize;
+                                    int fldRefCount = ftFld.TotalReferenceCount;
+                                    if (fldPrimSize > 0)
+                                    {
+                                        ref byte dstP = ref ins.Primitives[fldPrimOff];
+                                        Unsafe.CopyBlock(ref dstP, ref *(frameBase + ip->SrcOffset), (uint)fldPrimSize);
+                                    }
+                                    if (fldRefCount > 0)
+                                    {
+                                        // Recover the in-frame source VT's ref-run base via
+                                        // the localInfos scan (R2). A scan-miss (a non-direct-
+                                        // local source) is an exotic shape; fail LOUD (tagged
+                                        // NIE) instead of silently dropping the ref copy.
+                                        int srcRefBase = -1;
+                                        if (localInfos != null)
+                                        {
+                                            for (int li = 0; li < localInfos.Length; li++)
+                                                if (localInfos[li].Offset == ip->SrcOffset)
+                                                { srcRefBase = localInfos[li].RefOffset; break; }
+                                        }
+                                        if (srcRefBase < 0)
+                                            throw new NotImplementedException(
+                                                "Step 12b: stfld.value of an IL-VT field WITH reference fields from a non-direct-local value is deferred (ref-region base recovery; follow-up)");
+                                        var dstRefs = ins.ManagedObjects;
+                                        int srcBase = frameRefBase + srcRefBase;
+                                        for (int i = 0; i < fldRefCount; i++)
+                                            dstRefs[fldRefOff + i] = mStack[srcBase + i];
+                                    }
+                                }
+                                break;
+                            case OpCodeREnum.Ldfld_Value:
+                                {
+                                    // DstOffset = dest in-frame VT region; SrcOffset = owner
+                                    // slot (mStack index of the heap ILTypeInstance).
+                                    ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
+                                    var ftFld = AppDomain.GetType(ip->Operand4) as ILType;
+                                    if (ftFld == null)
+                                        throw new NotImplementedException("neo-ldfld-value: field type not resolved (Operand4=" + ip->Operand4 + ")");
+                                    int fldPrimOff = ip->Operand2;
+                                    int fldRefOff = ip->Operand3;
+                                    int fldPrimSize = ftFld.TotalPrimitiveSize;
+                                    int fldRefCount = ftFld.TotalReferenceCount;
+                                    if (fldPrimSize > 0)
+                                    {
+                                        ref byte srcP = ref ins.Primitives[fldPrimOff];
+                                        Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)fldPrimSize);
+                                    }
+                                    if (fldRefCount > 0)
+                                    {
+                                        // Recover the in-frame dest VT's ref-run base via the
+                                        // localInfos scan (R2); mirror the Stobj/Ldobj arms.
+                                        int dstRefBase = -1;
+                                        if (localInfos != null)
+                                        {
+                                            for (int li = 0; li < localInfos.Length; li++)
+                                                if (localInfos[li].Offset == ip->DstOffset)
+                                                { dstRefBase = localInfos[li].RefOffset; break; }
+                                        }
+                                        if (dstRefBase < 0)
+                                            throw new NotImplementedException(
+                                                "Step 12b: ldfld.value of an IL-VT field WITH reference fields into a non-direct-local dest is deferred (ref-region base recovery; follow-up)");
+                                        var srcRefs = ins.ManagedObjects;
+                                        int dstBase = frameRefBase + dstRefBase;
+                                        for (int i = 0; i < fldRefCount; i++)
+                                            mStack[dstBase + i] = srcRefs[fldRefOff + i];
+                                    }
+                                }
+                                break;
                             // ---- Step 25 S3-4: STATIC field access (Stsfld / Ldsfld).
                             // Pre-S3-4 ExecuteNeo had NO static-field handlers (a stale
                             // "TODO Step 7" suppressed the Cecil-path .cctor; the NeoStep

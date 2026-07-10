@@ -2792,6 +2792,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.Operand = type.GetHashCode();
                             op.Operand2 = offset.PrimitiveOffset;
                             op.Operand3 = offset.ReferenceOffset;
+                            // Step 12b (stfld.value/ldfld.value): a whole-IL-VT field
+                            // load/store. Stamp the FIELD's ILType hash into Operand4 so
+                            // the runtime ExecuteNeo arm resolves TotalPrimitiveSize /
+                            // TotalReferenceCount (the declaring-type hash in Operand is
+                            // NOT the field type). No-op for the typed Ldfld_* (Operand4
+                            // is left 0; the runtime arm only reads it for Ldfld_Value).
+                            if (op.Code == OpCodeREnum.Ldfld_Value)
+                                op.Operand4 = fieldType.GetHashCode();
                             // F-10: a CLR-struct field of an IL instance is a
                             // reference slot holding the boxed struct. Stamp the
                             // field's type hash into Operand4 so the runtime
@@ -2855,6 +2863,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.Operand = type.GetHashCode();
                             op.Operand2 = offset.PrimitiveOffset;
                             op.Operand3 = offset.ReferenceOffset;
+                            // Step 12b (stfld.value/ldfld.value): a whole-IL-VT field
+                            // store. Stamp the FIELD's ILType hash into Operand4 so the
+                            // runtime ExecuteNeo arm resolves TotalPrimitiveSize /
+                            // TotalReferenceCount. No-op for the typed Stfld_* (Operand4
+                            // is left 0; the runtime arm only reads it for Stfld_Value).
+                            if (op.Code == OpCodeREnum.Stfld_Value)
+                                op.Operand4 = fieldType.GetHashCode();
                             // F-10: stamp the field's type hash into Operand4 so
                             // the runtime Stfld_Ref arm boxes the source flat
                             // bytes into the field's CLR type and stores the
