@@ -78,6 +78,17 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 new Wrap("WrapEchoLong",   9000000000L),
                 new Wrap("WrapEchoRef",    1234567),
                 new Wrap("WrapEchoStruct", 77),
+                // T-identity-token body (Box T + Unbox.Any T). Expected round-trip.
+                // string-T wrapper omitted: the Run shim's NeoBoxReturnValue handles
+                // primitive returns only (a string return is a separate dimension,
+                // out of scope). int-T covers the Box/Unbox.Any T path (the
+                // authoritative T-identity Cecil-free dispatch is the G3 fresh-
+                // instance cell below). struct-T wrapper omitted: Box<IL-value-type>
+                // then Unbox.Any<IL-value-type> is an engine-level Box/Unbox-of-IL-VT
+                // gap (it FAILS the "A JIT" reference -- a Cecil-loaded run with no
+                // T-identity machinery in play -- so it is NOT a T-identity Cecil-free
+                // regression; out of scope for this change).
+                new Wrap("WrapBoxUnboxInt",    4242),
             };
             var expected = new Dictionary<string, object>();
             foreach (var w in wrappers)
@@ -344,6 +355,80 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 }
                 catch (Exception ex) { diff = "G2 threw " + ex.GetType().Name + ": " + ex.Message; }
                 RecordCell(res, "G2 ConstGeneric<T> template body-mutation (AOT template really runs)", diff);
+            }
+
+            // ---- (G3) T-IDENTITY-TOKEN Cecil-free generic dispatch: drive a FRESH
+            // BoxUnbox<int> instance via MakeGenericMethod (never inlined) on a
+            // Cecil-free load. BoxUnbox<T> carries a `Box T` + `Unbox.Any T` -- a
+            // T-identity TypeToken patch site. On HEAD the Cecil-free S3
+            // BuildFromNeoRecord REJECTS the template (T-identity token -> S3), so
+            // BoxUnbox<T> falls back to JIT (which a Cecil-free AppDomain B cannot
+            // run -- no Cecil module), and the call throws. The follow-up fix adds
+            // a Cecil-free GenericParamIdx-keyed T-substitution so the concrete T
+            // hash is re-derived Cecil-free + the template binds. Driving a FRESH
+            // instance (never inlined) proves the AOT-template T-substitution path,
+            // not the compile-side specialization. Expected: 4242 round-trips.
+            {
+                const int BU_INPUT = 4242;
+                res.TotalCells++;
+                string diff;
+                try
+                {
+                    var domainB3 = new ILRuntime.Runtime.Enviorment.AppDomain();
+                    try
+                    {
+                        var lr3 = domainB3.LoadNeoAssembly(model, null);
+                        var probeB3 = domainB3.GetType(ProbeFullName) as ILType;
+                        // Find the BoxUnbox open definition with the S2-bound AOT template.
+                        // NOTE: the runtime's GetMethod appends a generic INSTANCE to the
+                        // type's methods list on each generic-call resolution (ILType.cs
+                        // :2465, a pre-existing accumulation pattern), so GetMethods()
+                        // may surface multiple BoxUnbox entries (a non-cached instance
+                        // WITHOUT a definition + the cached open definition). Pick the
+                        // one whose GenericMethodTemplateCache is non-null (the S2-bound
+                        // open def); it is the authoritative generic definition the
+                        // fresh instance's genericDefinition must point at.
+                        ILMethod buDef = null;
+                        int buSeen = 0;
+                        if (probeB3 != null && probeB3.GetMethods() != null)
+                        {
+                            foreach (var mm in probeB3.GetMethods())
+                            {
+                                var ilm = mm as ILMethod;
+                                if (ilm == null || ilm.IsGenericInstance) continue;
+                                if (ilm.Name == "BoxUnbox")
+                                {
+                                    buSeen++;
+                                    if (ilm.GenericMethodTemplateCache != null) { buDef = ilm; break; }
+                                    if (buDef == null) buDef = ilm;  // fallback to first seen
+                                }
+                            }
+                        }
+                        IType intT = null;
+                        try { intT = domainB3.GetType("System.Int32"); } catch { }
+                        object r;
+                        if (buDef == null || intT == null)
+                        {
+                            diff = "G3: buDef=" + (buDef != null) + " intT=" + (intT != null) + " buSeen=" + buSeen;
+                        }
+                        else
+                        {
+                            var freshInst = buDef.MakeGenericMethod(new IType[] { intT }) as ILMethod;
+                            object probeInstance = null;
+                            try { probeInstance = domainB3.Instantiate(ProbeFullName); }
+                            catch { }
+                            try { r = domainB3.Invoke(freshInst, probeInstance, BU_INPUT); }
+                            catch (Exception ex) { r = new ThrownMarker(ex); }
+                            diff = ValueEqualsObj(r, BU_INPUT)
+                                ? null
+                                : "G3 T-identity BoxUnbox<int>: expected=" + BU_INPUT + " got=" + Format(r)
+                                  + " (buSeen=" + buSeen + " buDefCache=" + (buDef.GenericMethodTemplateCache != null) + ")";
+                        }
+                    }
+                    finally { domainB3.Dispose(); }
+                }
+                catch (Exception ex) { diff = "G3 threw " + ex.GetType().Name + ": " + ex.Message; }
+                RecordCell(res, "G3 BoxUnbox<T> T-identity-token Cecil-free dispatch", diff);
             }
 
             return res;

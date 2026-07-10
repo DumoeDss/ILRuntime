@@ -97,6 +97,31 @@ namespace TestCases
         {
             return ConstGeneric<string>();
         }
+
+        // ===== T-IDENTITY-TOKEN body (the child-8 follow-up). Boxes T to object
+        // then unboxes back -- the body carries a `Box T` + an `Unbox.Any T` (a
+        // T-identity TypeToken patch site). On HEAD the Cecil-free S3
+        // BuildFromNeoRecord REJECTS the template (a T-identity token needs a
+        // Cecil TypeReference to re-resolve, which a Cecil-free .neo record does
+        // not carry in a form S3 re-resolves). The follow-up adds a Cecil-free
+        // GenericParamIdx-keyed T-substitution at CloneAndPatch so the concrete T
+        // hash is re-derived Cecil-free. Expected (any T): the input round-trips.
+        public T BoxUnbox<T>(T v)
+        {
+            object o = v;
+            return (T)o;
+        }
+
+        // Parameterless wrapper for the T-identity body. int T (Box+Unbox.Any of a
+        // 4-byte prim -> a boxed int). The authoritative Cecil-free T-identity
+        // dispatch is the capstone's G3 fresh-instance cell (BoxUnbox<int> via
+        // MakeGenericMethod, never inlined). struct-T wrapper omitted: Box<IL-VT>
+        // + Unbox.Any<IL-VT> is an engine-level Box/Unbox-of-IL-VT gap (it fails a
+        // Cecil-loaded JIT run too, so NOT a T-identity Cecil-free regression).
+        public int WrapBoxUnboxInt()
+        {
+            return BoxUnbox<int>(4242);
+        }
     }
 
     // A top-level (NON-NESTED) value type used as a concrete struct generic arg

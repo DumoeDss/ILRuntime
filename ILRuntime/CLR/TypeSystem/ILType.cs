@@ -1816,6 +1816,14 @@ namespace ILRuntime.CLR.TypeSystem
         {
             get
             {
+                // Neo (Cecil-free ILType): `typeRef` is null (no Cecil TypeReference
+                // -- the type was built from a .neo record). A Cecil-free ILType is
+                // never a byref (a byref is a CLR-side managed pointer), so short-
+                // circuit. Reached via IsValueType -> AllocateLocalStackSpaces on a
+                // Cecil-free generic instance's HasThis declaring type.
+#if ENABLE_NEO_MODE
+                if (isNeoAotType) return false;
+#endif
                 return typeRef.IsByReference;
             }
         }
@@ -3015,7 +3023,14 @@ namespace ILRuntime.CLR.TypeSystem
         public IType FindGenericArgument ( string key )
         {
             var o = this.Generic ( key );
-            if ( o == null && definition.GenericParameters != null )
+            // Neo (Cecil-free ILType): `definition` is null (the type was built from
+            // a .neo record, not a Cecil TypeDefinition). The genericArguments dict
+            // (the Generic(key) lookup above) is the sole source; the Cecil
+            // definition.GenericParameters fallback must be guarded or it NREs on a
+            // Cecil-free type. Reached via ILMethod.FindGenericArgument ->
+            // GetTypeTokenHashCode -> the CloneAndPatch T-identity T-substitution +
+            // the struct-T Initobj prefix rebuild on a Cecil-free generic instance.
+            if ( o == null && definition != null && definition.GenericParameters != null )
             {
                 for ( int i = 0; i < definition.GenericParameters.Count; i++ )
                 {
