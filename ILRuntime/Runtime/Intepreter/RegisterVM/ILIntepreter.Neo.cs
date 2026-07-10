@@ -1114,6 +1114,137 @@ namespace ILRuntime.Runtime.Intepreter
             throw new InvalidOperationException(string.Format("Neo generic callvirt cannot dispatch non-IL object {0} to {1}.", thisObj.GetType().FullName, declaredMethod));
         }
 
+        // neo-array-multidim-ilvt (sub-gap 1+2): handle an IL value-type-element
+        // multi-dim array's Set/Get element call WITHOUT going through the
+        // reflection CLRMethod.Invoke reader (which mis-reads the IL-VT element
+        // param as an mStack index -- the formal param is ILTypeInstance, but the
+        // call site passes the IL-VT struct as flat bytes + a ref region). The
+        // box/unbox is done from the CALLER frame (where the full struct + its ref
+        // region live), mirroring the rank-1 Stelem_Ref/Ldelem_Ref CopyFrameToIL/
+        // CopyILToFrame path. The element ILType is recovered from the JIT-time
+        // token-keyed map (GetNeoIlVtArrayElementType). Returns true if handled.
+        //
+        // `map` is the call's NeoCallParamMap (the LAST prim entry is the element
+        // value's caller-frame source; the ref entries hold its ref-region source).
+        // `targetBase` carries the array `this` + the int indices (correctly
+        // populated by CopyNeoCallArguments for the 4-byte reference/primitive
+        // params). `retDstPtr`/`targetRetRefBase` are the Get return dest.
+        static unsafe bool TryNeoIlVtElementArrayCall(
+            OpCodeR* ip, IMethod targetMethod, ref NeoCallParamMap map,
+            byte* frameBase, int frameRefBase, byte* targetBase,
+            AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain,
+            byte* retDstPtr, int targetRetRefBase)
+        {
+            ILType elemIl = JITCompiler.GetNeoIlVtArrayElementType(ip->Operand2);
+            if (elemIl == null)
+                return false;
+            // Only Set / Get on the array (ctor is handled by the reflection path,
+            // which works once the ILType.GetConstructor delegation resolves it).
+            string mname = targetMethod.Name;
+            bool isSet = mname == "Set";
+            bool isGet = mname == "Get";
+            if (!isSet && !isGet)
+                return false;
+
+            // Read the array `this` from targetBase (the thisArg offset is the
+            // high 16 bits of Operand4 -- see ReadNeoCallThis).
+            int thisArgOff = (int)((uint)ip->Operand4 >> 16);
+            int arrIdx = *(int*)(targetBase + thisArgOff);
+            if (arrIdx < 0)
+                throw new NullReferenceException();
+            Array arr = (Array)mStack[arrIdx];
+            if (arr == null)
+                throw new NullReferenceException();
+
+            // Read the int indices: they follow the `this` in targetBase, in
+            // declaration order. The method's formal params are (int, int, ...,
+            // [ILTypeInstance]). Walk targetBase with a cursor past `this`.
+            int rank = arr.Rank;
+            int[] indices = new int[rank];
+            int idxCur = thisArgOff + 4; // indices follow the 4-byte `this`
+            for (int d = 0; d < rank; d++)
+            {
+                indices[d] = *(int*)(targetBase + idxCur);
+                idxCur += 4;
+            }
+
+            int elemPrimSize = elemIl.TotalPrimitiveSize;
+            int elemRefCount = elemIl.TotalReferenceCount;
+
+            if (isSet)
+            {
+                // The element value is the LAST param. Its caller-frame primitive
+                // source is the LAST PrimitiveSrc entry; its ref-region source is
+                // the trailing RefSrc entries (elemRefCount of them). Recover both
+                // (the CopyNeoCallArguments dest was sized ILTypeInstance=4 bytes,
+                // truncating the struct -- so read from the CALLER frame, not the
+                // dest). Box into a fresh ILTypeInstance and Array.SetValue it.
+                int nPrim = map.PrimitiveSrc != null ? map.PrimitiveSrc.Length : 0;
+                if (nPrim < 1 + rank)
+                    return false; // malformed (no element value entry) -> let reflection try
+                int valPrimSrc = map.PrimitiveSrc[nPrim - 1];
+                int valRefSrcBase = -1;
+                if (elemRefCount > 0)
+                {
+                    int nRef = map.RefSrc != null ? map.RefSrc.Length : 0;
+                    if (nRef < elemRefCount)
+                        return false;
+                    // The value's ref-region source is the trailing elemRefCount
+                    // RefSrc entries (preceding ref params, if any, occupy earlier
+                    // entries -- none for the green target: the only ref-region
+                    // param is the value).
+                    valRefSrcBase = map.RefSrc[nRef - elemRefCount];
+                }
+                ILTypeInstance box = elemIl.Instantiate(false);
+                CopyFrameToIL(frameBase, valPrimSrc, valRefSrcBase < 0 ? 0 : valRefSrcBase,
+                    elemPrimSize, elemRefCount, mStack, frameRefBase, box);
+                box.Boxed = true;
+                arr.SetValue(box, indices);
+                return true;
+            }
+            else // Get
+            {
+                object got = arr.GetValue(indices);
+                if (got is ILTypeInstance elemIns && elemIns.Type == elemIl)
+                {
+                    // Unbox the IL-VT element into the caller's dest frame region
+                    // (the stored element IS the IL-VT's ILTypeInstance, whether or
+                    // not it was marked Boxed on store -- CopyILToFrame copies its
+                    // Primitives + ManagedObjects into the dest flat-bytes + ref
+                    // region, the inverse of the Set box). A Boxed element still
+                    // represents the struct value.
+                    CopyILToFrame(elemIns, frameBase, ip->DstOffset, ip->Operand3,
+                        elemPrimSize, elemRefCount, mStack, frameRefBase);
+                }
+                else if (got != null)
+                {
+                    // A reference/boxed element: store the object on the dest ref
+                    // slot and write its mStack index (mirrors Ldelem_Ref).
+                    if (targetRetRefBase >= 0)
+                    {
+                        int dstIdx = targetRetRefBase;
+                        if (dstIdx < mStack.Count)
+                            mStack[dstIdx] = got;
+                        else
+                        {
+                            mStack.Add(got);
+                            dstIdx = mStack.Count - 1;
+                        }
+                        *(int*)retDstPtr = dstIdx;
+                    }
+                }
+                else
+                {
+                    // null element (uninitialized cell) -> default struct: zero
+                    // the dest primitive bytes (ref slots already null-init).
+                    if (elemPrimSize > 0)
+                        Unsafe.InitBlock(retDstPtr, 0, (uint)elemPrimSize);
+                    *(int*)retDstPtr = -1;
+                }
+                return true;
+            }
+        }
+
         internal unsafe byte* ExecuteNeo(ILMethod method, byte* esp, byte* retDst, int retRefBase, out bool unhandledException,
             byte* vtNewobjCallerDst = null, int vtNewobjCallerDstRefBase = -1, int vtNewobjCallerPrimSize = 0, int vtNewobjCallerRefCount = 0,
             int constrainedSlot0SeedRefOffset = -1, int constrainedSlot0SeedSrcRefBase = -1, int constrainedSlot0SeedRefCount = 0)
@@ -2466,6 +2597,20 @@ namespace ILRuntime.Runtime.Intepreter
                                         targetRetRefBase = frameRefBase + ip->Operand3;
                                     }
 
+                                    // neo-array-multidim-ilvt: an IL value-type-element multi-
+                                    // dim array's Set/Get element call (lowered as a non-virtual
+                                    // Call on the resolved CLR array type) must box/unbox the
+                                    // element from the caller frame. Intercept before the generic
+                                    // dispatch + the byref-snapshot machinery (which do not apply
+                                    // to this call shape).
+                                    if (TryNeoIlVtElementArrayCall(ip, targetMethod, ref map,
+                                        frameBase, frameRefBase, targetBase, mStack, AppDomain,
+                                        retDstPtr, targetRetRefBase))
+                                    {
+                                        ip++;
+                                        continue;
+                                    }
+
                                     // Step 20 fixer round 1: snapshot every write-back-flagged
                                     // byref source BEFORE the call. A VT-this instance method
                                     // whose byref source register is reused as the call dest
@@ -2914,6 +3059,19 @@ namespace ILRuntime.Runtime.Intepreter
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
+                                    // neo-array-multidim-ilvt: an IL value-type-element
+                                    // multi-dim array's Set/Get must box/unbox the element
+                                    // from the caller frame (the reflection reader mis-reads
+                                    // the IL-VT element param). Intercept before the generic
+                                    // CLR dispatch. retDstPtr is non-null for Get; for Set it
+                                    // is null (void) but the helper keys on the method name.
+                                    if (TryNeoIlVtElementArrayCall(ip, targetMethod, ref map,
+                                        frameBase, frameRefBase, targetBase, mStack, AppDomain,
+                                        retDstPtr, targetRetRefBase))
+                                    {
+                                        ip++;
+                                        continue;
+                                    }
                                     CLRMethod clrMethod = ResolveNeoCallvirtCLRTarget(ip, targetMethod, targetBase, mStack);
                                     InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
 

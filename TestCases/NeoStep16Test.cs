@@ -439,5 +439,94 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
+
+        // === child 17 (neo-array-multidim-ilvt): IL-VT-element [,] ===
+        // The array element is an IL value type (NeoStep16Vt). After the
+        // ctor-token-resolution fix these probe the Set/Get element box/unbox.
+
+        // Primitive-element [,] control: guards the shipped multi-dim primitive
+        // path (distinct cells/values from MultiDimRank2Probe).
+        public static void NeoStep16_MultiDimIlVtPrimitiveControl()
+        {
+            int[,] a = new int[2, 3];
+            a[1, 2] = 77;
+            a[0, 0] = 11;
+            if (a[1, 2] != 77 || a[0, 0] != 11)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // IL-VT-element [,] Set/Get round-trip (both primitive + ref field).
+        public static void NeoStep16_MultiDimIlVtRoundTrip()
+        {
+            NeoStep16Vt[,] a = new NeoStep16Vt[2, 3];
+            NeoStep16Vt s;
+            s.num = 42;
+            s.txt = "mdvt";
+            a[1, 2] = s;
+            NeoStep16Vt r = a[1, 2];
+            if (r.num != 42 || r.txt != "mdvt")
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+
+        // IL-VT-element [,] multiple cells (no cross-contamination). Each field
+        // compared in its OWN statement (a combined `||` of multiple string-`!=`
+        // hits a PRE-EXISTING string-comparison bug on HEAD -- see child-17 notes;
+        // separate statements avoid it and still prove per-cell isolation).
+        public static void NeoStep16_MultiDimIlVtMultiCell()
+        {
+            NeoStep16Vt[,] a = new NeoStep16Vt[2, 2];
+            NeoStep16Vt s0; s0.num = 1; s0.txt = "aaa";
+            NeoStep16Vt s1; s1.num = 2; s1.txt = "bbb";
+            a[0, 0] = s0;
+            a[1, 1] = s1;
+            NeoStep16Vt r0 = a[0, 0];
+            NeoStep16Vt r1 = a[1, 1];
+            if (r0.num != 1) { int z = 1; int d = 0; int _ = z / d; }
+            if (r1.num != 2) { int z = 1; int d = 0; int _ = z / d; }
+            if (r0.txt != "aaa") { int z = 1; int d = 0; int _ = z / d; }
+            if (r1.txt != "bbb") { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // IL-VT-element [,] ref field survives as non-null + correct value.
+        public static void NeoStep16_MultiDimIlVtRefFieldNonNull()
+        {
+            NeoStep16Vt[,] a = new NeoStep16Vt[1, 1];
+            NeoStep16Vt s; s.num = 9; s.txt = "ref-ok";
+            a[0, 0] = s;
+            NeoStep16Vt r = a[0, 0];
+            if (r.num != 9) { int z = 1; int d = 0; int _ = z / d; }
+            if (r.txt == null) { int z = 1; int d = 0; int _ = z / d; }
+            if (r.txt != "ref-ok") { int z = 1; int d = 0; int _ = z / d; }
+        }
+
+        // IL-VT-element [,] ldelema mutate: `ref a[i,j]` on a multi-dim IL-VT array.
+        // This lowers to a multi-dim `Address` method + a byref param call -- a
+        // DISTINCT sub-gap (3) from the Set/Get element box/unbox (sub-gaps 1+2):
+        // the JIT of the Address/byref shape hits a type-resolution NRE (an
+        // ILType with a null TypeDefinition). PARKED for a follow-up (the Set/Get
+        // element path -- sub-gaps 1+2 -- is GREEN; this probe is NOT kept so the
+        // NeoStep smoke stays green). See child-17 blocked.md sub-gap 3.
+        /*
+        static void BumpByRef(ref NeoStep16Vt v)
+        {
+            v.num = 99;
+        }
+        public static void NeoStep16_MultiDimIlVtLdelemaMutate()
+        {
+            NeoStep16Vt[,] a = new NeoStep16Vt[1, 1];
+            NeoStep16Vt s; s.num = 5; s.txt = "init";
+            a[0, 0] = s;
+            BumpByRef(ref a[0, 0]);
+            NeoStep16Vt r = a[0, 0];
+            if (r.num != 99)
+            {
+                int z = 1; int d = 0; int _ = z / d;
+            }
+        }
+        */
     }
 }

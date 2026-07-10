@@ -118,6 +118,27 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // Ldflda path writes Operand4).
         public const int NeoLdfldaInlineMarker = 0x1;
 
+        // neo-array-multidim-ilvt (sub-gap 1): the IL value-type element type of
+        // a multi-dimensional IL-VT-element array call, keyed by the Cecil method-
+        // token hash (the same key stamped on op.Operand2 for Call/Callvirt/Newobj).
+        // The token's declaring type is the IL array type (e.g. NeoStep16Vt[,]),
+        // whose element type is the IL-VT; the resolved CLR ctor/Set/Get method
+        // (on the shared CLR type ILTypeInstance[,]) has LOST the element type
+        // (all IL-VTs share ILTypeInstance[,]). This map -- populated at JIT
+        // InitializeFunctionParam (which has the Cecil token) -- lets the Neo
+        // call arms recover the element ILType to box/unbox the IL-VT element.
+        // Keyed per-token (per-IL-array-type), so it is unambiguous across
+        // distinct IL-VT element types. Static + concurrent-safe (JIT is
+        // multi-threaded via Prewarm); values are immutable once set.
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<int, ILType> s_neoIlVtArrayElementTypes =
+            new System.Collections.Concurrent.ConcurrentDictionary<int, ILType>();
+
+        public static ILType GetNeoIlVtArrayElementType(int methodTokenHash)
+        {
+            ILType t;
+            return s_neoIlVtArrayElementTypes.TryGetValue(methodTokenHash, out t) ? t : null;
+        }
+
         // F-10 / NEO-CLRSTRUCT-FIELD-OF-IL: a CLR-struct field of an IL instance
         // is laid out by the ILType field-layout pass as a REFERENCE slot (the
         // boxed struct lives at ManagedObjects[ReferenceOffset]; its flat bytes
@@ -2982,6 +3003,21 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     op.Operand2 = m.GetHashCode();
                 else
                     op.Operand2 = token.GetHashCode();
+                // neo-array-multidim-ilvt (sub-gap 1): if this is a Call/Callvirt/
+                // Newobj on an IL value-type-element multi-dim array (the resolved
+                // method's declaring type is the shared CLR ILTypeInstance[,...]
+                // but the token's declaring type is the IL array type carrying the
+                // element IL-VT), record the element ILType keyed by the token hash
+                // so the Neo call arms can recover it to box/unbox the element.
+                if (!invalidToken && token is MethodReference mrArr && mrArr.DeclaringType is ArrayType)
+                {
+                    ILType ilArrType = appdomain.GetType(mrArr.DeclaringType, declaringType, method) as ILType;
+                    if (ilArrType != null && ilArrType.IsArray && ilArrType.ElementType is ILType elemIl
+                        && elemIl.IsValueType && !elemIl.IsPrimitive && !elemIl.IsEnum)
+                    {
+                        s_neoIlVtArrayElementTypes[op.Operand2] = elemIl;
+                    }
+                }
                 pCnt = m.ParameterCount;
                 if (!m.IsStatic && op.Code != OpCodeREnum.Newobj)
                     pCnt++;

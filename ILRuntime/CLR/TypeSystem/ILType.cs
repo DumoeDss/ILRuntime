@@ -2401,6 +2401,15 @@ namespace ILRuntime.CLR.TypeSystem
 
         public IMethod GetMethod ( string name, List<IType> param, IType [] genericArguments, IType returnType = null, bool declaredOnly = false )
         {
+            // neo-array-multidim-ilvt (sub-gap 0): an IL array type declares NO
+            // methods of its own; delegate Get/Set to the underlying CLR array
+            // type (see GetConstructor). Legacy-neutral-by-improvement.
+            if (IsArray)
+            {
+                var clrArr = ResolveArrayClrType();
+                if (clrArr != null)
+                    return clrArr.GetMethod(name, param, genericArguments, returnType, declaredOnly);
+            }
             if ( methods == null )
                 InitializeMethods ();
             List<ILMethod> lst;
@@ -2600,6 +2609,19 @@ namespace ILRuntime.CLR.TypeSystem
         }
         public IMethod GetConstructor(List<IType> param, bool exactMatch = true)
         {
+            // neo-array-multidim-ilvt (sub-gap 0): an IL array type
+            // (ILType with IsArray==true) wraps a CLR ILTypeInstance[,...] but
+            // declares NO ctor/Get/Set of its own (the array TypeReference's
+            // method list is empty). Delegate to the underlying CLR array type,
+            // which owns the real ctor/Get/Set. Pre-change this ALWAYS returned
+            // null -> any now-resolved method is net-new (Legacy-neutral-by-
+            // improvement; fixes BOTH engines identically).
+            if (IsArray)
+            {
+                var clrArr = ResolveArrayClrType();
+                if (clrArr != null)
+                    return clrArr.GetConstructor(param);
+            }
             if (constructors == null)
                 InitializeMethods();
             foreach (var i in constructors)
@@ -3154,6 +3176,18 @@ namespace ILRuntime.CLR.TypeSystem
                 ( ( ILType ) byRefType ).byRefCLRType = this.TypeForCLR.MakeByRefType ();
             }
             return byRefType;
+        }
+
+        // neo-array-multidim-ilvt (sub-gap 0): resolve the underlying CLR array
+        // type (ILTypeInstance[,...]) built by MakeArrayType as a CLRType, so an
+        // IL array type's ctor/Get/Set can be delegated to the real CLR methods.
+        // Returns null if the CLR type is not registered (defensive; not hit by
+        // the suite since ILTypeInstance is always resolvable).
+        CLRType ResolveArrayClrType()
+        {
+            if (arrayCLRType == null)
+                return null;
+            return appdomain.GetType(arrayCLRType) as CLRType;
         }
 
         public IType MakeArrayType ( int rank )
