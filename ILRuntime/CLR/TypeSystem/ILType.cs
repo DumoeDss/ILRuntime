@@ -920,16 +920,78 @@ namespace ILRuntime.CLR.TypeSystem
             return rb;
         }
 
-        // Resolve a TypeReferencePatchInfo (a field type) to a runtime IType by
-        // name. IL types resolve via LoadedTypes; CLR types via GetType(fullName).
-        // The S3 probe's fields are int / long / string (simple named types), so
-        // the by-name path suffices for the naturalAlignment re-derivation;
-        // array / byref / generic-instance field types are round-2 (a miss is
-        // skipped, reported as an incomplete re-derivation). Returns null on miss.
+        // Resolve a TypeReferencePatchInfo (a field type) to a runtime IType, the
+        // Cecil-free counterpart of the Cecil path's appdomain.GetType(field.
+        // FieldType, this, null). Handles every shape the HybridPatch serializer
+        // (TypeReferencePatchInfo.Create) emits:
+        //  - a plain named type (info.Name set) -> LoadedTypes / GetType(name).
+        //  - a GENERIC INSTANCE (IsGenericInstance, info.Name blank): the def is
+        //    info.ElementType (a named TypeReferencePatchInfo, e.g.
+        //    "System.Collections.Generic.List`1"); the type args are
+        //    info.GenericArguments[]. Resolve the def + each arg RECURSIVELY, then
+        //    MakeGenericInstance (mirrors AppDomain.GetType's GenericInstanceType
+        //    branch at AppDomain.cs:1667 + the IL/CLR MakeGenericInstance). This is
+        //    the generic-TYPE-instance field surface (List<int>, List<IL-T>,
+        //    Dictionary<K,V> on an IL class Cecil-free). Without this the field
+        //    type resolved to NULL (a reference-slotted generic field still
+        //    ACCESSES fine -- the field access uses the reference offset + the
+        //    callvirt operand's OWN declaring type -- but a reflective
+        //    GetField(name) returned null, diverging from the Cecil path).
+        //  - an array / byref (IsArray / IsByReference): resolve the element type
+        //    then MakeArrayType / MakeByRefType.
+        // Returns null on any miss (the caller tolerates it). Neo-only caller.
         static IType ResolveNamedIType(ILRuntime.Runtime.Enviorment.AppDomain domain,
             ILRuntime.Hybrid.TypeReferencePatchInfo info)
         {
-            if (info == null || string.IsNullOrEmpty(info.Name)) return null;
+            if (info == null) return null;
+            // A generic instance: def = ElementType, args = GenericArguments.
+            if (info.IsGenericInstance)
+            {
+                if (info.ElementType == null) return null;
+                IType defType = ResolveNamedIType(domain, info.ElementType);
+                if (defType == null) return null;
+                var gas = info.GenericArguments;
+                if (gas == null || gas.Length == 0) return defType;
+                var args = new KeyValuePair<string, IType>[gas.Length];
+                for (int i = 0; i < gas.Length; i++)
+                {
+                    IType argType = ResolveNamedIType(domain, gas[i].Value);
+                    if (argType == null) return null;
+                    // The KEY is the generic-param's NAME on the def (e.g. "T"); it
+                    // is informational for IL defs + unused by CLR MakeGenericInstance
+                    // (which keys by position). Use the recorded key, else "!<i>".
+                    string key = !string.IsNullOrEmpty(gas[i].Key) ? gas[i].Key : ("!" + i);
+                    args[i] = new KeyValuePair<string, IType>(key, argType);
+                }
+                try { return defType.MakeGenericInstance(args); }
+                catch { return null; }
+            }
+            // An array: element type -> MakeArrayType (rank 1; the serializer emits
+            // a flat element chain so multi-dim is round-2).
+            if (info.IsArray)
+            {
+                if (info.ElementType == null) return null;
+                IType elementType = ResolveNamedIType(domain, info.ElementType);
+                if (elementType == null) return null;
+                try { return elementType.MakeArrayType(1); }
+                catch { return null; }
+            }
+            // A byref: element type -> MakeByRefType.
+            if (info.IsByReference)
+            {
+                if (info.ElementType == null) return null;
+                IType elementType = ResolveNamedIType(domain, info.ElementType);
+                if (elementType == null) return null;
+                try { return elementType.MakeByRefType(); }
+                catch { return null; }
+            }
+            // A plain named type (the common case). A generic-parameter field
+            // type (info.IsGenericParameter) carries its NAME here too (e.g. "T")
+            // -- but a Cecil-free ILType has no open generic def to bind it on, so
+            // it falls through to the name lookup + resolves to null (out of
+            // scope; an IL type with its OWN generic params + a generic-param
+            // field is a deeper surface).
+            if (string.IsNullOrEmpty(info.Name)) return null;
             IType it;
             if (domain.LoadedTypes.TryGetValue(info.Name, out it) && it != null) return it;
             try { return domain.GetType(info.Name); }

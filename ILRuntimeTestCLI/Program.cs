@@ -356,6 +356,33 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // Step 25 generic-TYPE-instance field capstone (child-8 follow-up): the
+            // Cecil-free load of an IL class whose INSTANCE FIELD TYPES are generic
+            // instantiations (List<int>, List<string>, List<IL-T>,
+            // Dictionary<int,string>). The child-8 Cecil-free machinery covered a
+            // generic-METHOD instance; this is the generic-TYPE-instance FIELD
+            // surface (a separate ILType field-layout resolution path).
+            if (nameFilter == "NeoStep25CecilFreeGenField")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Intepreter.RegisterVM.NeoStep25CecilFreeGenFieldCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoStep25 Cecil-free generic-field: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoStep25CecilFreeGenField threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // Step 25 neo-aot-byref-wireup host-side self-check (child 16): the AOT
             // (ilrt_neoc) wire-up gate for the child-14 CLR->IL delegate-byref map.
             // Drives the SAME public NeoCompiler the standalone CLI uses over
