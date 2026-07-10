@@ -3400,7 +3400,7 @@ namespace ILRuntime.Runtime.Intepreter
                                 }
                                 else
                                 {
-                                    // Step 13: CLR value type Box.
+                                    // Step 13: CLR Box.
                                     CLRType clrBoxType = t as CLRType;
                                     if (clrBoxType == null)
                                         throw new InvalidCastException();
@@ -3411,6 +3411,26 @@ namespace ILRuntime.Runtime.Intepreter
                                         // frame; box reads the sized value and boxes it.
                                         boxed = NeoBoxReturnValue(clrBoxType, frameBase + ip->SrcOffset,
                                             AppDomain.GetPrimitiveSize(clrBoxType));
+                                    }
+                                    else if (!clrBoxType.TypeForCLR.IsValueType)
+                                    {
+                                        // Gap B: box on a CLR REFERENCE type is an IDENTITY
+                                        // (ECMA III.4.3: boxing a reference type is a no-op --
+                                        // the same instance flows through). The C# compiler
+                                        // emits `box !!T` to flow a generic param T into an
+                                        // `object`/base-class param; when T is specialized to a
+                                        // concrete ref type (e.g. string), this arm fires. The
+                                        // source slot holds the object's mStack index in its
+                                        // first 4 bytes -- read the object as-is (NO
+                                        // ReadNeoValueType, which would reinterpret the raw
+                                        // bytes as a struct). Mirrors Legacy ExecuteR Box
+                                        // (ILIntepreter.Register.cs:3880-3883: obj =
+                                        // mStack[objRef->Value]; AssignToRegister). The F-MAJ-1
+                                        // comment below assumed a ref-type source "never reaches
+                                        // Box"; that holds for direct re-boxing of a known-ref
+                                        // expression but NOT for a generic-param `box !!T`.
+                                        int boxSrcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                        boxed = boxSrcIdx >= 0 ? mStack[boxSrcIdx] : null;
                                     }
                                     else
                                     {
