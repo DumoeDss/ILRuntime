@@ -5119,35 +5119,24 @@ namespace ILRuntime.Runtime.Intepreter
                                                 cmap.PrimitiveSize[i]);
                                         }
                                     }
-                                    if (cmap.RefSrc != null)
-                                    {
-                                        // The map's leading ref entries belong to slot 0 (the
-                                        // `this`), whose callee-layout ref count is set by the
-                                        // call-lowering (Object -> RefCount=1 for the constrained
-                                        // callvirt). The box-once / direct-call below owns slot 0's
-                                        // receiver, so SKIP those leading ref entries (the source
-                                        // byref's "ref region" is meaningless and would read a
-                                        // garbage mStack index). Compute slot 0's ref count from
-                                        // the call-site method's declaring type.
-                                        int slot0RefCount = 0;
-                                        if (targetMethod.HasThis)
-                                        {
-                                            IType thisType = targetMethod.DeclearingType;
-                                            if (thisType != null && thisType.IsValueType)
-                                                slot0RefCount = (thisType is ILType sIl && sIl.IsValueType) ? sIl.TotalReferenceCount : 0;
-                                            else
-                                                slot0RefCount = 1; // reference-type / Object `this` -> 1 ref slot
-                                        }
-                                        for (int i = slot0RefCount; i < cmap.RefSrc.Length; i++)
-                                        {
-                                            int rSrcIdx = *(int*)(frameBase + cmap.RefSrc[i]);
-                                            mStack[frameRefBase + cmap.RefDst[i]] = (rSrcIdx >= 0 && rSrcIdx < mStack.Count) ? mStack[rSrcIdx] : null;
-                                            // Note: ref slots beyond `this` are rare for the
-                                            // constrained shape; the common case is a boxed
-                                            // override with primitive params. A ref-typed
-                                            // non-this param inherits the standard copy.
-                                        }
-                                    }
+                                    // Note: NO ref-region copy here. The standard call paths
+                                    // (Callvirt_CLR / Callvirt_Interface -> CopyNeoCallArguments)
+                                    // copy ONLY the primitive bytes for a ref-typed param and let
+                                    // the callee read the object by its mStack index (stored in
+                                    // the param's first 4 primitive bytes). A ref-region copy
+                                    // here would (a) mis-read the source -- cmap.RefSrc[i] is a
+                                    // RefOffset (an index into mStack[frameRefBase+...]), NOT a
+                                    // frame byte offset, so `*(int*)(frameBase + RefSrc[i])` reads
+                                    // garbage -- and (b) OVERWRITE the caller's own mStack object
+                                    // slot (mStack[frameRefBase + RefDst[i]]), destroying the very
+                                    // object the callee's primitive index points at. This was the
+                                    // F3 "accepted-known" loop (never exercised for a ref-type T
+                                    // before Gap A): for T=string, it nulled the `y` arg to
+                                    // CompareTo, producing a wrong result. The IL-VT-with-ref-fields
+                                    // `this` case is owned by the direct-call path above
+                                    // (constrainedSlot0Seed), not this box-once path, so dropping
+                                    // this loop loses nothing. Mirrors Legacy ExecuteR (the
+                                    // constrained arm does not touch the non-`this` ref region).
 
                                     // Resolve the byref `this` source (slot 0): an 8-byte Ref
                                     // Slot produced by ldloca/ldarga addressing the struct.
@@ -5235,6 +5224,22 @@ namespace ILRuntime.Runtime.Intepreter
                                     {
                                         // Box-once path (CLR value type, or already-boxed receiver).
                                         object boxedReceiver = null;
+                                        // Gap A: reference-type constrained T (e.g. T=string, a CLRType
+                                        // that is NOT a value type). ECMA III.3.19 constrained. on a
+                                        // reference type is a plain callvirt on the object -- NO box. The
+                                        // JIT emits the constrained `this` as a managed pointer
+                                        // (ldarga/ldloca), so slot-0's source is an 8-byte frame-native
+                                        // byref (thisObjIdx == -1, thisByteOff == the receiver slot's byte
+                                        // offset). The receiver object's mStack index lives at
+                                        // *(int*)(frameBase + thisByteOff). Deref it and use the object
+                                        // as-is. Mirrors Legacy ExecuteR Constrained ref-type path
+                                        // (ILIntepreter.Register.cs:3936-3937: insIdx = objRef->Value).
+                                        if (boxedReceiver == null && constrainedType != null &&
+                                            !constrainedType.IsValueType && thisObjIdx < 0)
+                                        {
+                                            int recvIdx = *(int*)(frameBase + thisByteOff);
+                                            boxedReceiver = (recvIdx >= 0 && recvIdx < mStack.Count) ? mStack[recvIdx] : null;
+                                        }
                                         if (thisObjIdx >= 0)
                                         {
                                             boxedReceiver = mStack[thisObjIdx];

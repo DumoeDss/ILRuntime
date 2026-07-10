@@ -1207,5 +1207,43 @@ namespace TestCases
             int r = ProbeConstrainedCallSetAndSum(v, 10f, 20f, 30f);
             if (r != 60) { int z = 1; int d = 0; int _ = z / d; }
         }
+
+        // ---- Gap A: reference-type constrained.callvirt (T = string) ----
+        // The Step 17 Constrained arm's ref-type `this`. `constrained.callvirt`
+        // on a generic param T instantiated with a reference type (string, an
+        // IComparable<string>) must dispatch CompareTo on the object with NO box
+        // (ECMA III.3.19). Requires Gap A (this branch) AND Gap B (Box ref-type
+        // identity) to pass; on HEAD this throws the Step-17 NIE.
+        static int Step17CompareIt<T>(T x, T y) where T : IComparable<T>
+        {
+            return x.CompareTo(y);
+        }
+        // The TT-call probe the Gap B implementer noted as Gap A's facet -- re-
+        // enabled now that Gap B is fixed + Gap A applied. x.GetHashCode() on a
+        // generic T compiles to `constrained !!T; callvirt Object::GetHashCode`.
+        static int Step17HashCodeOf<T>(T x) { return x.GetHashCode(); }
+
+        public static void NeoStep17_ConstrainedRefTypeString()
+        {
+            int r1 = Step17CompareIt<string>("aaa", "bbb");
+            int r2 = Step17CompareIt<string>("bbb", "aaa");
+            int s1 = r1 < 0 ? -1 : (r1 > 0 ? 1 : 0);
+            int s2 = r2 < 0 ? -1 : (r2 > 0 ? 1 : 0);
+            if (s1 != -1 || s2 != 1) { int z = 1; int d = 0; int _ = z / d; }
+        }
+        public static void NeoStep17_ConstrainedRefTypeStringEqual()
+        {
+            int r = Step17CompareIt<string>("abc", "abc");
+            if (r != 0) { int z = 1; int d = 0; int _ = z / d; }
+        }
+        public static void NeoStep17_ConstrainedRefTypeGetHashCode()
+        {
+            int h1 = Step17HashCodeOf<string>("abc");
+            int h2 = Step17HashCodeOf<string>("abc");
+            // Same string literal -> identical hash (String.GetHashCode is deterministic
+            // per-process for equal values). The point is it must NOT crash/NIE and must
+            // produce a non-zero, consistent hash.
+            if (h1 == 0 || h1 != h2) { int z = 1; int d = 0; int _ = z / d; }
+        }
     }
 }
