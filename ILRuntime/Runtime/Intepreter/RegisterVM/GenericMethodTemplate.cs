@@ -426,7 +426,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             ILRuntime.Runtime.Enviorment.AppDomain appdomain,
             ILRuntime.Runtime.NeoAOT.NeoAssemblyModel model,
             ILRuntime.Runtime.NeoAOT.NeoTemplateRecord rec,
-            Func<int, TypeReference> resolveVariableType)
+            Func<int, TypeReference> resolveVariableType,
+            Func<int, Mono.Cecil.MethodReference> resolveMethodRef)
         {
             if (rec.TemplateBody == null) return null;
             var tpl = new GenericMethodTemplate();
@@ -467,19 +468,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             // CecilToken = null (the back-half re-derives the is-ref flag). A T-
             // identity TypeToken patch (CecilTokenKind 0=TypeReference -- Box T /
             // Ldobj T / Initobj T / Stobj T / Unbox.Any T where T is a method generic
-            // param) is now RE-RESOLVED Cecil-free: the patch's TokenRefIdx points at
+            // param) is RE-RESOLVED Cecil-free: the patch's TokenRefIdx points at
             // the generic-param's TypeRef (whose Name is e.g. "T"), the
             // resolveVariableType closure returns a synthetic Cecil GenericParameter
             // for that name, and CloneAndPatch's existing TypeToken path
             // (instance.GetTypeTokenHashCode(CecilToken)) re-derives the concrete T
             // hash via FindGenericArgument(token.Name) -- no Cecil module needed.
             // A T-identity MethodToken patch (CecilTokenKind 1=MethodReference -- a
-            // `constrained.` T-qualified callvirt) still REJECTS (a Cecil-free
-            // method-token re-resolution on the concrete T is a deeper sub-case;
-            // S3). The requested Box T / Ldobj T / Initobj T surface is all TypeToken.
-            tpl.Patches = RebuildPatchesNoCecil(rec.Patches, resolveVariableType,
-                out bool hasMethodIdentityToken);
-            if (hasMethodIdentityToken) return null;  // OQ3: T-identity MethodToken -> S3
+            // `constrained.` T-qualified callvirt) is ALSO re-resolved Cecil-free
+            // (V6): the patch's TokenRefIdx points at the MethodRef table entry
+            // (DeclaringType + Name + Parameters), the resolveMethodRef closure
+            // rebuilds a Cecil MethodReference whose declaring type is the synthetic
+            // GenericParameter / a generic instance over it, and CloneAndPatch's
+            // existing GetMethodTokenHash path re-derives the concrete-T method hash
+            // via appdomain.GetMethod (which resolves the declaring type via
+            // contextMethod.FindGenericArgument). A resolution miss falls through to
+            // reject below.
+            tpl.Patches = RebuildPatchesNoCecil(rec.Patches, resolveVariableType, resolveMethodRef,
+                out bool hasUnresolvableToken);
+            if (hasUnresolvableToken) return null;  // OQ3: a T-identity token miss -> S3
 
             // Not read at CloneAndPatch / ExecuteNeo for the S2 slice (no EH, no
             // constrained. prefix in the probe's generic methods). S3 owns these.
@@ -503,9 +510,10 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         static PatchEntry[] RebuildPatchesNoCecil(
             ILRuntime.Runtime.NeoAOT.NeoPatchEntryRecord[] recs,
             Func<int, TypeReference> resolveVariableType,
-            out bool hasMethodIdentityToken)
+            Func<int, Mono.Cecil.MethodReference> resolveMethodRef,
+            out bool hasUnresolvableToken)
         {
-            hasMethodIdentityToken = false;
+            hasUnresolvableToken = false;
             if (recs == null) return Array.Empty<PatchEntry>();
             var res = new PatchEntry[recs.Length];
             for (int i = 0; i < recs.Length; i++)
@@ -526,15 +534,26 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     {
                         // Could not re-resolve Cecil-free -> still reject this
                         // template (the additive contract: keep JIT).
-                        hasMethodIdentityToken = true;
+                        hasUnresolvableToken = true;
                     }
                 }
                 else if (r.Kind == (int)PatchKind.MethodToken && r.CecilTokenKind != 2)
                 {
                     // T-identity MethodToken (a `constrained.` T-qualified callvirt):
-                    // a Cecil-free method-token re-resolution on the concrete T is a
-                    // deeper sub-case (needs the concrete-T method ref) -- S3. REJECT.
-                    hasMethodIdentityToken = true;
+                    // re-resolve the method-token's MethodRef (TokenRefIdx -> the
+                    // resolveMethodRef closure -> a Cecil MethodReference whose
+                    // declaring type is the synthetic GenericParameter / a generic
+                    // instance over it + Name + Parameters). CloneAndPatch's
+                    // GetMethodTokenHash re-derives the concrete-T method hash via
+                    // appdomain.GetMethod (resolves the declaring type via
+                    // contextMethod.FindGenericArgument). A resolution miss (closure
+                    // returned null) falls through to reject below.
+                    if (r.TokenRefIdx >= 0)
+                        cecilToken = resolveMethodRef(r.TokenRefIdx);
+                    if (cecilToken == null)
+                    {
+                        hasUnresolvableToken = true;
+                    }
                 }
                 res[i] = new PatchEntry
                 {

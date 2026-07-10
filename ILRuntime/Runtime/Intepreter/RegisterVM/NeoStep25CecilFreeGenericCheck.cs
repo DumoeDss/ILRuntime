@@ -89,6 +89,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 // T-identity machinery in play -- so it is NOT a T-identity Cecil-free
                 // regression; out of scope for this change).
                 new Wrap("WrapBoxUnboxInt",    4242),
+                // MethodToken T-identity body (constrained. T callvirt on
+                // IComparable<T>). int T: 7.CompareTo(5) > 0 (sign-normalized to 1
+                // by the wrapper -- CompareTo's magnitude is not documented). The
+                // authoritative Cecil-free MethodToken T-identity dispatch is the
+                // G4 fresh-instance cell below. string T (the ref-T path) is
+                // omitted: the constrained. ref-type arm throws on HEAD (an engine
+                // gap, fails the A JIT reference too -> out of scope).
+                new Wrap("WrapCompareElemsInt", 1),
             };
             var expected = new Dictionary<string, object>();
             foreach (var w in wrappers)
@@ -355,6 +363,86 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 }
                 catch (Exception ex) { diff = "G2 threw " + ex.GetType().Name + ": " + ex.Message; }
                 RecordCell(res, "G2 ConstGeneric<T> template body-mutation (AOT template really runs)", diff);
+            }
+
+            // ---- (G4) METHOD-TOKEN T-IDENTITY Cecil-free generic dispatch: drive a
+            // FRESH CompareElems<int> instance via MakeGenericMethod (never inlined)
+            // on a Cecil-free load. CompareElems<T> (where T: IComparable<T>) calls
+            // a.CompareTo(b) -- a `constrained. T`-qualified callvirt whose METHOD
+            // token is T-qualified (the declaring type is the generic instance
+            // IComparable<T>, which contains the method generic param T). On HEAD the
+            // Cecil-free S3 RebuildPatchesNoCecil REJECTS a MethodToken T-identity
+            // patch (hasMethodIdentityToken -> BuildFromNeoRecord returns null -> the
+            // template is skipped -> the method falls back to JIT, which a Cecil-free
+            // AppDomain B cannot run), and the call throws. The follow-up fix re-
+            // resolves the T-qualified method token Cecil-free (the declaring type
+            // re-resolved via the synthetic GenericParameter + the method name/sig via
+            // the loaded interface) + the template binds. Expected: 7.CompareTo(5) > 0
+            // (sign-correct on the concrete int T).
+            {
+                const int CE_A = 7;
+                const int CE_B = 5;
+                res.TotalCells++;
+                string diff;
+                try
+                {
+                    var domainB4 = new ILRuntime.Runtime.Enviorment.AppDomain();
+                    try
+                    {
+                        var lr4 = domainB4.LoadNeoAssembly(model, null);
+                        var probeB4 = domainB4.GetType(ProbeFullName) as ILType;
+                        // Find the CompareElems open definition with the S2-bound AOT
+                        // template (same GetMethod-accumulation caveat as G3: pick the
+                        // entry whose GenericMethodTemplateCache is non-null).
+                        ILMethod ceDef = null;
+                        int ceSeen = 0;
+                        if (probeB4 != null && probeB4.GetMethods() != null)
+                        {
+                            foreach (var mm in probeB4.GetMethods())
+                            {
+                                var ilm = mm as ILMethod;
+                                if (ilm == null || ilm.IsGenericInstance) continue;
+                                if (ilm.Name == "CompareElems")
+                                {
+                                    ceSeen++;
+                                    if (ilm.GenericMethodTemplateCache != null) { ceDef = ilm; break; }
+                                    if (ceDef == null) ceDef = ilm;
+                                }
+                            }
+                        }
+                        IType intT4 = null;
+                        try { intT4 = domainB4.GetType("System.Int32"); } catch { }
+                        object r;
+                        if (ceDef == null || intT4 == null)
+                        {
+                            diff = "G4: ceDef=" + (ceDef != null) + " intT=" + (intT4 != null) + " ceSeen=" + ceSeen;
+                        }
+                        else
+                        {
+                            var freshInst = ceDef.MakeGenericMethod(new IType[] { intT4 }) as ILMethod;
+                            object probeInstance = null;
+                            try { probeInstance = domainB4.Instantiate(ProbeFullName); }
+                            catch { }
+                            try { r = domainB4.Invoke(freshInst, probeInstance, CE_A, CE_B); }
+                            catch (Exception ex) { r = new ThrownMarker(ex); }
+                            // 7.CompareTo(5) == 2 (positive). Sign-correct check
+                            // (CompareTo is documented to return a value whose sign is
+                            // correct, not necessarily the exact magnitude).
+                            bool ok = false;
+                            if (!(r is ThrownMarker))
+                            {
+                                try { ok = Convert.ToInt64(r) > 0; } catch { }
+                            }
+                            diff = ok
+                                ? null
+                                : "G4 MethodToken T-identity CompareElems<int>: expected >0 (7.CompareTo(5)) got=" + Format(r)
+                                  + " (ceSeen=" + ceSeen + " ceDefCache=" + (ceDef.GenericMethodTemplateCache != null) + ")";
+                        }
+                    }
+                    finally { domainB4.Dispose(); }
+                }
+                catch (Exception ex) { diff = "G4 threw " + ex.GetType().Name + ": " + ex.Message; }
+                RecordCell(res, "G4 CompareElems<T> MethodToken T-identity Cecil-free dispatch", diff);
             }
 
             // ---- (G3) T-IDENTITY-TOKEN Cecil-free generic dispatch: drive a FRESH

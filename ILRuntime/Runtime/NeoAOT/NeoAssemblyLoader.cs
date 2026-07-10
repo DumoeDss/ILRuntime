@@ -186,8 +186,15 @@ namespace ILRuntime.Runtime.NeoAOT
                     // A miss returns null -> BuildFromNeoRecord skips the bind.
                     Func<int, ILRuntime.Mono.Cecil.TypeReference> resolveVariableType = idx =>
                         ResolveVariableType(appdomain, model, def, idx);
+                    // V6 (MethodToken T-identity): the MethodRef re-resolution closure
+                    // (MethodRef idx -> Cecil MethodReference, Cecil-free). A T-
+                    // qualified method token (a constrained. T callvirt) is re-resolved
+                    // into PatchEntry.CecilToken so DoCloneAndPatch's existing
+                    // GetMethodTokenHash path re-derives the concrete-T method hash.
+                    Func<int, ILRuntime.Mono.Cecil.MethodReference> resolveMethodRef = idx =>
+                        ResolveMethodRef(idx, model);
                     var tpl = Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.BuildFromNeoRecord(
-                        def, appdomain, model, trec, resolveVariableType);
+                        def, appdomain, model, trec, resolveVariableType, resolveMethodRef);
                     if (tpl == null)
                     {
                         report.Skipped.Add(("template rebuild miss (S3 case)", typeFullName + "." + (mref.Name ?? "?")));
@@ -464,6 +471,123 @@ namespace ILRuntime.Runtime.NeoAOT
             int dot = fullName.LastIndexOf('.');
             if (dot < 0) return new ILRuntime.Mono.Cecil.TypeReference(string.Empty, fullName, null, null);
             return new ILRuntime.Mono.Cecil.TypeReference(fullName.Substring(0, dot), fullName.Substring(dot + 1), null, null);
+        }
+
+        // V6 (MethodToken T-identity): rebuild a Cecil TypeReference Cecil-free
+        // from a deserialized TypeReferencePatchInfo (the .neo MethodRef table's
+        // DeclaringType / Parameters carriers). Mirrors the serialize-side
+        // TypeReferencePatchInfo.Create(TypeReference) INVERSE: reconstructs a
+        // generic-param / generic-instance / plain ref that appdomain.GetType /
+        // appdomain.GetMethod resolve by Name + FullName (no Cecil module needed).
+        //   - IsGenericParameter: a synthetic Cecil GenericParameter (Name="T"),
+        //     so GetType's IsGenericParameter arm resolves the concrete method-
+        //     generic arg via contextMethod.FindGenericArgument.
+        //   - IsGenericInstance: a Cecil GenericInstanceType whose ElementType is a
+        //     bare TypeReference (FullName == the open def, e.g. System.IComparable`
+        //     1) + whose GenericParameters are populated from the .neo keys (so
+        //     GetType's generic-instance arm reads tr.GenericParameters[i].Name)
+        //     + whose GenericArguments are the rebuilt arg refs.
+        //   - IsByReference / IsArray: wrap the rebuilt ElementType.
+        //   - plain: a bare TypeReference (FullName == Name). null on a miss.
+        // Used to rebuild a T-qualified method-token's Cecil MethodReference at the
+        // S2 Cecil-free template rebuild (the MethodToken T-identity follow-up).
+        static ILRuntime.Mono.Cecil.TypeReference BuildCecilTypeRefFromPatchInfo(
+            ILRuntime.Hybrid.TypeReferencePatchInfo info)
+        {
+            if (info == null) return null;
+            if (info.IsGenericParameter)
+            {
+                // A method-generic-param name (e.g. "T"). Resolve via the synthetic
+                // GenericParameter cache (stable identity for hash-keyed lookups).
+                return string.IsNullOrEmpty(info.Name) ? null : AcquireSyntheticGenericParam(info.Name);
+            }
+            if (info.IsByReference)
+            {
+                var et = BuildCecilTypeRefFromPatchInfo(info.ElementType);
+                if (et == null) return null;
+                return new ILRuntime.Mono.Cecil.ByReferenceType(et);
+            }
+            if (info.IsArray)
+            {
+                var et = BuildCecilTypeRefFromPatchInfo(info.ElementType);
+                if (et == null) return null;
+                return new ILRuntime.Mono.Cecil.ArrayType(et);
+            }
+            if (info.IsGenericInstance)
+            {
+                var elementType = BuildCecilTypeRefFromPatchInfo(info.ElementType);
+                if (elementType == null) return null;
+                var git = new ILRuntime.Mono.Cecil.GenericInstanceType(elementType);
+                // Populate the open def's GenericParameters from the .neo keys so
+                // appdomain.GetType's generic-instance arm (AppDomain.cs:1676,
+                // tr.GenericParameters[i].Name) reads the right param names.
+                if (info.GenericArguments != null)
+                {
+                    for (int i = 0; i < info.GenericArguments.Length; i++)
+                    {
+                        var key = info.GenericArguments[i].Key;
+                        if (!string.IsNullOrEmpty(key))
+                            elementType.GenericParameters.Add(new ILRuntime.Mono.Cecil.GenericParameter(key, elementType));
+                        var argRef = BuildCecilTypeRefFromPatchInfo(info.GenericArguments[i].Value);
+                        if (argRef == null) return null;
+                        git.GenericArguments.Add(argRef);
+                    }
+                }
+                return git;
+            }
+            // plain ref -- FullName == Name (GetSafeFullNames on the serialize side).
+            return string.IsNullOrEmpty(info.Name) ? null : BuildBareCecilTypeReference(info.Name);
+        }
+
+        // V6 (MethodToken T-identity): rebuild a Cecil MethodReference Cecil-free
+        // from a deserialized MethodReferencePatchInfo (the .neo MethodRef table
+        // entry a MethodToken patch's TokenRefIdx points at). The rebuilt ref
+        // drives appdomain.GetMethod's NORMAL resolution (Name + DeclaringType +
+        // Parameters), which resolves the concrete-T declaring type via
+        // contextMethod.FindGenericArgument + finds the method on it. The MethodRef
+        // table omits the return type (HybridPatch's MethodReferencePatchInfo) --
+        // appdomain.GetMethod reads _ref.ReturnType but GetMethod(name,...) does NOT
+        // match on return type, so a bare System.Int32 placeholder suffices (any
+        // non-null ref whose FullName appdomain.GetType resolves). null on a miss.
+        static ILRuntime.Mono.Cecil.MethodReference BuildMethodReferenceCecilFree(
+            ILRuntime.Hybrid.MethodReferencePatchInfo mref)
+        {
+            if (mref == null) return null;
+            // A generic-instance method is out of scope for the constrained-callvirt
+            // surface (the constraint's callvirt method token is never a generic-
+            // instance method); the .neo carries IsGenericInstance but a T-identity
+            // method patch is always the non-generic-instance shape. Reject if set.
+            if (mref.IsGenericInstance) return null;
+            if (string.IsNullOrEmpty(mref.Name)) return null;
+            var declType = BuildCecilTypeRefFromPatchInfo(mref.DeclaringType);
+            if (declType == null) return null;
+            // ReturnType placeholder: the MethodRef table omits it, GetMethod does
+            // not match on it. A bare System.Int32 ref resolves via appdomain.GetType.
+            var retType = BuildBareCecilTypeReference("System.Int32");
+            var mr = new ILRuntime.Mono.Cecil.MethodReference(mref.Name, retType, declType);
+            if (mref.Parameters != null)
+            {
+                for (int i = 0; i < mref.Parameters.Length; i++)
+                {
+                    var pt = BuildCecilTypeRefFromPatchInfo(mref.Parameters[i]);
+                    if (pt == null) return null;
+                    mr.Parameters.Add(new ILRuntime.Mono.Cecil.ParameterDefinition(pt));
+                }
+            }
+            return mr;
+        }
+
+        // V6 (MethodToken T-identity): the MethodRef re-resolution closure (MethodRef
+        // idx -> Cecil MethodReference, Cecil-free). Used by BuildFromNeoRecord's
+        // RebuildPatchesNoCecil to re-resolve a T-qualified method token (a
+        // constrained. T callvirt) into PatchEntry.CecilToken so DoCloneAndPatch's
+        // existing GetMethodTokenHash path re-derives the concrete-T method hash.
+        // null on a miss (-> BuildFromNeoRecord skips the bind, the additive
+        // contract). Neo-only.
+        static ILRuntime.Mono.Cecil.MethodReference ResolveMethodRef(int methodRefIdx, NeoAssemblyModel model)
+        {
+            if (model.MethodRefs == null || methodRefIdx < 0 || methodRefIdx >= model.MethodRefs.Length) return null;
+            return BuildMethodReferenceCecilFree(model.MethodRefs[methodRefIdx]);
         }
 
         // V5: resolve the open generic def's RETURN type from the .neo template's

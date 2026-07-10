@@ -122,6 +122,41 @@ namespace TestCases
         {
             return BoxUnbox<int>(4242);
         }
+
+        // ===== METHOD-TOKEN T-IDENTITY body (the child-8 MethodToken follow-up).
+        // A `constrained. T`-qualified callvirt: T is constrained to IComparable<T>,
+        // and the body calls x.CompareTo(x). The C# compiler emits
+        //   constrained. T
+        //   callvirt instance int32 class [mscorlib]System.IComparable`1<T>::CompareTo(!T)
+        // i.e. the callvirt's METHOD token is T-qualified (its declaring type is the
+        // generic instance IComparable<T>, which contains the method generic param
+        // T). On HEAD the Cecil-free S3 RebuildPatchesNoCecil REJECTS a MethodToken
+        // T-identity patch (hasMethodIdentityToken -> BuildFromNeoRecord returns
+        // null -> the template is skipped -> the method falls back to JIT, which a
+        // Cecil-free AppDomain cannot run). Expected (any comparable T): the sign of
+        // (a.CompareTo(b)) matches a.CompareTo on the concrete type. int T: returns
+        // CompareTo(5) on input 7 -> a positive int.
+        public int CompareElems<T>(T a, T b) where T : IComparable<T>
+        {
+            return a.CompareTo(b);
+        }
+
+        // Parameterless wrapper: int T. 7.CompareTo(5) > 0 (sign-normalized to 1
+        // -- CompareTo's magnitude is not documented, only its sign). The
+        // authoritative Cecil-free MethodToken T-identity dispatch is the
+        // capstone's G4 fresh-instance cell (CompareElems<int> via
+        // MakeGenericMethod, never inlined).
+        public int WrapCompareElemsInt()
+        {
+            int c = CompareElems<int>(7, 5);
+            return c > 0 ? 1 : (c < 0 ? -1 : 0);
+        }
+        // NOTE: a string-T wrapper (CompareElems<string>, the ref-T path) is
+        // OMITTED: a constrained. T callvirt whose concrete T is a REFERENCE type
+        // hits a separate ExecuteNeo Constrained arm ("box-once no-op / ref-type
+        // this") that throws on HEAD -- an engine-level gap (it FAILS the "A JIT"
+        // reference -- a Cecil-loaded run with no T-identity machinery in play --
+        // so it is NOT a T-identity Cecil-free regression; out of scope).
     }
 
     // A top-level (NON-NESTED) value type used as a concrete struct generic arg
