@@ -90,6 +90,24 @@ namespace ILRuntime.Runtime.Debugger
 #endif
         }
 
+#if ENABLE_NEO_MODE
+        // neo-debugger-cli-protocol (child 13): install an IN-PROC debugger
+        // "server" (the DAP adapter IS the client). Used by NeoDebuggerDapAdapter
+        // so CheckShouldBreak (:817 `server != null && server.IsAttached`)
+        // proceeds WITHOUT a TCP listener. Neo-only (the in-proc adapter is
+        // Neo-gated); the Legacy TCP path (StartDebugService) is unchanged.
+        internal void AttachInProcServer(DebuggerServer inProcServer)
+        {
+            server = inProcServer;
+        }
+        // Tear down the in-proc server (set by AttachInProcServer) without the
+        // DEBUG-guarded StopDebugService path (the in-proc server's Stop is a no-op).
+        internal void DetachInProcServer()
+        {
+            server = null;
+        }
+#endif
+
         /// <summary>
         /// 中断运行
         /// </summary>

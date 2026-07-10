@@ -37,7 +37,9 @@ namespace ILRuntime.Runtime.Debugger
 
         public DebugSocket Client { get { return clientSocket; } }
 
-        public bool IsAttached { get { return clientSocket != null && !clientSocket.Disconnected; } }
+        // neo-debugger-cli-protocol: `virtual` so an in-proc DAP adapter subclass
+        // can report attached WITHOUT a client socket (the adapter IS the client).
+        public virtual bool IsAttached { get { return clientSocket != null && !clientSocket.Disconnected; } }
 
         //private static bool IsOSX => Application.platform == RuntimePlatform.OSXEditor;
         //private static bool IsWindows => !IsOSX && Path.DirectorySeparatorChar == '\\' && Environment.NewLine == "\r\n";
@@ -343,7 +345,14 @@ namespace ILRuntime.Runtime.Debugger
             return res;
         }
 
-        void SendAttachResult()
+        // neo-debugger-cli-protocol: the server→client send-event methods are
+        // `virtual` so an IN-PROC DAP adapter (NeoDebuggerDapAdapter) can subclass
+        // DebuggerServer, override Start/Stop (no TCP listener) + these sends to
+        // capture the breakpoint-hit / step-complete / attach events WITHOUT a
+        // socket (the adapter IS the client). Additive: a virtual method is source-
+        // compatible with all existing callers; the Legacy TCP path is unchanged
+        // (the override exists only in the Neo-only adapter subclass).
+        virtual internal void SendAttachResult()
         {
             sendStream.Position = 0;
             bw.Write((byte)AttachResults.OK);
@@ -531,7 +540,7 @@ namespace ILRuntime.Runtime.Debugger
             DoSend(DebugMessageType.SCBindBreakpointResult);
         }
 
-        internal void SendSCBreakpointHit(int intpHash, int bpHash, KeyValuePair<int, StackFrameInfo[]>[] info, string error = "")
+        virtual internal void SendSCBreakpointHit(int intpHash, int bpHash, KeyValuePair<int, StackFrameInfo[]>[] info, string error = "")
         {
             sendStream.Position = 0;
             bw.Write(bpHash);
@@ -541,7 +550,7 @@ namespace ILRuntime.Runtime.Debugger
             DoSend(DebugMessageType.SCBreakpointHit);
         }
 
-        internal void SendSCStepComplete(int intpHash, KeyValuePair<int, StackFrameInfo[]>[] info)
+        virtual internal void SendSCStepComplete(int intpHash, KeyValuePair<int, StackFrameInfo[]>[] info)
         {
             sendStream.Position = 0;
             bw.Write(intpHash);

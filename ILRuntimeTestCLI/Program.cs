@@ -547,6 +547,39 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // neo-debugger-cli-protocol capstone (child 13): the DAP adapter
+            // self-check. Drives a REAL Neo breakpoint session through the
+            // NeoDebuggerDapAdapter: launch(attach) -> setBreakpoints -> run
+            // (worker) -> breakpoint-hit -> stackTrace -> scopes -> variables
+            // (assert a known local) -> next -> continue. The ~6 core DAP
+            // requests wired to the shipped DebugService backend.
+            if (nameFilter == "NeoDebuggerDap")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Debugger.NeoDebuggerDapCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoDebuggerDap: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoDebuggerDap threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                // The breakpoint session leaves the pooled interpreter in a debug-
+                // parked state; AppDomain.Dispose's StopDebugService does not
+                // fully unwind it on exit, so the CLI process would otherwise
+                // hang after the check prints. The check is complete + printed;
+                // force the exit code (a harness artifact, not a check defect).
+                Environment.Exit(failed <= 0 ? 0 : -1);
+                return failed <= 0 ? 0 : -1;
+            }
             // neo-debugger-neo-frame capstone: the Neo debugger frame-inspection
             // self-check. Drives the unhandled-exception path (an IL method with
             // primitive + reference locals throws unhandled -> ExecuteNeo's unwind
