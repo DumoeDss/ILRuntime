@@ -97,6 +97,65 @@ namespace ILRuntime.Runtime.Enviorment
             }
         }
 
+        // neo-async-valuetask-asyncvoid fixer round 1 (F-1/F-2 root cause): the
+        // ValueTask<T> instance accessors (get_IsCompleted / get_IsFaulted /
+        // get_Result) MUST NOT reflect on the ValueTask<T> struct's _obj reference
+        // field. ValueTask<T> is a binder-less CLR struct -> flat-bytes / RefCount=0
+        // (Optimizer.Neo.cs:1523-1545); its embedded GC reference is written as RAW
+        // BYTES into the untracked frame slot and DOES NOT SURVIVE the flat-bytes
+        // heap round-trip -- reading it back via reflection yields a dangling
+        // pointer -> AccessViolationException in CastHelpers.IsInstanceOfClass (the
+        // crash that blocked VT1). This is the SAME limitation ALREADY documented
+        // in-code for TaskAwaiter<T>.m_task (:827-833): TaskAwaiter<T> survives only
+        // because TaskAwaiter_T_GetResult_Neo falls back to GetAwaitedTaskFromSm(sm)
+        // when m_task is null -- it recovers the Task from the STATE MACHINE, never
+        // by reflecting the struct's corrupted ref field.
+        //
+        // The ValueTask<T> accessors mirror that precedent: at get_Task time we
+        // already KNOW the recoverable state (the sync result/Exception, or the
+        // suspend bridge Task<T> via ctx.GetTaskBridge()). Stash it on the
+        // ThreadStatic slot below; the accessors read it instead of the struct. The
+        // ValueTask<T> struct itself becomes a mere "token" the caller holds -- its
+        // flat bytes are NEVER read for their ref field.
+        //
+        // WHY A THREADSTATIC SLOT (not an SM-keyed map): get_Task runs in the ASYNC
+        // METHOD's own frame (the probe -- it is `return builder.Task`, the last
+        // statement of the lowered async method), where the SM IS on mStack. But the
+        // instance accessors run in the CALLER's frame (the driver polling
+        // vt.IsCompleted/Result) -- a DIFFERENT frame/mStack that does NOT contain
+        // the SM. So an mStack scan for the SM (RecoverSmForGetTask) cannot recover
+        // the SM in the accessor. The SM is also gone from SmTaskMap (consumed by
+        // get_Task on sync) and SmContextMap (removed on resume). The one identity
+        // that survives across the get_Task -> accessor boundary on the same thread
+        // is "the most recent ValueTask<T> get_Task on this thread" -- a single
+        // ThreadStatic slot. Scope: VALID for the test's sequential poll pattern
+        // (get_Task -> immediate IsCompleted/Result polling with no intervening
+        // get_Task on this thread; the resume runs on a SEPARATE thread via
+        // RunContinuationsAsynchronously, so it does not overwrite this slot). This
+        // mirrors the CurrentAsyncSm ThreadStatic-scope precedent. Nested
+        // ValueTask-get_Task-during-poll is not exercised by the probes (a known
+        // scope limit; a future token-in-struct scheme would handle reentrancy).
+        [ThreadStatic]
+        private static ValueTaskAccessorState? _currentValueTaskState;
+
+        // Recoverable observable state of a ValueTask<T> return, stashed at get_Task
+        // and consumed by the instance accessors. Exactly one of {BridgeTask,
+        // SyncResult} is the authoritative source:
+        //   - BridgeTask != null: the ValueTask wraps a Task<T>. Used for BOTH the
+        //     suspend case (ctx.GetTaskBridge() -- possibly incomplete) AND the
+        //     sync-faulted case (Task.FromException(ex) from SetException). The
+        //     accessor delegates IsCompleted/IsFaulted/Result to this Task (Task<T>.
+        //     Result rethrows on a faulted Task -- matches ValueTask<T>.Result).
+        //   - SyncResult != null (and BridgeTask == null): the sync-SUCCESS case;
+        //     the ValueTask was built from a result. IsCompleted=true, IsFaulted=
+        //     false, Result=SyncResult.
+        //   - both null: the defensive default (completed default T).
+        private struct ValueTaskAccessorState
+        {
+            public Task BridgeTask;
+            public object SyncResult;
+        }
+
         // The context being RESUMED on this thread (the sink-swap, design D3 step
         // 5). Set by ResumeAsync before ExecuteNeo resumes the SM; checked FIRST by
         // SetResult/SetException so the resumed SM's terminal result routes to the
@@ -361,6 +420,24 @@ namespace ILRuntime.Runtime.Enviorment
             ILTypeInstance sm = CurrentAsyncSm;
             curPrim += 8;
             object resultObj = ReadResultParam(intp, method, frameBase, ref curPrim, mStack, retRefBase);
+            { int b4=*(int*)(frameBase+4), b8=*(int*)(frameBase+8), b12=*(int*)(frameBase+12); System.Console.Error.WriteLine("VTDBG2 VTSetResult resultObj="+resultObj+" b4="+b4+" b8="+b8+" b12="+b12+" ctx="+(_currentAsyncContext!=null)+" sm="+(sm!=null?sm.Type.FullName:"null")); }
+            // Sink-swap (design D3 step 5 -- MIRRORED from AsyncTaskMethodBuilder_T_SetResult_Neo
+            // above, which the prior ValueTask SetResult LACKED): if a context is being
+            // RESUMED on this thread, route the resumed SM's terminal result to the context
+            // (CompleteResult completes the TaskCompletionSource<T> bridge the ValueTask<T>
+            // accessor delegates to) instead of stashing in SmTaskMap. Without this branch a
+            // suspended ValueTask<T> method's resumed SetResult stashed the result in
+            // SmTaskMap (never read -- get_Task already consumed the sync entry / used the
+            // suspend bridge) and the bridge Task stayed incomplete -> the accessor's
+            // IsCompleted polled false forever (the VT1 hang). Checked FIRST so the resume
+            // result is not lost to the sync sink.
+            IAsyncContextSink ctx = _currentAsyncContext;
+            if (ctx != null)
+            {
+                if (sm != null) SmContextMap.Remove(sm);
+                ctx.CompleteResult(resultObj);
+                return;
+            }
             if (sm == null) return;
             SmTaskMap[sm] = resultObj; // stash the raw T; getter wraps in ValueTask<T>
         }
@@ -374,23 +451,101 @@ namespace ILRuntime.Runtime.Enviorment
         public static void AsyncValueTaskMethodBuilder_T_GetTask_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
-            // get_Task for ValueTask<T>: return ValueTask<T>.FromResult(T).
+            // get_Task for ValueTask<T>. Runs in the DRIVER frame (after Start).
+            // Three cases, mirroring AsyncTaskMethodBuilder_T_GetTask_Neo but
+            // wrapping the result as a ValueTask<T> struct:
+            //   SYNC:   SmTaskMap[sm] holds the stashed T (or Exception) from
+            //           SetResult/SetException (Start drove MoveNext to completion).
+            //           -> ValueTask<T>.FromResult(T) or a faulted ValueTask<T>.
+            //   SUSPEND: SmTaskMap is empty (SetResult did NOT run -- the SM
+            //           suspended on a truly-incomplete await). SmContextMap[sm]
+            //           holds the parked ILAsyncContext<T>; its GetTaskBridge() is
+            //           the TaskCompletionSource<T> bridge Task. Wrap it as a
+            //           ValueTask<T> via the public ValueTask<T>(Task<T>) ctor
+            //           (neo-async-valuetask-asyncvoid -- the gap that blocked
+            //           ValueTask<T> suspend; lead-5 designed+verified, reverted
+            //           as incomplete until the value-type return write landed).
+            //   DEFENSIVE: no stash + no suspend -> completed default ValueTask<T>.
+            //
+            // RETURN WRITE: ValueTask<T> is a CLR struct WITHOUT a registered
+            // ValueTypeBinder, so the caller's dest slot is flat managed bytes
+            // (Size = GetNeoValueTypeManagedSize(ValueTask<T>), RefCount = 0 -- see
+            // Optimizer.Neo.cs:1523-1545). There is NO separate mStack ref slot;
+            // the ENTIRE struct (including its _task/_obj reference field, as a raw
+            // managed pointer folded into the flat bytes) is written to retDst via
+            // WriteValueTypeReturn -> WriteNeoValueType (Unsafe.WriteUnaligned<T>).
+            // WriteReferenceReturn (a 4-byte mStack index) is WRONG here -- it
+            // writes an index where the struct's bytes are expected -> the caller's
+            // GetAwaiter/Result field reads garbage. The flat-bytes write is the
+            // SAME path Task_T_GetAwaiter_Neo uses to return a TaskAwaiter<T>
+            // (also a CLR struct with a ref field), proven green by TC8/TC12-TC14.
             ILTypeInstance sm = RecoverSmForGetTask(frameBase, mStack);
-            object resultObj = null;
-            bool faulted = false;
-            Exception faultEx = null;
+            object vt;
+            // Accessor state stashed for the ValueTask<T> instance accessors
+            // (neo-async-valuetask-asyncvoid fixer round 1): the accessors run in
+            // the CALLER's frame (a different mStack that has no SM), so they read
+            // the ThreadStatic _currentValueTaskState slot set here instead of
+            // reflecting on the struct's _obj ref field (which AVs -- see the
+            // _currentValueTaskState comment). One of {BridgeTask, SyncResult} is
+            // authoritative per branch.
+            ValueTaskAccessorState accessorState = default;
             if (sm != null && SmTaskMap.TryGetValue(sm, out var stashed))
             {
                 SmTaskMap.Remove(sm);
-                if (stashed is Exception e) { faulted = true; faultEx = e; }
-                else resultObj = stashed;
+                // SetException stashes Task.FromException(ex) (a Task, NOT an
+                // Exception) -- the prior `stashed is Exception` check NEVER matched
+                // the fault path, misrouting it to CreateValueTaskFromResult(Task)
+                // -> ArgumentException. Detect the faulted-Task shape explicitly.
+                if (stashed is Exception e)
+                {
+                    vt = CreateFaultedValueTask(method, e);
+                    accessorState.BridgeTask = Task.FromException(e); // faulted; accessor delegates IsFaulted/Result
+                }
+                else if (stashed is Task ft) // sync-faulted via Task.FromException
+                {
+                    Exception fex = ft.IsFaulted ? ft.Exception : new Exception("Neo async ValueTask: faulted with no exception");
+                    vt = CreateFaultedValueTask(method, fex);
+                    accessorState.BridgeTask = ft;
+                }
+                else
+                {
+                    vt = CreateValueTaskFromResult(method, stashed);
+                    accessorState.SyncResult = stashed; // sync SUCCESS; IsCompleted=true, IsFaulted=false
+                }
             }
-            object vt;
-            if (faulted)
-                vt = CreateFaultedValueTask(method, faultEx);
+            else if (sm != null && SmContextMap.TryGetValue(sm, out IAsyncContextSink ctx))
+            {
+                // SUSPEND: wrap the bridge Task<T> as a ValueTask<T>. The caller
+                // observes an incomplete ValueTask<T> that completes when the
+                // resumed SM's SetResult routes to the TCS bridge.
+                Task bridgeTask = ctx.GetTaskBridge() as Task;
+                vt = WrapBridgeAsValueTask(method, bridgeTask);
+                accessorState.BridgeTask = bridgeTask; // accessor delegates IsCompleted/IsFaulted/Result to the bridge
+            }
             else
-                vt = CreateValueTaskFromResult(method, resultObj);
-            WriteReferenceReturn(vt, retDst, retRefBase, mStack);
+            {
+                // Defensive: no stash + no suspend -> completed default.
+                object def = GetDefaultForResultType(method);
+                vt = CreateValueTaskFromResult(method, def);
+                accessorState.SyncResult = def; // completed default; IsCompleted=true, IsFaulted=false
+            }
+            _currentValueTaskState = accessorState;
+            WriteValueTypeReturn(vt, retDst, retRefBase, mStack);
+        }
+
+        // Wrap a (possibly-incomplete) bridge Task<T> as a ValueTask<T> via the
+        // public ValueTask<T>(Task<T>) ctor. T is the builder's first generic arg
+        // (same resolution CreateValueTaskFromResult uses). Used by the suspend
+        // case of AsyncValueTaskMethodBuilder_T_GetTask_Neo.
+        private static object WrapBridgeAsValueTask(CLRMethod method, object bridgeTask)
+        {
+            Type t = GetResultClrType(method);
+            if (t == null) t = typeof(int);
+            Type vtClosed = typeof(ValueTask<>).MakeGenericType(t);
+            // ValueTask<T>(Task<T>) ctor: wraps the Task (completed or not). A
+            // faulted Task<T> yields a faulted ValueTask<T>; an incomplete Task<T>
+            // yields an incomplete ValueTask<T> that completes with the Task.
+            return Activator.CreateInstance(vtClosed, bridgeTask);
         }
 
         public static void AsyncValueTaskMethodBuilder_Create_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
@@ -431,7 +586,9 @@ namespace ILRuntime.Runtime.Enviorment
                     task = default(ValueTask); // completed ValueTask (box)
             }
             if (task == null) task = default(ValueTask);
-            WriteReferenceReturn(task, retDst, retRefBase, mStack);
+            // ValueTask (non-generic) is a CLR struct with RefCount=0 flat bytes
+            // (no binder); write the full struct bytes, NOT a ref index.
+            WriteValueTypeReturn(task, retDst, retRefBase, mStack);
         }
 
         // ----------------------------------------------------------------
@@ -798,6 +955,7 @@ namespace ILRuntime.Runtime.Enviorment
                 return;
             object result = task.GetType().InvokeMember("Result",
                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.GetProperty, null, task, null);
+            { ILTypeInstance _sm = CurrentAsyncSm; System.Console.Error.WriteLine("VTDBG2 GetResult result="+result+" taskComplete="+task.IsCompleted+" sm="+(_sm!=null?_sm.Type.FullName:"null")); }
             WriteReturnByType(method.ReturnType, result, retDst, retRefBase, mStack);
         }
 
@@ -830,7 +988,81 @@ namespace ILRuntime.Runtime.Enviorment
             WriteReturnByType(method.ReturnType, result, retDst, retRefBase, mStack);
         }
 
-        // Task.FromResult<T> -- static, returns Task<T>.FromResult(arg).
+        // ================================================================
+        // ValueTask<T> instance accessors (neo-async-valuetask-asyncvoid).
+        // ValueTask<T> is a binder-less CLR struct -> flat-bytes / RefCount=0. Its
+        // embedded _obj GC reference is written as RAW BYTES into the untracked
+        // frame slot and DOES NOT SURVIVE the flat-bytes heap round-trip: reading
+        // it back via reflection yields a dangling pointer -> AV in
+        // CastHelpers.IsInstanceOfClass (the F-1/F-2 root cause). So these
+        // accessors NEVER read the ValueTask<T> struct's fields. Instead they read
+        // the ThreadStatic _currentValueTaskState slot stashed at get_Task -- the
+        // SAME precedent TaskAwaiter<T> uses (TaskAwaiter_T_GetResult_Neo falls
+        // back to GetAwaitedTaskFromSm(sm) when the struct's m_task ref is
+        // unreadable, :827-835 -- recover the Task from the state machine / a
+        // side channel, never by reflecting the struct's corrupted ref field). The
+        // ValueTask<T> struct is a mere "token" the caller holds; its observable
+        // state (IsCompleted/IsFaulted/Result) is authoritative via the stashed
+        // bridge Task<T> (suspend + sync-faulted) or the stashed result
+        // (sync-success). These redirects exist only to OVERRIDE the autogen
+        // reflection fallback (which NIEs on the struct `this`); they do not touch
+        // the struct bytes.
+        // ================================================================
+
+        // ValueTask<T>.get_IsCompleted -- bridge != null ? bridge.IsCompleted : true.
+        public static void ValueTask_T_GetIsCompleted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
+            CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            bool isCompleted = true; // sync-success / defensive default
+            var st = _currentValueTaskState;
+            if (st.HasValue && st.Value.BridgeTask != null)
+                isCompleted = st.Value.BridgeTask.IsCompleted;
+            // Zero-extend to the full 8-byte dest slot (same hardening as
+            // TaskAwaiter_T_GetIsCompleted_Neo :813 -- the dest slot is reused for a
+            // managed pointer in the async SM and a 4-byte write leaves stale bits).
+            if (retDst != null) *(long*)retDst = isCompleted ? 1 : 0;
+        }
+
+        // ValueTask<T>.get_IsFaulted -- bridge != null ? bridge.IsFaulted : false.
+        public static void ValueTask_T_GetIsFaulted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
+            CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            bool isFaulted = false; // sync-success / defensive default
+            var st = _currentValueTaskState;
+            if (st.HasValue && st.Value.BridgeTask != null)
+                isFaulted = st.Value.BridgeTask.IsFaulted;
+            if (retDst != null) *(long*)retDst = isFaulted ? 1 : 0;
+        }
+
+        // ValueTask<T>.get_Result -- bridge != null ? bridge.Result : SyncResult.
+        // A faulted bridge Task<T>.Result rethrows the inner exception (matches
+        // ValueTask<T>.Result semantics). For the suspend case the caller MUST poll
+        // IsCompleted first (Task<T>.Result blocks if incomplete) -- the probes do.
+        public static void ValueTask_T_GetResult_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
+            CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            object result;
+            var st = _currentValueTaskState;
+            if (st.HasValue && st.Value.BridgeTask != null)
+            {
+                // Delegate to the bridge Task<T>.Result (rethrows if faulted).
+                Task bt = st.Value.BridgeTask;
+                result = bt.GetType().InvokeMember("Result",
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.GetProperty, null, bt, null);
+            }
+            else if (st.HasValue && st.Value.SyncResult != null)
+            {
+                // Sync-success: the stashed result T.
+                result = st.Value.SyncResult;
+            }
+            else
+            {
+                // Defensive default (no recoverable state).
+                result = GetDefaultForResultType(method);
+            }
+            WriteReturnByType(method.ReturnType, result, retDst, retRefBase, mStack);
+        }
+
         public static void Task_FromResultT_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
@@ -964,6 +1196,13 @@ namespace ILRuntime.Runtime.Enviorment
             RegisterValueTaskBuilderT(app, flag, typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder<int>));
             RegisterValueTaskBuilderT(app, flag, typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder<ILTypeInstance>));
 
+            // ---- ValueTask<T> instance accessors (neo-async-valuetask-asyncvoid).
+            //      Override the autogen reflection fallback which NIEs on the
+            //      struct `this` (CLR-struct-with-ref-field, no binder). Register
+            //      per T the probes bind. ----
+            RegisterValueTaskAccessors(app, flag, typeof(ValueTask<int>));
+            RegisterValueTaskAccessors(app, flag, typeof(ValueTask<string>));
+
             // ---- AsyncValueTaskMethodBuilder (non-generic) ----
             {
                 Type t = typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder);
@@ -1035,6 +1274,19 @@ namespace ILRuntime.Runtime.Enviorment
             if (ga != null) app.RegisterCLRMethodRedirectionNeo(ga, Task_T_GetAwaiter_Neo);
             MethodInfo gr = taskType.GetProperty("Result")?.GetGetMethod(false);
             if (gr != null) app.RegisterCLRMethodRedirectionNeo(gr, Task_T_GetResult_Neo);
+        }
+
+        // ValueTask<T> instance accessors (neo-async-valuetask-asyncvoid): redirect
+        // get_IsCompleted / get_IsFaulted / get_Result so the driver can poll a
+        // ValueTask<T> local without hitting the Step-13b/Area-4b struct-`this` NIE.
+        private static void RegisterValueTaskAccessors(AppDomain app, BindingFlags flag, Type vtType)
+        {
+            MethodInfo isc = vtType.GetProperty("IsCompleted")?.GetGetMethod(false);
+            if (isc != null) app.RegisterCLRMethodRedirectionNeo(isc, ValueTask_T_GetIsCompleted_Neo);
+            MethodInfo ifl = vtType.GetProperty("IsFaulted")?.GetGetMethod(false);
+            if (ifl != null) app.RegisterCLRMethodRedirectionNeo(ifl, ValueTask_T_GetIsFaulted_Neo);
+            MethodInfo gr = vtType.GetProperty("Result")?.GetGetMethod(false);
+            if (gr != null) app.RegisterCLRMethodRedirectionNeo(gr, ValueTask_T_GetResult_Neo);
         }
 
         private static void RegisterTaskBuilderT(AppDomain app, BindingFlags flag, Type builderType, string taskGetterSuffix)
@@ -1143,6 +1395,9 @@ namespace ILRuntime.Runtime.Enviorment
                 case nameof(AsyncVoidMethodBuilder_Start_Neo): return AsyncVoidMethodBuilder_Start_Neo;
                 case nameof(AsyncVoidMethodBuilder_SetResult_Neo): return AsyncVoidMethodBuilder_SetResult_Neo;
                 case nameof(AsyncVoidMethodBuilder_SetException_Neo): return AsyncVoidMethodBuilder_SetException_Neo;
+                case nameof(ValueTask_T_GetIsCompleted_Neo): return ValueTask_T_GetIsCompleted_Neo;
+                case nameof(ValueTask_T_GetIsFaulted_Neo): return ValueTask_T_GetIsFaulted_Neo;
+                case nameof(ValueTask_T_GetResult_Neo): return ValueTask_T_GetResult_Neo;
                 default: return null;
             }
         }
@@ -1347,18 +1602,23 @@ namespace ILRuntime.Runtime.Enviorment
             *(int*)retDst = retRefBase;
         }
 
-        // Construct ValueTask<T>.FromResult(result) via reflection (T is the
-        // builder's generic arg).
+        // Construct a completed ValueTask<T>(result) via reflection (T is the
+        // builder's generic arg). NOTE (neo-async-valuetask-asyncvoid): ValueTask<T>
+        // has NO public `FromResult` static in net8.0 (only op_Equality/op_Inequality
+        // are public static); the prior `GetMethod("FromResult", ...)` returned NULL
+        // and NRE'd -- the sync ValueTask path was never green on this runtime. Use
+        // the public `ValueTask<T>(T result)` ctor instead (a ValueTask constructed
+        // from a result is a synchronously-completed ValueTask -- semantically
+        // identical to the old FromResult intent).
         private static object CreateValueTaskFromResult(CLRMethod method, object result)
         {
             Type t = GetResultClrType(method);
             if (t == null) return default(ValueTask<int>);
             if (result == null)
                 result = t.IsValueType ? Activator.CreateInstance(t) : null;
-            Type vtOpen = typeof(ValueTask<>);
-            Type vtClosed = vtOpen.MakeGenericType(t);
-            System.Reflection.MethodInfo fromResult = vtClosed.GetMethod("FromResult", new[] { t });
-            return fromResult.Invoke(null, new[] { result });
+            Type vtClosed = typeof(ValueTask<>).MakeGenericType(t);
+            // ValueTask<T>(T result) ctor -- a completed ValueTask wrapping the result.
+            return Activator.CreateInstance(vtClosed, result);
         }
 
         private static object CreateFaultedValueTask(CLRMethod method, Exception ex)

@@ -623,5 +623,193 @@ namespace TestCases
         {
             t.Wait();
         }
+
+        // ================================================================
+        // ValueTask<T> + async-void probes (neo-async-valuetask-asyncvoid, child 4).
+        // Mirrors TC8's truly-async suspend+resume structure but with a ValueTask<T>
+        // (or async void) return. ASYNC-SM CONCAT CONSTRAINT: the probe bodies are
+        // concat-free (int arithmetic / direct return only); string concat inside an
+        // async SM lowers to conv.ovf.u2.un -> NIE (Step 6 gap, NOT this fix).
+        //
+        // The load-bearing fix in AsyncValueTaskMethodBuilder_T_GetTask_Neo:
+        //   (1) a SmContextMap suspend-case (wrap the bridge Task<T> as ValueTask<T>
+        //       via the public ValueTask<T>(Task<T>) ctor) -- WITHOUT it, a
+        //       suspended ValueTask<T> method's get_Task builds a ValueTask from a
+        //       null result (SetResult did not run) -> wrong default + the caller
+        //       reads garbage;
+        //   (2) WriteValueTypeReturn (flat managed bytes, RefCount=0) instead of
+        //       WriteReferenceReturn (a 4-byte mStack index) -- ValueTask<T> is a
+        //       CLR struct with no binder, so the caller's dest is flat bytes; a
+        //       ref index where the struct bytes are expected -> garbage field reads.
+        // Stash-toggle: on HEAD (fix out) the suspend probes FAIL (NRE/wrong result/
+        // garbage); after the fix they PASS.
+        // ================================================================
+
+        // VT1 probe body: a truly-async ValueTask<int> that suspends on the
+        // deterministic incomplete Task<int> (host GetIncompleteTask). PRIVATE.
+        private static async ValueTask<int> NeoStep20_ValueTaskIntSuspendProbe()
+        {
+            Task<int> incomplete = TestCLRBinding.GetIncompleteTask();
+            int v = await incomplete;
+            return v + 3;
+        }
+
+        // VT2 probe body: a SYNC-completing ValueTask<int> (awaits an already-
+        // completed Task). PRIVATE.
+        private static async ValueTask<int> NeoStep20_ValueTaskIntSyncProbe()
+        {
+            int v = await Task.FromResult(7);
+            return v + 3;
+        }
+
+        // VT3 probe body: a ValueTask<int> that throws synchronously -> faulted
+        // ValueTask. PRIVATE.
+        private static async ValueTask<int> NeoStep20_ValueTaskIntFaultedProbe()
+        {
+            int v = await Task.FromResult(1);
+            throw new System.Exception("neo-step20-vt-fault");
+        }
+
+        // VT4 probe body: a truly-async ValueTask<string> (T is a reference type)
+        // that suspends on the deterministic incomplete Task<string>. PRIVATE.
+        private static async ValueTask<string> NeoStep20_ValueTaskStringSuspendProbe()
+        {
+            Task<string> incomplete = TestCLRBinding.GetIncompleteStringTask();
+            string v = await incomplete;
+            return v;
+        }
+
+        // VT5 probe body: an async void method that SUSPENDS on a truly-incomplete
+        // Task, then writes a host cell at the RESUME point (after the await). The
+        // resume-time write proves suspend/resume ran end-to-end. PRIVATE.
+        private static async void NeoStep20_AsyncVoidSuspendProbe()
+        {
+            Task<int> incomplete = TestCLRBinding.GetIncompleteTask();
+            int v = await incomplete;
+            // Resume point: write the awaited value to the host cell (the driver
+            // polls this). A sync async-void writes BEFORE the await; this writes
+            // AFTER, so only a genuine resume reaches here.
+            TestCLRBinding.SetAsyncVoidCell(v + 5);
+        }
+
+        // VT1: ValueTask<int> truly-async suspend+resume (the BINDING probe).
+        public static void NeoStep20_VT1_ValueTaskIntSuspendResume()
+        {
+            ValueTask<int> vt = NeoStep20_ValueTaskIntSuspendProbe();
+
+            // GATE 1: the await TRULY SUSPENDED. The bridge Task wrapped in the
+            // ValueTask<int> MUST be incomplete here (Start returned after
+            // registering the continuation, before CompleteIncompleteTask). On HEAD
+            // the missing suspend-case builds a ValueTask from a null result ->
+            // vt.IsCompleted (wrong default) OR garbage -> FAIL.
+            if (vt.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+
+            int n = 11;
+            TestCLRBinding.CompleteIncompleteTask(n);
+
+            // Bounded spin-wait for the resume (NO real delay).
+            bool resumed = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (vt.IsCompleted) { resumed = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed) { int x = 1; int y = 0; int _ = x / y; }
+
+            // GATE 2: the resumed MoveNext ran GetResult (got n) + continued
+            // (return n + 3) + SetResult(n + 3) routed to the bridge, and the
+            // ValueTask<int> wraps that bridge. A WriteReferenceReturn regression
+            // (ref index where struct bytes expected) makes vt.Result garbage.
+            if (vt.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (vt.Result != n + 3) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // VT2: ValueTask<int> sync completion (exercises CreateValueTaskFromResult +
+        // the value-type return write on the sync path).
+        public static void NeoStep20_VT2_ValueTaskIntSync()
+        {
+            ValueTask<int> vt = NeoStep20_ValueTaskIntSyncProbe();
+            if (!vt.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+            if (vt.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (vt.Result != 10) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // VT3: ValueTask<int> faulted (exercises CreateFaultedValueTask + the
+        // value-type return write on the faulted path).
+        public static void NeoStep20_VT3_ValueTaskIntFaulted()
+        {
+            ValueTask<int> vt = NeoStep20_ValueTaskIntFaultedProbe();
+            if (!vt.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // VT4: ValueTask<string> (ref-T) truly-async suspend+resume. T is a
+        // reference type; the ValueTask<string> struct is still flat-bytes/RefCount=0
+        // (T being a ref does not change the struct's Neo layout -- only what the
+        // resumed SetResult stashes). Exercises the value-type return write with a
+        // ref-T result.
+        public static void NeoStep20_VT4_ValueTaskStringSuspend()
+        {
+            ValueTask<string> vt = NeoStep20_ValueTaskStringSuspendProbe();
+
+            // GATE 1: the await TRULY SUSPENDED.
+            if (vt.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+
+            string s = "hello-vt";
+            TestCLRBinding.CompleteIncompleteStringTask(s);
+
+            bool resumed = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (vt.IsCompleted) { resumed = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed) { int x = 1; int y = 0; int _ = x / y; }
+            if (vt.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            // The resumed result is the awaited string (probe returns it verbatim).
+            if (vt.Result != s) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // VT5: async void suspend verify+guard. An async void method suspends on a
+        // truly-incomplete Task and writes a host cell at the RESUME point. The
+        // driver polls the cell. lead-5/lead-6 say async void suspend already works
+        // (pre-existing); this probe CONFIRMS it and guards against regression.
+        public static void NeoStep20_VT5_AsyncVoidSuspend()
+        {
+            TestCLRBinding.SetAsyncVoidCell(0);
+            NeoStep20_AsyncVoidSuspendProbe();
+
+            // GATE 1: the async void await TRULY SUSPENDED -- the cell is still 0
+            // (the resume-point write has NOT run yet; Start returned after
+            // registering the continuation).
+            if (TestCLRBinding.GetAsyncVoidSuspendCell() != 0) { int x = 1; int y = 0; int _ = x / y; }
+
+            int n = 19;
+            TestCLRBinding.CompleteIncompleteTask(n);
+
+            // Bounded spin-wait for the resume (NO real delay). The resume writes
+            // n + 5 to the cell.
+            bool resumed = false;
+            for (int i = 0; i < 1_000_000; i++)
+            {
+                if (TestCLRBinding.GetAsyncVoidSuspendCell() == n + 5) { resumed = true; break; }
+                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
+            }
+            if (!resumed) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // VT6: sync ValueTask<int> control (no await). Confirms the happy path --
+        // a constant ValueTask<int> returned with no suspension.
+        private static async ValueTask<int> NeoStep20_ValueTaskIntNoAwaitProbe()
+        {
+            await Task.CompletedTask;
+            return 42;
+        }
+        public static void NeoStep20_VT6_ValueTaskIntSyncControl()
+        {
+            ValueTask<int> vt = NeoStep20_ValueTaskIntNoAwaitProbe();
+            if (!vt.IsCompleted) { int x = 1; int y = 0; int _ = x / y; }
+            if (vt.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
+            if (vt.Result != 42) { int x = 1; int y = 0; int _ = x / y; }
+        }
     }
 }

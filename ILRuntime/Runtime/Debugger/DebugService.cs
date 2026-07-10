@@ -533,6 +533,29 @@ namespace ILRuntime.Runtime.Debugger
             }
             // CLR value type (F-MAJ-1 flat managed bytes) -> ReadNeoValueType boxes it.
             // The cursor is advanced by slot.Size (byte-consistent with the allocator).
+            // neo-async-valuetask-asyncvoid fixer round 1: a binder-less CLR struct
+            // WITH a managed reference field (e.g. ValueTask<T>._obj, TaskAwaiter<T>.
+            // m_task) is stored as flat bytes / RefCount=0; its embedded GC ref is
+            // NOT tracked and does NOT survive the heap round-trip. Boxing it here
+            // (ReadNeoValueType -> Unsafe.ReadUnaligned -> box) yields a struct whose
+            // _obj/m_task is a DANGLING pointer; the caller's AppendFormat -> ToString
+            // then dereferences it -> AccessViolationException (uncatchable, kills the
+            // process during exception formatting). Emit a placeholder instead so the
+            // inspection never touches the corrupted ref. (This is the SAME root cause
+            // the ValueTask<T> accessors work around via the SM-keyed state lookup.)
+            System.Type clrVt = localType.TypeForCLR;
+            if (clrVt != null && clrVt.IsValueType && !clrVt.IsPrimitive && !clrVt.IsEnum)
+            {
+                bool hasManagedRef = false;
+                foreach (var f in clrVt.GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))
+                {
+                    var ft = f.FieldType;
+                    if (!ft.IsValueType && !ft.IsPointer && !ft.IsPrimitive)
+                    { hasManagedRef = true; break; }
+                }
+                if (hasManagedRef)
+                    return "<" + localType.Name + " (flat-bytes struct with ref field; inspection skipped)>";
+            }
             int cursor = 0;
             return Runtime.Intepreter.ILIntepreter.ReadNeoValueType(localType.TypeForCLR, frameBase + slot.Offset, ref cursor, slot.Size);
         }

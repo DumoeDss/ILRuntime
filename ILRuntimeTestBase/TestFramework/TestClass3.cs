@@ -240,6 +240,29 @@ namespace ILRuntimeTest.TestFramework
             current.SetResult(value);
         }
 
+        // neo-async-valuetask-asyncvoid (VT4): a self-resetting TaskCompletionSource<string>
+        // for the ref-T ValueTask<string> suspend+resume probe. Byte-identical contract to
+        // the int pair (atomic swap -> deterministic across test order). A ref-type T
+        // exercises the ValueTask<T> value-type return write with T itself a reference
+        // (the ValueTask<string> struct is still flat-bytes/RefCount=0; T being a ref
+        // does not change the struct's Neo layout -- it only changes what the resumed
+        // SetResult stashes).
+        private static TaskCompletionSource<string> s_incompleteStringTcs = new TaskCompletionSource<string>();
+        public static Task<string> GetIncompleteStringTask() { return s_incompleteStringTcs.Task; }
+        public static void CompleteIncompleteStringTask(string value)
+        {
+            TaskCompletionSource<string> current = System.Threading.Interlocked.Exchange(
+                ref s_incompleteStringTcs, new TaskCompletionSource<string>());
+            current.SetResult(value);
+        }
+
+        // neo-async-valuetask-asyncvoid (VT5): an async-void suspend side-effect cell.
+        // Reuses the existing s_asyncVoidCell, but the suspend probe writes a DISTINCT
+        // value at the RESUME point (after the await) -- a sync async-void writes the
+        // cell BEFORE the await (NeoStep20_AsyncVoidSync), so the resume-time write
+        // proves the suspend/resume actually ran. The cell is read-back only here.
+        public static int GetAsyncVoidSuspendCell() { return s_asyncVoidCell; }
+
         // neo-async-execctx-capture: a CUSTOM awaiter implementing INotifyCompletion
         // but NOT ICriticalNotifyCompletion -- the C# compiler lowers `await` on it
         // to AwaitOnCompleted (the EC-capturing path), not AwaitUnsafeOnCompleted. It

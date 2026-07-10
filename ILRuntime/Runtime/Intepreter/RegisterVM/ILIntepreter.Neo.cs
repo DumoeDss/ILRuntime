@@ -2475,19 +2475,22 @@ namespace ILRuntime.Runtime.Intepreter
                                     // them. The snapshot is read by the snapshot-aware overload.
                                     int* byRefSnap = null;
                                     bool[] wbFlags = map.PrimitiveByRefWriteBack;
-                                    if (wbFlags != null && wbFlags.Length > 0)
-                                    {
-                                        // Upper-bound the buffer by the flag count (one (objIdx,off)
-                                        // pair = 2 ints per flagged slot). 16 slots is far more than
-                                        // any real call site uses (a CLR-method instance call has at
-                                        // most a handful of byref params); grow if ever needed.
-                                        int cap = wbFlags.Length;
-                                        if (cap > 16) cap = 16;
-                                        int* snap = stackalloc int[cap * 2];
-                                        int captured = SnapshotNeoCallByRefSources(ref map, frameBase, snap);
-                                        if (captured > 0)
-                                            byRefSnap = snap;
-                                    }
+                                    bool needSnap = wbFlags != null && wbFlags.Length > 0;
+                                    // neo-async-valuetask-asyncvoid fixer round 1: a per-call
+                                    // `stackalloc` for the snapshot ACCUMULATES on the C# stack
+                                    // across loop iterations (localloc never reclaims within a
+                                    // frame), so a tight poll loop calling a VT-`this` instance
+                                    // method (e.g. `while(!vt.IsCompleted)` -- the ValueTask<T>
+                                    // probes) overflows the C# stack. A HEAP int[] is used instead:
+                                    // it does NOT accumulate on the C# stack and is nesting-safe
+                                    // (each nested Call gets its own array, so a Call that drives
+                                    // MoveNext does not clobber its parent's snapshot). The array
+                                    // is pinned for the duration of the call + write-back because
+                                    // CopyNeoCallThisBack reads byRefSnap AFTER InvokeNeoCallTarget
+                                    // (which may nest Calls). Trade-off: a small Gen0 alloc per
+                                    // byref-writeback Call (only VT-`this` instance calls + ref/out
+                                    // params hit this; ref-type-`this` calls do not).
+                                    int[] snapArr = needSnap ? new int[(wbFlags.Length > 16 ? 16 : wbFlags.Length) * 2] : null;
 
                                     // F-7B-SIB: for a NON-inlined direct Call to an IL method, a
                                     // byref param's 8-byte Ref Slot was copied VERBATIM into
@@ -2510,36 +2513,60 @@ namespace ILRuntime.Runtime.Intepreter
                                             out f7bPromotedCallerSlot, out f7bRebasedSlotOff, out f7bRebasedOrigOff);
                                     }
 
-                                    if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
-                                        return null;
-
-                                    if (f7bTouched)
+                                    if (needSnap)
                                     {
-                                        // F-7B: after a reference-byref target runs, stamp the caller
-                                        // cell with the caller-owned slot index so the caller's
-                                        // subsequent read resolves to the surviving object (the slot
-                                        // sits below the callee's frameRefBase and survived the Ret
-                                        // pop). Restore the raw frame-native byref in targetBase
-                                        // (idempotent; a direct Call has one invocation, so no
-                                        // multicast re-invocation, but the restore keeps targetBase
-                                        // consistent for any downstream read).
-                                        if (f7bPromotedSlotOff >= 0)
+                                        fixed (int* snap = snapArr)
                                         {
-                                            *(int*)(frameBase + f7bPromotedOrigOff) = f7bPromotedCallerSlot;
-                                            *(int*)(targetBase + f7bPromotedSlotOff + 0) = f7bPromotedOrigObjIdx;
-                                            *(int*)(targetBase + f7bPromotedSlotOff + 4) = f7bPromotedOrigOff;
+                                            int captured = SnapshotNeoCallByRefSources(ref map, frameBase, snap);
+                                            if (captured > 0)
+                                                byRefSnap = snap;
+                                            if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                                return null;
+                                            if (f7bTouched)
+                                            {
+                                                if (f7bPromotedSlotOff >= 0)
+                                                {
+                                                    *(int*)(frameBase + f7bPromotedOrigOff) = f7bPromotedCallerSlot;
+                                                    *(int*)(targetBase + f7bPromotedSlotOff + 0) = f7bPromotedOrigObjIdx;
+                                                    *(int*)(targetBase + f7bPromotedSlotOff + 4) = f7bPromotedOrigOff;
+                                                }
+                                                if (f7bRebasedSlotOff >= 0)
+                                                    *(int*)(targetBase + f7bRebasedSlotOff + 4) = f7bRebasedOrigOff;
+                                            }
+                                            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap);
                                         }
-                                        // F-7: undo the primitive/value-byref rebase so targetBase
-                                        // holds the original caller-relative offset again.
-                                        if (f7bRebasedSlotOff >= 0)
-                                            *(int*)(targetBase + f7bRebasedSlotOff + 4) = f7bRebasedOrigOff;
                                     }
-
-                                    // Step 13 Area 4b: propagate a value-type instance `this`
-                                    // mutation (ctor / mutating instance method) back to the
-                                    // caller's in-frame local. No-op for non-mutating calls
-                                    // and for non-VT-`this` calls (empty PrimitiveByRefSrc).
-                                    CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap);
+                                    else
+                                    {
+                                        if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                            return null;
+                                        if (f7bTouched)
+                                        {
+                                            // F-7B: after a reference-byref target runs, stamp the caller
+                                            // cell with the caller-owned slot index so the caller's
+                                            // subsequent read resolves to the surviving object (the slot
+                                            // sits below the callee's frameRefBase and survived the Ret
+                                            // pop). Restore the raw frame-native byref in targetBase
+                                            // (idempotent; a direct Call has one invocation, so no
+                                            // multicast re-invocation, but the restore keeps targetBase
+                                            // consistent for any downstream read).
+                                            if (f7bPromotedSlotOff >= 0)
+                                            {
+                                                *(int*)(frameBase + f7bPromotedOrigOff) = f7bPromotedCallerSlot;
+                                                *(int*)(targetBase + f7bPromotedSlotOff + 0) = f7bPromotedOrigObjIdx;
+                                                *(int*)(targetBase + f7bPromotedSlotOff + 4) = f7bPromotedOrigOff;
+                                            }
+                                            // F-7: undo the primitive/value-byref rebase so targetBase
+                                            // holds the original caller-relative offset again.
+                                            if (f7bRebasedSlotOff >= 0)
+                                                *(int*)(targetBase + f7bRebasedSlotOff + 4) = f7bRebasedOrigOff;
+                                        }
+                                        // Step 13 Area 4b: propagate a value-type instance `this`
+                                        // mutation (ctor / mutating instance method) back to the
+                                        // caller's in-frame local. No-op for non-mutating calls
+                                        // and for non-VT-`this` calls (empty PrimitiveByRefSrc).
+                                        CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap);
+                                    }
 
                                     ip++;
                                     continue;

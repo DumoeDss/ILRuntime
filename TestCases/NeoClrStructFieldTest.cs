@@ -43,6 +43,29 @@ namespace TestCases
             public TestVector3NoBinding b;             // second CLR-struct field
         }
 
+        // ---- CLR-struct-WITH-reference field of an IL class + a sibling IL-
+        //      primitive field (the F-10 family; modeled on the
+        //      AsyncValueTaskMethodBuilder<T> shape { int n; string s; }). These
+        //      holders back the storage-disjointness regression guards below
+        //      (see the probes' header for the full history: the alleged "B1
+        //      field-layout collision" was DISPROVED -- the shared
+        //      PrimitiveOffset is BENIGN because the struct field's storage is
+        //      ManagedObjects[ReferenceOffset] (disjoint from the primitive
+        //      field's Primitives[PrimitiveOffset])).
+        public class HolderClrStructWithRefThenPrim
+        {
+            public TestClrStructWithRef builder;        // CLR-struct-WITH-ref field
+            public int v;                               // sibling IL-primitive field (the hoisted local)
+        }
+
+        // The reverse order (primitive FIRST, then CLR-struct-with-ref). A
+        // regression guard; must stay green.
+        public class HolderPrimThenClrStructWithRef
+        {
+            public int v;                               // IL-primitive field FIRST
+            public TestClrStructWithRef builder;        // CLR-struct-WITH-ref field
+        }
+
         // ---- probes ----
 
         // (4.1) minimal F-10 reproducer: set the CLR-struct field via stfld,
@@ -211,6 +234,106 @@ namespace TestCases
             // native and the round-trip is correct.
             int r = v.SetAndSumField(10f, 20f, 30f);
             if (r != 60) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // =====================================================================
+        // STORAGE-DISJOINTNESS guards for a CLR-struct-WITH-reference field of
+        // an IL class followed by a sibling IL-primitive field (the F-10 family).
+        //
+        // HISTORY / WHY THESE EXIST: the parked child `neo-async-valuetask-
+        // asyncvoid` (child 4) hypothesized a "B1 field-offset collision": that
+        // an async ValueTask<T> SM's <>t__builder field (a CLR struct WITH a
+        // Task ref) and its hoisted int local `v` BOTH get Neo primitiveOffset 4
+        // -> the builder "clobbers" v (v reads 1 not 11). This change
+        // (neo-clrstruct-sm-field-layout) was scoped to fix that alleged layout
+        // collision. INVESTIGATION DISPROVED THE HYPOTHESIS:
+        //   * The ILType field-layout DOES assign both the CLR-struct-with-ref
+        //     field and the sibling primitive field the SAME PrimitiveOffset
+        //     (the struct field is a reference slot: referenceOffset++ with NO
+        //     primitiveOffset advance, so the next primitive field reuses the
+        //     cursor). BUT this is BENIGN: a CLR-struct-with-ref field's storage
+        //     is the BOXED struct at ManagedObjects[ReferenceOffset] (Stfld_Ref
+        //     / Ldfld_Ref F-10 arms), while the sibling primitive field's storage
+        //     is Primitives[PrimitiveOffset] (Stfld_I4 / Ldfld_I4). Primitives[]
+        //     and ManagedObjects[] are DISJOINT arrays, so the shared offset
+        //     value does NOT cause corruption.
+        //   * Runtime diagnostic on VT1 (stfld.i4/ldfld.i4 with primOff printing)
+        //     confirmed `v` STORES 11 AND LOADS 11 -- the field-layout is NOT the
+        //     corruption site.
+        //   * Applying the proposed B1 fix (advance primitiveOffset for branch-3
+        //     fields) did NOT change VT1's outcome (still reads resultObj=4).
+        //   * The REAL VT1 root cause is in the async redirect: the builder
+        //     byref-`this` passed to SetResult occupies 16 call-frame bytes
+        //     (8-byte F-10 byref + 8-byte struct flat-bytes), but
+        //     AsyncValueTaskMethodBuilder_T_SetResult_Neo skips only 8
+        //     (curPrim += 8) -> ReadResultParam reads the int result from
+        //     frameBase[8] (stale) instead of frameBase[16] (the actual 14).
+        //     That is a call-argument-marshalling bug in child-4's async
+        //     redirect scope, NOT a field-layout bug.
+        //
+        // These probes are kept as DURABLE REGRESSION GUARDS: they pin the
+        // invariant that a CLR-struct-with-ref field + a sibling primitive field
+        // (in either declaration order, and with two surrounding primitives) do
+        // NOT corrupt each other via the shared PrimitiveOffset. They PASS on
+        // HEAD (the disjoint storage) and must stay green. They are NOT
+        // FAIL-on-HEAD reproducers (the alleged B1 bug does not reproduce).
+        // =====================================================================
+
+        // (B1.1) CLR-struct-with-ref field FIRST, then a sibling int. Asserts the
+        // sibling int is NOT clobbered by the struct field's stfld (disjoint
+        // Primitives vs ManagedObjects storage). PASS on HEAD; regression guard.
+        public static void NeoClrStructField_ClrStructWithRefThenPrim_NoClobber()
+        {
+            HolderClrStructWithRefThenPrim c = new HolderClrStructWithRefThenPrim();
+            c.builder = default(TestClrStructWithRef);   // stfld the CLR-struct-with-ref field
+            c.v = 11;                                    // stfld the sibling int
+            int readBack = c.v;                          // ldfld the sibling int
+            if (readBack != 11) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // (B1.2) write order independence: set v FIRST, then the builder, read v.
+        // The shared PrimitiveOffset must not corrupt v regardless of write
+        // order. PASS on HEAD; regression guard.
+        public static void NeoClrStructField_ClrStructWithRefThenPrim_WriteOrder()
+        {
+            HolderClrStructWithRefThenPrim c = new HolderClrStructWithRefThenPrim();
+            c.v = 11;                                    // stfld the sibling int FIRST
+            c.builder = default(TestClrStructWithRef);   // stfld the CLR-struct-with-ref field
+            int readBack = c.v;                          // ldfld the sibling int
+            if (readBack != 11) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // (B1.3) the reverse-order regression guard: primitive field FIRST, then
+        // the CLR-struct-with-ref. Must stay green (regression guard).
+        public static void NeoClrStructField_PrimThenClrStructWithRef_Regression()
+        {
+            HolderPrimThenClrStructWithRef c = new HolderPrimThenClrStructWithRef();
+            c.v = 11;
+            c.builder = default(TestClrStructWithRef);
+            int readBack = c.v;
+            if (readBack != 11) { int x = 1; int y = 0; int _ = x / y; }
+        }
+
+        // (B1.4) two sibling primitive fields after a CLR-struct-with-ref field:
+        // { CLRStructWithRef builder; int a; int b; }. Both a and b must be
+        // unclobbered AND distinct (no cross-clobber between the two ints or with
+        // the builder). PASS on HEAD; regression guard.
+        public class HolderClrStructWithRefBetweenTwoPrims
+        {
+            public TestClrStructWithRef builder;         // CLR-struct-WITH-ref field
+            public int a;                                // sibling int 1
+            public int b;                                // sibling int 2
+        }
+
+        public static void NeoClrStructField_ClrStructWithRefBetweenTwoPrims()
+        {
+            HolderClrStructWithRefBetweenTwoPrims c = new HolderClrStructWithRefBetweenTwoPrims();
+            c.builder = default(TestClrStructWithRef);
+            c.a = 11;
+            c.b = 22;
+            int ra = c.a;
+            int rb = c.b;
+            if (ra != 11 || rb != 22) { int x = 1; int y = 0; int _ = x / y; }
         }
     }
 }
