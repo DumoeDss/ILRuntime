@@ -892,7 +892,7 @@ namespace ILRuntime.Runtime.Enviorment
 
         // ref under the recorded compile-time hash. The ref is re-resolved by
         // NAME (IL via LoadedTypes; CLR via GetType(name)); a miss is skipped.
-        void ReRegisterTokenBindings(NeoAOT.NeoAssemblyModel model)
+        internal void ReRegisterTokenBindings(NeoAOT.NeoAssemblyModel model)
         {
             if (model.TypeTokenBindings != null)
             {
@@ -928,11 +928,52 @@ namespace ILRuntime.Runtime.Enviorment
         // DeclearingType the dispatch reads. A miss returns null.
         IMethod ResolveMethodRefByName(string declaringFullName, string name, int paramCount)
         {
-            if (!LoadedTypes.TryGetValue(declaringFullName, out var it) || !(it is ILType ilt)) return null;
+            if (!LoadedTypes.TryGetValue(declaringFullName, out var it) || it == null)
+            {
+                // neo-aot-delegate-exe-parity: a CLR delegate type defined in a host
+                // assembly (e.g. TestCLRBinding.Clr2IlRefIntDelegate) is NOT pre-
+                // loaded into LoadedTypes -- it resolves via GetType(name) (the CLR
+                // fallback). A Newobj binding for its .ctor would otherwise miss.
+                try { it = GetType(declaringFullName); }
+                catch { it = null; }
+                if (it == null) return null;
+            }
+            // neo-aot-delegate-exe-parity: a body's token operand (Ldftn/Call/
+            // Callvirt/Newobj) re-resolves via this NAME lookup when the .neo was
+            // compiled in a DIFFERENT AppDomain. A CLR declaring type (a host-CLR
+            // helper like TestCLRBinding.InvokeRefCallback, or a CLR delegate .ctor
+            // such as Clr2IlRefIntDelegate..ctor) is a CLRType, not an ILType -- the
+            // prior `!(it is ILType)` guard returned null for every CLR method/ctor
+            // binding, leaving the operand NULL at ExecuteNeo (silently skipped).
+            if (it is ILType ilt)
+            {
             IMethod m = null;
             try { m = ilt.GetMethod(name, paramCount, false); }
             catch { m = null; }
             if (m != null) return m;
+            // neo-aot-delegate-exe-parity: a constructor token (delegate .ctor, IL
+            // type .ctor) is NOT in the methods dictionary (InitializeMethods files
+            // constructors into a separate list). A body's Newobj operand resolves
+            // via this name-lookup, so a .ctor binding that misses here leaves the
+            // Newobj operand NULL at ExecuteNeo (silently skipped / wrong result).
+            // Search the constructors list by param count (the recorded MethodRef
+            // for a .ctor carries the ctor param count). GetConstructors walks the
+            // own-declared ctors only (a .ctor is never inherited).
+            if (name == ".ctor" || name == ".cctor")
+            {
+                try
+                {
+                    var ctors = ilt.GetConstructors();
+                    if (ctors != null)
+                    {
+                        foreach (var c in ctors)
+                        {
+                            if (c != null && c.ParameterCount == paramCount) return c;
+                        }
+                    }
+                }
+                catch { }
+            }
             // Cecil-free ILType missing the method (interface abstract method):
             // synthesize a shell so the dispatch's declared-method resolution has
             // a non-null target (whose DeclearingType is the interface).
@@ -949,6 +990,26 @@ namespace ILRuntime.Runtime.Enviorment
                 catch { return null; }
             }
 #endif
+            return null;
+            }
+            // CLR declaring type: resolve the method/ctor by name + param count on
+            // the CLRType (its GetMethod walks the reflected CLR methods; a .ctor
+            // name is matched among constructors). A miss returns null (best-effort,
+            // same as the IL arm).
+            if (it is CLRType clrt)
+            {
+                try
+                {
+                    if (name == ".ctor" || name == ".cctor")
+                    {
+                        // CLRType stores constructors separately from methods; use the
+                        // param-count ctor lookup (a delegate .ctor signature is fixed).
+                        return clrt.GetConstructorByParamCount(paramCount);
+                    }
+                    return clrt.GetMethod(name, paramCount, false);
+                }
+                catch { return null; }
+            }
             return null;
         }
 #endif

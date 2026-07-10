@@ -42,6 +42,28 @@ namespace ILRuntime.Runtime.NeoAOT
             if (appdomain == null || model == null || model.MethodDefs == null)
                 return report;
 
+            // ===== Step 25 (neo-aot-delegate-exe-parity): re-register the .neo's
+            // APPROACH-1 token bindings into THIS execution AppDomain's mapTypeToken
+            // / mapMethod BEFORE binding any bodies. A .neo compiled in a DIFFERENT
+            // AppDomain (the normal case -- ilrt_neoc builds a fresh AppDomain, and a
+            // host-side Compile(testCasesDllPath, ...) does too) bakes method/type
+            // token hashes from the COMPILE AppDomain. Those hashes are absent from
+            // the execution AppDomain's maps, so every Ldftn/Call/Callvirt/Newobj/
+            // Ldvirtftn operand in the attached bodies resolved to NULL and was
+            // silently skipped at ExecuteNeo (the `if (targetMethod == null) ip++;
+            // continue` guard) -- producing wrong results (e.g. a delegate Invoke
+            // skipped -> the dest register stayed stale -> a downstream DivideByZero
+            // on a wrong-result assertion). Re-registering the bindings under their
+            // recorded compile-time hashes (re-resolved by NAME in THIS AppDomain)
+            // makes the baked operands resolve. This is the SAME pass LoadNeoAssembly
+            // runs for the Cecil-free path (AppDomain.ReRegisterTokenBindings); Attach
+            // -- the SAME-AppDomain S1 path -- previously skipped it, which is why the
+            // byref-wireup probe (Compile in a fresh AppDomain + Attach to the session
+            // AppDomain) surfaced delegate/callback shapes failing on AOT-exec while
+            // passing on JIT. Idempotent + Neo-only; a binding whose name does not
+            // resolve here is skipped (the additive contract). =====
+            appdomain.ReRegisterTokenBindings(model);
+
             // The catch-type resolver closure (TypeRef idx -> runtime IType). IL
             // catch types resolve via LoadedTypes; CLR catch types via GetType
             // (aqname / assembly scan). Handed to InitCodeBodyFromNeo so the EH

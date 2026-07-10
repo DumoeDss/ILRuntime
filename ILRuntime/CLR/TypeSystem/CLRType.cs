@@ -952,6 +952,26 @@ namespace ILRuntime.CLR.TypeSystem
             return null;
         }
 
+        // neo-aot-delegate-exe-parity: a constructor-only lookup by parameter
+        // COUNT (the recorded .neo MethodRef carries the param count, not the
+        // param TYPES). Used by AppDomain.ResolveMethodRefByName's CLR arm to re-
+        // register a Newobj binding for a CLR delegate .ctor (e.g.
+        // TestCLRBinding.Clr2IlRefIntDelegate..ctor) baked in a different compile
+        // AppDomain. A delegate .ctor has a fixed (object, IntPtr) signature, so a
+        // param-count match is unambiguous for the Newobj case. Neo-only caller;
+        // additive public surface.
+        public IMethod GetConstructorByParamCount(int paramCount)
+        {
+            if (constructors == null)
+                InitializeMethods();
+            foreach (var i in constructors)
+            {
+                if (i.ParameterCount == paramCount)
+                    return i;
+            }
+            return null;
+        }
+
         public IType MakeGenericInstance(KeyValuePair<string, IType>[] genericArguments)
         {
             lock (this)
