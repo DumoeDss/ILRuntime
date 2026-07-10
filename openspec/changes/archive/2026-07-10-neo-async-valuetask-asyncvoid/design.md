@@ -3,6 +3,40 @@
 **Date:** 2026-07-09  **Capability:** neo-async  **Wave:** completion-3, child 4
 **Status:** IMPLEMENTING  **Prerequisite:** `neo-ret-vt-with-ref-fields` (HIGH#1, SHIPPED)
 
+> **IMPLEMENTATION ROUND 2 DONE (2026-07-10) — VT1-VT6 ALL GREEN; smoke 273/0/0.**
+> The three remaining blockers (the curPrim/byref-`this` marshalling bug [VT1/VT2/VT6;
+> B1 disproven], the `CreateFaultedValueTask` AmbiguousMatch [VT3; B3], and the
+> registration-completeness gap for T=string [VT4; B2 — NOT a foundational binder gap])
+> are FIXED. Summary (full detail in `tasks.md` items 17-19 + `blocked.md` round-2):
+> - **curPrim:** the builder `this` is a value type whose flat managed bytes
+>   (`Unsafe.SizeOf<T>` = 16 for `AsyncValueTaskMethodBuilder<T>`, 8 for the Task builder)
+>   are copied into the callee param region by `CopyNeoCallArguments` — NOT an 8-byte
+>   byref. New `BuilderThisManagedSize(method)` skips the actual size. B1 (the ILType
+>   field-layout-collision hypothesis) is DISPROVEN — the shared `PrimitiveOffset` is
+>   benign (disjoint storage); no `ILType.cs` change (see
+>   `../neo-clrstruct-sm-field-layout/blocked.md`).
+> - **B3:** `Task.FromException` is ambiguous (two overloads both taking `(Exception)` —
+>   one generic). Resolve the generic def via `Array.Find(...IsGenericMethod)` + close it.
+> - **B2:** add `<string>` to the `AsyncValueTaskMethodBuilder<T>`, `TaskAwaiter<T>`, and
+>   `Task<T>` accessor registrations (was only `<int>`/`<ILTypeInstance>`). The redirect
+>   path bypasses the reflection fallback's Area-4b struct-`this`-with-ref-field NIE.
+> Fixer-1's accessor rework (ThreadStatic `_currentValueTaskState`) + the Call-case heap
+> buffer + DebugService guard were correct and KEPT. VTDBG2/VTDBG4 diagnostics REMOVED.
+
+> **FIXER ROUND 1 IN PROGRESS (2026-07-10) — see `handoff/fixer-1.md` FIRST.**
+> F-1/F-2 (accessor AV) ROOT-CAUSE-FIXED (reflection helpers deleted; accessors use a
+> ThreadStatic `ValueTaskAccessorState` slot stashed at get_Task, mirroring the
+> TaskAwaiter<T> side-channel precedent — NEVER reflect the struct's `_obj` ref).
+> 3 additional masking bugs fixed (missing `SetResult` sink-swap; per-call `stackalloc`
+> stack-overflow in the `Call` case; debugger `ValueTask.ToString()` AV). VT1 now reaches
+> the final assertion but FAILS on `vt.Result == 4 != 14` — a PRE-EXISTING
+> SM/builder-layout bug specific to `AsyncValueTaskMethodBuilder<int>` (the identical
+> `Task<int>` probe TC8 reads 14 correctly). NOT yet fixed; needs a successor. The
+> accessor-surface design (this doc's F-3 gap) + the corrected "accessors run in the
+> CALLER frame, not get_Task's frame" premise are documented in fixer-1.md and will be
+> folded back here once the layout bug is resolved. TEMP `VTDIAG` diagnostics are in the
+> tree — grep + remove before commit.
+
 > **FIXER ROUND 1 IN PROGRESS (2026-07-10) — see `handoff/fixer-1.md` FIRST.**
 > F-1/F-2 (accessor AV) ROOT-CAUSE-FIXED (reflection helpers deleted; accessors use a
 > ThreadStatic `ValueTaskAccessorState` slot stashed at get_Task, mirroring the

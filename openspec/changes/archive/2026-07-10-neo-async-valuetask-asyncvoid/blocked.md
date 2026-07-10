@@ -4,6 +4,38 @@
 (out of child-4 scope). Partial work preserved in git stash
 `child4-valuetask-blocked-partial` (pop to resume).
 
+> **IMPLEMENTATION ROUND 2 RESOLVED (2026-07-10) — UNBLOCKED. VT1-VT6 ALL GREEN.**
+> All three blockers (B1/B2/B3) are FIXED. The "foundational engine gaps" framing was
+> WRONG: B1 was DISPROVEN (a call-arg-marshalling bug, not field-layout), B2 was a
+> registration-completeness miss (not a binder gap), and B3 was a reflection-overload
+> ambiguity. Full detail in `tasks.md` items 17-19. Summary:
+> - **B1 (VT1/VT2/VT6) — DISPROVEN + re-rooted to `curPrim` (call-arg marshalling).** The
+>   builder `this` is a VALUE TYPE; the engine copies its flat managed bytes
+>   (`Unsafe.SizeOf<T>` = 16 for the ValueTask builder, 8 for the Task builder) into the
+>   callee param region. `SetResult`/`SetException` hardcoded `curPrim += 8` → undershot
+>   for the 16-byte ValueTask builder → read stale struct bytes (resultObj=4) instead of
+>   the real result (14). New `BuilderThisManagedSize(method)` skips the actual size
+>   (`Optimizer.GetNeoValueTypeManagedSize`). NO `ILType.cs` change (the shared
+>   `PrimitiveOffset` is benign — disjoint `Primitives[]`/`ManagedObjects[]`). Cross-ref:
+>   `../neo-clrstruct-sm-field-layout/blocked.md`.
+> - **B3 (VT3) — `CreateFaultedValueTask` AmbiguousMatchException.** `Task.FromException`
+>   has two overloads both taking `(Exception)` (one generic). Resolved the generic def
+>   via `Array.Find(..., m => m.Name == "FromException" && m.IsGenericMethod)` + closed it
+>   with T.
+> - **B2 (VT4) — registration-completeness gap, NOT a foundational binder gap.** VT4
+>   (ValueTask<string>) calls `AsyncValueTaskMethodBuilder<string>`, `TaskAwaiter<string>`,
+>   and `Task<string>` members that were NOT registered (only `<int>`/`<ILTypeInstance>`).
+>   The unregistered calls fell to the reflection fallback, whose Area-4b guard NIEs on a
+>   struct-`this`-with-ref-field. Fix: add `<string>` to the builder/awaiter/Task accessor
+>   registrations (mirrors `<int>`/`<ILTypeInstance>`). The redirect path bypasses
+>   reflection entirely, so the Area-4b guard is never reached. **VT4 is GREEN — not parked.**
+>
+> **Verification:** NeoStep smoke **273 ran, 0 failed**; VT1-VT6 6/6 green; TC1-TC14 +
+> prior NeoStep unchanged. Stash-toggle: stash ONLY `CLRRedirections.AsyncNeo.cs` →
+> VT1/VT2/VT3/VT4/VT6 fail (5/6; VT5 async-void unaffected); pop → 6/6 green. Legacy-
+> neutral (plain `Debug` 0 errors; file `#if ENABLE_NEO_MODE`-gated; `ILType.cs` empty
+> diff). VTDBG2 + VTDBG4 diagnostics removed.
+
 ## LEAD smoke verdict (2026-07-10, HEAD 4e32dec6 + fixer-1 partial work)
 
 Full `NeoStep` smoke: **254 ran, 5 failed** (the 6 VT probes minus VT5):

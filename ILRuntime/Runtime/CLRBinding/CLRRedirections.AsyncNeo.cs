@@ -269,10 +269,15 @@ namespace ILRuntime.Runtime.Enviorment
         public static void AsyncTaskMethodBuilder_T_SetResult_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
-            // SetResult(T result): slot 0 = builder this byref (8 bytes),
-            // slot 1 = T result. Read T, stash Task.FromResult(T) keyed by SM.
+            // SetResult(T result): slot 0 = the builder `this` (a value type passed
+            // byref -- the engine copies the struct's flat managed bytes into the
+            // callee param region), slot 1 = T result. Skip the struct's ACTUAL
+            // managed size (Unsafe.SizeOf<T>), NOT a hardcoded 8 -- the size differs
+            // per builder (Task builder is 8 bytes; the ValueTask builder, which
+            // delegates here, is 16). See BuilderThisManagedSize + the SetResult
+            // VT1/VT2/VT6 root-cause note. Read T, stash Task.FromResult(T) keyed by SM.
             int curPrim = 0;
-            curPrim += 8; // builder this byref (the SM identity comes from CurrentAsyncSm)
+            curPrim += BuilderThisManagedSize(method); // builder this byref (the SM identity comes from CurrentAsyncSm)
             // The result T: read it as the method's first explicit param. Its
             // layout depends on T (primitive / ref / VT). Use the CLRMethod's
             // parameter type to size the read.
@@ -298,9 +303,11 @@ namespace ILRuntime.Runtime.Enviorment
         public static void AsyncTaskMethodBuilder_T_SetException_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
-            // SetException(Exception): slot 0 = builder this byref, slot 1 = Exception.
+            // SetException(Exception): slot 0 = builder this (flat managed bytes of
+            // the value-type builder -- size via BuilderThisManagedSize; the ValueTask
+            // builder delegates here and is 16 bytes, the Task builder is 8), slot 1 = Exception.
             int curPrim = 0;
-            curPrim += 8;
+            curPrim += BuilderThisManagedSize(method);
             int exIdx = *(int*)(frameBase + curPrim);
             Exception ex = (exIdx >= 0 && exIdx < mStack.Count) ? mStack[exIdx] as Exception : null;
             if (ex == null && exIdx >= 0 && exIdx < mStack.Count && mStack[exIdx] is ILTypeInstance ilEx)
@@ -418,9 +425,22 @@ namespace ILRuntime.Runtime.Enviorment
         {
             int curPrim = 0;
             ILTypeInstance sm = CurrentAsyncSm;
-            curPrim += 8;
+            // Skip the builder `this` byref. The builder is a VALUE TYPE passed
+            // byref; in the callee param region the engine copies the struct's
+            // FLAT MANAGED BYTES (Unsafe.SizeOf<T>), NOT an 8-byte byref. So the
+            // skip MUST be the builder struct's actual managed size -- which differs
+            // per builder: AsyncTaskMethodBuilder<T> is 8 bytes (TC8 accidentally
+            // worked with `+= 8`), but AsyncValueTaskMethodBuilder<T> is 16 bytes,
+            // so the hardcoded `+= 8` undershot by 8 and ReadResultParam read the
+            // stale 2nd qword of the struct (old v=1 residue -> resultObj=4) instead
+            // of the real T result at +16 (v+3=14). This is the real VT1/VT2/VT6
+            // blocker (the B1 field-layout hypothesis was DISPROVEN -- see
+            // openspec/changes/neo-clrstruct-sm-field-layout/blocked.md). Mirrors
+            // the TaskAwaiter_T_GetIsCompleted_Neo size-resolution precedent (:904).
+            // (B1 disproven cross-ref: the shared PrimitiveOffset is benign --
+            // disjoint Primitives[]/ManagedObjects[] storage.)
+            curPrim += BuilderThisManagedSize(method);
             object resultObj = ReadResultParam(intp, method, frameBase, ref curPrim, mStack, retRefBase);
-            { int b4=*(int*)(frameBase+4), b8=*(int*)(frameBase+8), b12=*(int*)(frameBase+12); System.Console.Error.WriteLine("VTDBG2 VTSetResult resultObj="+resultObj+" b4="+b4+" b8="+b8+" b12="+b12+" ctx="+(_currentAsyncContext!=null)+" sm="+(sm!=null?sm.Type.FullName:"null")); }
             // Sink-swap (design D3 step 5 -- MIRRORED from AsyncTaskMethodBuilder_T_SetResult_Neo
             // above, which the prior ValueTask SetResult LACKED): if a context is being
             // RESUMED on this thread, route the resumed SM's terminal result to the context
@@ -955,7 +975,6 @@ namespace ILRuntime.Runtime.Enviorment
                 return;
             object result = task.GetType().InvokeMember("Result",
                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.GetProperty, null, task, null);
-            { ILTypeInstance _sm = CurrentAsyncSm; System.Console.Error.WriteLine("VTDBG2 GetResult result="+result+" taskComplete="+task.IsCompleted+" sm="+(_sm!=null?_sm.Type.FullName:"null")); }
             WriteReturnByType(method.ReturnType, result, retDst, retRefBase, mStack);
         }
 
@@ -1193,7 +1212,17 @@ namespace ILRuntime.Runtime.Enviorment
             }
 
             // ---- AsyncValueTaskMethodBuilder<T> ----
+            // Register per T the probes bind. T=int (VT1/VT2/VT3/VT6) + T=string
+            // (VT4 -- a CLR reference-type result). Without the <string> registration
+            // VT4's Start/SetResult/SetException fall to the reflection fallback,
+            // whose Area-4b guard NIEs on the builder struct-`this`-with-ref-field
+            // (AsyncValueTaskMethodBuilder<string> has a `T`-typed field that IS a
+            // reference field for T=string, unlike T=int). The redirect path avoids
+            // the fallback entirely (it reads the SM via CurrentAsyncSm and the
+            // builder-this flat bytes via BuilderThisManagedSize -- never boxing the
+            // struct through reflection). Mirrors the <int>/<ILTypeInstance> pattern.
             RegisterValueTaskBuilderT(app, flag, typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder<int>));
+            RegisterValueTaskBuilderT(app, flag, typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder<string>));
             RegisterValueTaskBuilderT(app, flag, typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder<ILTypeInstance>));
 
             // ---- ValueTask<T> instance accessors (neo-async-valuetask-asyncvoid).
@@ -1236,13 +1265,20 @@ namespace ILRuntime.Runtime.Enviorment
             }
 
             // ---- Awaiter / Task accessor overrides (override the autogen stubs
-            //      which use default(TaskAwaiter)). Register per T the harness binds. ----
+            //      which use default(TaskAwaiter)). Register per T the harness binds.
+            //      <string> added (neo-async-valuetask-asyncvoid VT4): a ValueTask<string>
+            //      probe awaits a Task<string> -> TaskAwaiter<string>; without the <string>
+            //      accessor registration the awaiter's GetResult/get_IsCompleted fall to
+            //      the reflection fallback, whose Area-4b guard NIEs (TaskAwaiter<string>
+            //      has the `m_task` reference field). Mirrors <int>/<ILTypeInstance>. ----
             RegisterAwaiterAccessors(app, flag, typeof(System.Runtime.CompilerServices.TaskAwaiter<int>));
+            RegisterAwaiterAccessors(app, flag, typeof(System.Runtime.CompilerServices.TaskAwaiter<string>));
             RegisterAwaiterAccessors(app, flag, typeof(System.Runtime.CompilerServices.TaskAwaiter));
             RegisterAwaiterAccessors(app, flag, typeof(System.Runtime.CompilerServices.TaskAwaiter<ILTypeInstance>));
 
             // Task<T>.GetAwaiter / get_Result overrides (override autogen stubs).
             RegisterTaskAccessors(app, flag, typeof(Task<int>));
+            RegisterTaskAccessors(app, flag, typeof(Task<string>));
             RegisterTaskAccessors(app, flag, typeof(Task));
             RegisterTaskAccessors(app, flag, typeof(Task<ILTypeInstance>));
 
@@ -1568,6 +1604,28 @@ namespace ILRuntime.Runtime.Enviorment
             return (ridx >= 0 && ridx < mStack.Count) ? mStack[ridx] : null;
         }
 
+        // The number of FLAT MANAGED BYTES the builder `this` occupies in the
+        // callee param region. The builder (AsyncTaskMethodBuilder<T> /
+        // AsyncValueTaskMethodBuilder<T>) is a VALUE TYPE passed byref as `this`;
+        // the engine's call-arg lowering (CopyNeoCallArguments, byRefSrc slot 0)
+        // DEREFERENCES the byref and copies the struct's flat managed bytes
+        // (Unsafe.SizeOf<T> via Optimizer.GetNeoValueTypeManagedSize) into the
+        // callee param region -- NOT an 8-byte byref. So SetResult/SetException
+        // MUST skip this size (not a hardcoded 8) to reach the first real param.
+        // AsyncTaskMethodBuilder<T> is 8 bytes (TC8 accidentally matched `+= 8`);
+        // AsyncValueTaskMethodBuilder<T> is 16 bytes (the VT1/VT2/VT6 blocker --
+        // `+= 8` undershot, reading stale struct bytes as the result). This is the
+        // real root cause; the B1 field-layout hypothesis was DISPROVEN (see
+        // openspec/changes/neo-clrstruct-sm-field-layout/blocked.md).
+        private static int BuilderThisManagedSize(CLRMethod method)
+        {
+            Type decl = method.DeclearingType?.TypeForCLR;
+            if (decl == null || !decl.IsValueType)
+                return 8; // defensive: a reference-type `this` is a single 8-byte-ish ref slot
+            int sz = Optimizer.GetNeoValueTypeManagedSize(decl);
+            return sz > 0 ? sz : 8;
+        }
+
         private static Type GetResultClrType(CLRMethod method)
         {
             try
@@ -1628,10 +1686,19 @@ namespace ILRuntime.Runtime.Enviorment
             Type vtClosed = typeof(ValueTask<>).MakeGenericType(t);
             // ValueTask has no public FromException in all TFMs; build via a
             // faulted Task<T> (ValueTask<T>(Task<T>) ctor accepts a faulted task).
-            Type taskClosed = typeof(Task<>).MakeGenericType(t);
-            System.Reflection.MethodInfo fromEx = typeof(Task).GetMethod("FromException", new[] { typeof(Exception) });
-            // Task.FromException is generic: Task<T>.FromException<T>(Exception).
-            System.Reflection.MethodInfo fromExClosed = fromEx.MakeGenericMethod(t);
+            // B3 fix (neo-async-valuetask-asyncvoid): `Task` has TWO `FromException`
+            // overloads that BOTH take (Exception) -- the non-generic
+            // `Task.FromException(Exception)` and the GENERIC
+            // `Task.FromException<T>(Exception)` -- so GetMethod("FromException",
+            // new[]{ typeof(Exception) }) is AMBIGUOUS (AmbiguousMatchException ->
+            // VT3 failed). Resolve the GENERIC definition explicitly via Linq, then
+            // close it with T to produce a faulted Task<T>.
+            System.Reflection.MethodInfo fromExGen = Array.Find(typeof(Task).GetMethods(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static),
+                m => m.Name == "FromException" && m.IsGenericMethod);
+            if (fromExGen == null)
+                throw new InvalidOperationException("Neo async: could not resolve Task.FromException<T> generic definition for CreateFaultedValueTask");
+            System.Reflection.MethodInfo fromExClosed = fromExGen.MakeGenericMethod(t);
             object faultedTask = fromExClosed.Invoke(null, new object[] { ex });
             return Activator.CreateInstance(vtClosed, faultedTask);
         }
