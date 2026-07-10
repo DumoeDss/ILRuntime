@@ -35,7 +35,9 @@ parked frame, then `continue` does `Resume()`.
 - **NeoDebuggerDap: 4/4** (initialize+launch; setBreakpoints source-scoped+verified; **the core
   breakpoint session** — hit + stackTrace + scopes + variables + continue-to-completion, asserting a
   known local (prim=4242, msg="dap-local-value") is inspectable at the breakpoint, THE core gate;
-  `next`/step soft-PASS — see follow-up).
+  **`next`/step HARD-PASS** — a real step session: breakpoint -> `next` (step-over) -> same-frame
+  stop (assert it does NOT descend into `Callee` = step-IN) -> `continue` -> completion, after the
+  child-13 follow-up closed the step-resume NIE).
 - **NeoStep smoke (LEAD re-ran): 267 tests, 0 failed** — no regression from the shared
   `DebuggerServer` `virtual` markings.
 - NeoDebuggerFrame 6/6 + NeoDebuggerAotBody 10/10 held.
@@ -58,10 +60,19 @@ parked frame, then `continue` does `Resume()`.
    `method.StartLine + <statement offset>`.
 
 ## Follow-ups (out of scope, in `blocked.md`)
-- **`next`/step PARKED — a Neo step-resume engine gap** (`StepTypes.Over` between a stop + continue
-  → NIE). Isolated: bare-call + continue-only sessions run clean → the gap is the step-resume path
-  (`StepThread` + `CurrentStepType=Over`/`LastStepFrameBase`), NOT the adapter. Surfaced as a soft-PASS
-  gate in `NeoDebuggerDapCheck` (flip `StepGateIsHard=true` + run the real step session when fixed).
+- **`next`/step — RESOLVED by the child-13 follow-up (neo-debugger-step-resume).**
+  The gap was mis-framed as a "deep step-engine gap"; the re-audit (fresh eyes,
+  the child-4/8/17/17sub3 "specific NIE, not a deep gap" lesson -- 5-for-5)
+  traced the NIE to the LEGACY `StackObject*`-based frame-variable read in
+  `AddStackFrameInfoVariables`, run from the step-complete `DoBreak`'s
+  `GetStackFrameInfo` capture. Under Neo the frame is a compact `byte*` frame
+  (NOT `StackObject[]`), so the `StackObject*` arithmetic read garbage -> the
+  `ToObject` `default` NIE. Closed by the Neo-gated
+  `DebugService.AddStackFrameInfoVariablesNeo` (a byte* slot read reusing the
+  `GetLocalVariableInfo`/`GetThisInfo` dispatch). `NeoDebuggerDapCheck` Cell 4 is
+  now a HARD gate (`StepGateIsHard=true`) driving a real step session
+  (breakpoint -> `next` -> same-frame stop -> `continue` -> completion).
+  NeoDebuggerDap 4/4, NeoStep 279/0, Legacy-neutral. Full record in `blocked.md`.
 - Full DAP spec compliance: `evaluate`/watch, conditional breakpoints, `threads` (single-threaded
   cooperative), `pause` (no async-interrupt hook), `setExceptionBreakpoints`, `terminate`.
 - Non-top-frame `stackTrace` (the adapter uses the reliable Neo frame-read for frame 0; non-top frames

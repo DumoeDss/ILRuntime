@@ -91,6 +91,12 @@ A small dedicated probe `NeoDebuggerDapProbe` (TestCases/) carries a method with
 local value set before a no-op call site (so a line-breakpoint can land + the local is live).
 
 ## SCOPE BOUNDARY / PARK fallback
+- **UPDATE (child-13 follow-up, neo-debugger-step-resume):** the `next`/step PARK was
+  RESOLVED. The re-audit (fresh eyes) traced the step-resume NIE to a SPECIFIC site — the
+  Legacy `StackObject*`-based `AddStackFrameInfoVariables` reading the Neo compact `byte*`
+  frame in the step-complete `DoBreak` frame capture (the `ToObject` `default` NIE). NOT a
+  deep step-engine gap. Closed by the Neo-gated `AddStackFrameInfoVariablesNeo` (a byte*
+  slot read). `NeoDebuggerDapCheck` Cell 4 is now a HARD gate. Full record in `blocked.md`.
 - If the breakpoint-hit loop is too big for one child → ship the scaffold + the working core
   methods (initialize/launch/setBreakpoints/stackTrace/scopes/variables) + PARK continue/next
   (the resume/step) in `blocked.md`.

@@ -7,12 +7,13 @@
 // completion). The core DAP requests round-trip against the shipped
 // DebugService backend (children neo-frame / ilvt-local 11 / aot-body 12).
 //
-// A SEPARATE best-effort cell exercises `next` (step-over). On HEAD the Neo
-// debugger's STEP resume hits an engine NIE (a documented gap -- the step-
-// resume path; see design.md). That cell records the gap (a SOFT fail: it
-// surfaces the gap text but does NOT regress the core gate) rather than hiding
-// it. The core methods (initialize/launch/setBreakpoints/stackTrace/scopes/
-// variables/continue) are the load-bearing gate.
+// A SEPARATE cell exercises `next` (step-over) -- the step-resume engine gate.
+// The Neo step-resume used to NIE in the step-complete DoBreak's GetStackFrameInfo
+// (under Neo the byte* frame read as a StackObject[] -> the ToObject `default`
+// NIE); closed by AddStackFrameInfoVariablesNeo (a Neo-aware byte* frame read).
+// The cell now drives a REAL step session (breakpoint -> next -> same-frame stop
+// -> continue -> completion) as a HARD gate. StepGateIsHard (below) toggles
+// hard/soft; flip to false if a deeper step gap re-surfaces.
 //
 // Mirrors the NeoDebuggerFrameCheck / NeoDebuggerAotBodyCheck host-side-self-
 // check shape (a static Run(AppDomain) -> Pass/Fail tally, invoked via a CLI
@@ -46,12 +47,14 @@ namespace ILRuntime.Runtime.Debugger
         const string ProbeFullName = "TestCases.NeoDebuggerDapProbe";
         const int PRIM_DAP = 4242;
         const string REF_DAP = "dap-local-value";
-        // the step cell is a SOFT gate: a known engine gap (Neo step-resume NIE)
-        // surfaces here without failing the core gate. Flip to true once the
-        // step-resume engine gap is closed (follow-up child). `static readonly`
-        // (not `const`) so the compiler does not fold it + flag the harden branch
-        // as unreachable.
-        static readonly bool StepGateIsHard = false;
+        // the step cell is now a HARD gate (child 13 follow-up): the Neo step-
+        // resume engine gap (GetStackFrameInfo under Neo NIE'd in the step-complete
+        // DoBreak) is CLOSED -- AddStackFrameInfoVariablesNeo reads the byte* frame
+        // safely, so `next` (step-over) stops at the next statement in the same
+        // frame + continue runs to completion. Flip back to false if a deeper gap
+        // re-surfaces. `static readonly` (not `const`) so the compiler does not fold
+        // it + flag the harden branch as unreachable.
+        static readonly bool StepGateIsHard = true;
 
         public static Result Run(ILRuntime.Runtime.Enviorment.AppDomain appdomain)
         {
@@ -155,21 +158,55 @@ namespace ILRuntime.Runtime.Debugger
                 RecordCell(res, "breakpoint session (hit + stackTrace + scopes + variables + continue)", diff);
             }
 
-            // ===== Cell 4 (SOFT, documented gap): next (step-over). On HEAD the
-            // Neo debugger's STEP-RESUME path hits an engine NIE (confirmed by
-            // construction: a breakpoint session that issues `next` then `continue`
-            // surfaces "The method or operation is not implemented" from the step-
-            // resume execution -- the bare invoke + the continue-only session both
-            // run clean, so the gap is specifically the step-resume). Recorded here
-            // as a SOFT fail (does NOT regress the core gate; the ~7 working core
-            // methods are Cells 1-3). Flip StepGateIsHard + drive a real step
-            // session once the step-resume engine gap closes (follow-up child). =====
+            // ===== Cell 4: next (step-over) -- the step-resume engine gate. The
+            // Neo step-resume used to NIE in the step-complete DoBreak's frame
+            // capture (GetStackFrameInfo under Neo read the byte* frame as a
+            // StackObject[] -> the ToObject `default` NIE). Closed by
+            // AddStackFrameInfoVariablesNeo (a Neo-aware byte* frame read). This
+            // cell drives a REAL step session: breakpoint -> next (step-over) ->
+            // assert the step stops in the SAME frame at the next statement (not
+            // descending into Callee = step-IN) -> continue -> completion. A NIE
+            // here would surface as a worker throw + no step-complete stop (the
+            // former gap). Shares the Cell 3 breakpoint-bind retry (a rare
+            // sequence-point/method-hash race). =====
             res.TotalCells++;
             {
-                const string gapNote = "Neo step-resume engine gap: `next` (StepTypes.Over) resume surfaces an ILRuntimeException NIE (the bare-invoke + continue-only session both run clean -> the gap is the step-resume path, NOT the adapter). See design.md / blocked.md.";
-                Console.WriteLine("  [SOFT-FAIL] next (step): " + gapNote);
-                if (StepGateIsHard) { res.Failed++; res.Failures.Add("next (step): " + gapNote); }
-                else { res.Passed++; } // documented gap -- not a regression of THIS child
+                var stepAdapter = new NeoDebuggerDapAdapter(appdomain);
+                try
+                {
+                    stepAdapter.HandleRequest("launch", null);
+                    stepAdapter.HandleRequest("setBreakpoints",
+                        JsonValue.Object(
+                            JsonWriter.KV("source", JsonValue.Object(JsonWriter.KV("path", "NeoDebuggerDapProbe.cs"))),
+                            JsonWriter.KV("breakpoints", JsonValue.Array(JsonValue.Object(JsonWriter.KV("line", (long)bpSourceLine))))
+                        ));
+                }
+                catch { }
+                string diff = RunBreakpointSession(appdomain, stepAdapter, entryMethod, /*doStep*/ true);
+                // share the Cell 3 retry for the breakpoint-bind intermittency.
+                int attempt = 0;
+                while (diff != null && diff.Contains("breakpoint did not fire") && attempt < 2)
+                {
+                    attempt++;
+                    stepAdapter = new NeoDebuggerDapAdapter(appdomain);
+                    try { stepAdapter.HandleRequest("launch", null); stepAdapter.HandleRequest("setBreakpoints",
+                        JsonValue.Object(
+                            JsonWriter.KV("source", JsonValue.Object(JsonWriter.KV("path", "NeoDebuggerDapProbe.cs"))),
+                            JsonWriter.KV("breakpoints", JsonValue.Array(JsonValue.Object(JsonWriter.KV("line", (long)bpSourceLine))))
+                        )); } catch { }
+                    diff = RunBreakpointSession(appdomain, stepAdapter, entryMethod, /*doStep*/ true);
+                }
+                if (!StepGateIsHard && diff != null)
+                {
+                    // Soft mode (the documented gap): record the gap text without
+                    // failing the core gate.
+                    Console.WriteLine("  [SOFT-FAIL] next (step): " + diff);
+                    res.Passed++;
+                }
+                else
+                {
+                    RecordCell(res, "next (step-over): breakpoint -> next -> same-frame stop -> continue", diff);
+                }
             }
 
             return res;
@@ -269,7 +306,28 @@ namespace ILRuntime.Runtime.Debugger
                     adapter.HandleRequest("next", JsonValue.Object(JsonWriter.KV("threadId", (long)stop.ThreadId)));
                     var stop2 = adapter.WaitForStop(15000);
                     if (stop2 == null)
-                        sb.Append("next: no step-complete stop; ");
+                    {
+                        // The step-resume must not NIE (the former engine gap, now
+                        // closed: GetStackFrameInfo under Neo). A NIE here surfaces as
+                        // the worker finishing/throwing -> no step-complete stop.
+                        if (workerEx != null)
+                            sb.Append("next: step-resume threw ").Append(workerEx.GetType().Name).Append(": ").Append(workerEx.Message).Append("; ");
+                        else
+                            sb.Append("next: no step-complete stop (worker state=").Append(worker.ThreadState).Append("); ");
+                    }
+                    else
+                    {
+                        // The step-OVER must stop in the SAME frame (RunToBreakpoint),
+                        // NOT descend into Callee (that would be step-IN). Assert the
+                        // top frame after the step is still RunToBreakpoint.
+                        var st2 = adapter.HandleRequest("stackTrace",
+                            JsonValue.Object(JsonWriter.KV("threadId", (long)stop2.ThreadId)));
+                        var frames2 = JsonReader.Get(st2, "stackFrames");
+                        var top2 = (frames2 != null && frames2.Arr != null && frames2.Arr.Count > 0)
+                            ? (JsonReader.GetStr(frames2.Arr[0], "name") ?? "") : "";
+                        if (!top2.Contains("RunToBreakpoint"))
+                            sb.Append("next: step-over descended into '").Append(top2).Append("' (expected RunToBreakpoint); ");
+                    }
                 }
                 catch (Exception ex) { sb.Append("next threw ").Append(ex.GetType().Name).Append("; "); }
             }

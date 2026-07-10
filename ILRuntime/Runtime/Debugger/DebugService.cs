@@ -1005,7 +1005,7 @@ namespace ILRuntime.Runtime.Debugger
                                 basePointer = frameBasePointer;
                             }
                             var info = CreateStackFrameInfo(m, ins);
-                            AddStackFrameInfoVariables(intp, info, m, basePointer);
+                            AddStackFrameInfoVariables(intp, f, info, m, basePointer);
                             frameInfos.Add(info);
                             link = vmSymbol.ParentSymbol;
                         }
@@ -1014,7 +1014,7 @@ namespace ILRuntime.Runtime.Debugger
                     else
                     {
                         var info = CreateStackFrameInfo(m, null);
-                        AddStackFrameInfoVariables(intp, info, m, frameBasePointer);
+                        AddStackFrameInfoVariables(intp, f, info, m, frameBasePointer);
                         frameInfos.Add(info);
                     }
                 }
@@ -1022,14 +1022,14 @@ namespace ILRuntime.Runtime.Debugger
                 {
                     ins = m.Definition.Body.Instructions[f.Address.Value];
                     var info = CreateStackFrameInfo(m, ins);
-                    AddStackFrameInfoVariables(intp, info, m, frameBasePointer);
+                    AddStackFrameInfoVariables(intp, f, info, m, frameBasePointer);
                     frameInfos.Add(info);
                 }
             }
             else
             {
                 var info = CreateStackFrameInfo(m, null);
-                AddStackFrameInfoVariables(intp, info, m, frameBasePointer);
+                AddStackFrameInfoVariables(intp, f, info, m, frameBasePointer);
                 frameInfos.Add(info);
             }
         }
@@ -1054,8 +1054,172 @@ namespace ILRuntime.Runtime.Debugger
             return info;
         }
 
-        unsafe void AddStackFrameInfoVariables(ILIntepreter intp, StackFrameInfo info, ILMethod m, StackObject* basePointer)
+#if ENABLE_NEO_MODE
+        // neo-debugger-step-resume: Neo-aware population of a StackFrameInfo's
+        // LocalVariables (args + locals) off the compact byte* frame, so DoBreak's
+        // GetStackFrameInfo capture (run on the step-complete + the breakpoint-hit)
+        // is SAFE under Neo -- the Legacy StackObject* path reads garbage + NIEs
+        // (see AddStackFrameInfoVariables). Returns true when the frame is a Neo
+        // frame + the variables were populated; false to fall back to the Legacy
+        // StackObject* path. The value reads are the SAME byte* slot dispatch
+        // GetLocalVariableInfo/GetThisInfo use (children 11/12): ReadNeoLocalValue
+        // for locals/typed params + the absolute-mStack-index read for `this` /
+        // reference params. Each entry is wrapped so a single unreadable slot does
+        // NOT abort the capture (mirrors the per-iteration resilience of the Neo
+        // GetLocalVariableInfo arm). Expandable is left false (conservative; the DAP
+        // adapter does not expand these -- it reads frame 0 via the Neo arms).
+        unsafe bool AddStackFrameInfoVariablesNeo(ILIntepreter intp, StackFrame f, StackFrameInfo info, ILMethod m)
         {
+            // Only a real Neo frame (a CompiledFrame with a NeoExecuteBody + the
+            // frame is register-mode). Non-Neo frames fall back to Legacy.
+            if (!f.IsRegister)
+                return false;
+            ref readonly var cf = ref m.CompiledFrame;
+            if (cf.NeoExecuteBody == null)
+                return false;
+            // An inline-symbol frame (InitializeStackFrameInfo resolves m to a
+            // vmSymbol.Method that may DIFFER from f.Method) has no Neo analogue --
+            // the byte* layout is f.Method's, so the slot offsets for a different
+            // resolved m do not apply. methodMatchesFrame gates the VALUE read: when
+            // false we still return true (Neo frame) but emit placeholder names
+            // (no value read -> no NIE). We MUST NOT fall back to the Legacy path
+            // here -- that path reads the byte* frame as a StackObject[] + NIEs,
+            // aborting DoBreak. So: a Neo frame ALWAYS returns true from here.
+            bool methodMatchesFrame = (f.Method == m);
+            byte* frameBase = (byte*)f.LocalVarPointer;
+            AutoList mStack = intp.Stack.ManagedStack;
+            int frameRefBase = f.ManagedStackBase;
+            var domain = intp.AppDomain;
+
+            int paramCnt = m.ParameterCount + (m.HasThis ? 1 : 0);
+            int argumentCount = paramCnt;
+            info.ArgumentCount = argumentCount;
+            int total = argumentCount + m.LocalVariableCount;
+            info.LocalVariables = new VariableInfo[total];
+
+            // ---- arguments (incl. `this` at slot 0 when HasThis) ----
+            // ParamInfos layout (AllocateLocalStackSpaces, JITCompiler.cs:1654):
+            // [0]=this (HasThis), [1..p)=explicit params. Each param's slot is
+            // nf.ParamInfos[i]; its type is m.Parameters[i-1] (this->DeclearingType).
+            for (int i = 0; i < argumentCount; i++)
+            {
+                int argIdx = m.HasThis ? i - 1 : i;
+                string name = null;
+                string typeName = null;
+                CLR.TypeSystem.IType vType = null;
+                object v = null;
+                try
+                {
+                    if (methodMatchesFrame && i < cf.ParamInfos.Length)
+                    {
+                        var slot = cf.ParamInfos[i];
+                        if (argIdx < 0)
+                        {
+                            // `this`: a reference slot holding an ABSOLUTE mStack idx.
+                            name = "this";
+                            typeName = m.DeclearingType.FullName;
+                            vType = m.DeclearingType;
+                            int nIdx = *(int*)(frameBase + slot.Offset);
+                            v = (nIdx >= 0) ? mStack[nIdx] : null;
+                        }
+                        else
+                        {
+                            var lv = m.Definition.Parameters[argIdx];
+                            name = string.IsNullOrEmpty(lv.Name) ? "arg" + lv.Index : lv.Name;
+                            typeName = lv.ParameterType.FullName;
+                            vType = m.Parameters[argIdx];
+                            v = ReadNeoLocalValue(frameBase, mStack, frameRefBase, slot, vType, domain);
+                        }
+                        try { v = vType.TypeForCLR.CheckCLRTypes(v); } catch { }
+                    }
+                    else
+                    {
+                        // method != frame (inline-symbol) or no slot meta: emit a
+                        // placeholder name so the slot exists but no read is done.
+                        name = argIdx < 0 ? "this" : ("arg" + argIdx);
+                        typeName = "<inline>";
+                    }
+                }
+                catch (Exception) { v = "<unreadable>"; }
+                if (name == null) name = argIdx < 0 ? "this" : ("arg" + argIdx);
+                if (typeName == null) typeName = "<unknown>";
+                VariableInfo vinfo = VariableInfo.FromObject(v ?? "<unreadable>");
+                vinfo.Name = name;
+                vinfo.TypeName = typeName;
+                if (vType != null) vinfo.ValueObjType = vType.ReflectionType;
+                info.LocalVariables[i] = vinfo;
+            }
+            // ---- locals ----
+            // LocalInfos layout: [paramCnt + i] = local i (JITCompiler.cs:1702).
+            bool useAotMeta = m.HasNeoAotLocalMeta;
+            for (int i = argumentCount; i < total; i++)
+            {
+                var locIdx = i - argumentCount;
+                string name = null;
+                string typeName = null;
+                object v = null;
+                try
+                {
+                    CLR.TypeSystem.IType lt;
+                    if (methodMatchesFrame)
+                    {
+                        if (useAotMeta)
+                        {
+                            lt = m.GetNeoAotLocalType(locIdx);
+                            name = m.GetNeoAotLocalName(locIdx);
+                            if (string.IsNullOrEmpty(name)) name = "v" + locIdx;
+                            typeName = lt != null ? lt.Name : "<unknown local type>";
+                        }
+                        else
+                        {
+                            var lv = m.Definition.Body.Variables[locIdx];
+                            lt = ResolveLocalType(m, lv, domain);
+                            string vName = null;
+                            m.Definition.DebugInformation.TryGetName(lv, out vName);
+                            name = string.IsNullOrEmpty(vName) ? "v" + lv.Index : vName;
+                            typeName = lt != null ? lt.Name : lv.VariableType.Name;
+                        }
+                        var slot = cf.LocalInfos[paramCnt + locIdx];
+                        v = ReadNeoLocalValue(frameBase, mStack, frameRefBase, slot, lt, domain);
+                        try { v = lt.TypeForCLR.CheckCLRTypes(v); } catch { }
+                    }
+                    else
+                    {
+                        name = "v" + locIdx;
+                        typeName = "<inline>";
+                    }
+                }
+                catch (Exception) { v = "<unreadable>"; }
+                if (name == null) name = "v" + locIdx;
+                if (typeName == null) typeName = "<unknown>";
+                VariableInfo vinfo = VariableInfo.FromObject(v ?? "<unreadable>");
+                vinfo.Name = name;
+                vinfo.TypeName = typeName;
+                info.LocalVariables[i] = vinfo;
+            }
+            return true;
+        }
+#endif
+
+        unsafe void AddStackFrameInfoVariables(ILIntepreter intp, StackFrame f, StackFrameInfo info, ILMethod m, StackObject* basePointer)
+        {
+            // neo-debugger-step-resume: under Neo the frame is a compact byte* frame
+            // (Primitives + AutoList refs), NOT a StackObject[]. The Legacy
+            // StackObject* arithmetic below (Add(basePointer, i) -> ToObject) reads
+            // garbage + hits the ToObject `default` NIE -- which, thrown from inside
+            // DoBreak's GetStackFrameInfo capture (DoBreak -> GetStackFrameInfo ->
+            // InitializeStackFrameInfo -> here), ABORTS the step-complete DoBreak
+            // BEFORE intp.Break() parks the worker. That surfaced as the DAP `next`
+            // (step-over) NIE: the bare-invoke + continue-only sessions never reach
+            // the step-complete DoBreak, so they run clean; only the step-resume does.
+            // Re-use the Neo-aware local/param read (the SAME byte* slot dispatch
+            // GetLocalVariableInfo/GetThisInfo use, children 11/12) so DoBreak's frame
+            // capture is safe + the variables are populated correctly. Falls back to
+            // the Legacy StackObject* path for non-Neo frames (unchanged).
+#if ENABLE_NEO_MODE
+            if (AddStackFrameInfoVariablesNeo(intp, f, info, m))
+                return;
+#endif
             int argumentCount = m.ParameterCount;
             if (m.HasThis)
                 argumentCount++;

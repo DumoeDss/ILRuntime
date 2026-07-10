@@ -1,8 +1,9 @@
 # Blocked / PARKED — neo-debugger-cli-protocol (child 13)
 
 **Status:** NOT blocked — SHIPPED (the core DAP adapter + the ~7 working core methods
-+ an end-to-end self-check are GREEN). This file documents the ONE parked method
-(`next` / step-over) that hits a deep engine gap, per the PARK scope boundary.
++ an end-to-end self-check are GREEN). The ONE parked method (`next` / step-over)
+was **RESOLVED** by the child-13 follow-up (neo-debugger-step-resume); see the
+"RESOLVED" section below. This file is retained as the resolution record.
 
 ## What shipped (GREEN)
 A MINIMAL DAP (Debug Adapter Protocol) frontend for the Neo debugger, wired to the
@@ -59,8 +60,13 @@ Neo-debugger breakpoint-bind characteristic, surfaced (not introduced) by the DA
 adapter's exercise of the bind path.
 
 ## Follow-ups (out of scope, sequenced)
-1. **Neo step-resume engine gap** — close the NIE in the `StepTypes.Over` resume
-   path (the step-frame-base / sequence-point interaction), then harden Cell 4.
+1. **~~Neo step-resume engine gap~~** — **RESOLVED** (see the RESOLVED section
+   above). The NIE was NOT a deep step-engine gap; it was the Legacy
+   `GetStackFrameInfo`/`AddStackFrameInfoVariables` (`StackObject*`-based) reading
+   the Neo compact `byte*` frame in the step-complete `DoBreak` frame capture.
+   Closed by the Neo-gated `AddStackFrameInfoVariablesNeo` (byte* slot read,
+   mirroring `GetLocalVariableInfo`/`GetThisInfo`). Cell 4 is now a HARD gate
+   (`StepGateIsHard=true`).
 2. **Full DAP spec compliance** — `evaluate`/watch, conditional breakpoints (the
    backend CONDITION machinery exists but the DAP expression bridge is not wired),
    `threads` (single-thread only; the interpreter is single-threaded cooperative),
@@ -68,6 +74,61 @@ adapter's exercise of the bind path.
 3. **stackTrace for non-top frames** — the adapter uses the Neo
    `GetThisInfo`/`GetLocalVariableInfo` arms (children 11/12) for frame 0 (reliable);
    non-top frames fall back to the backend's captured `StackFrameInfo.LocalVariables`
-   (Legacy StackObject*-based). A Neo analogue for non-top frames is a follow-on.
+   (now also Neo-populated by `AddStackFrameInfoVariablesNeo`, so the captured
+   LocalVariables are correct under Neo too; a direct Neo analogue for non-top
+   frames remains a follow-on).
 4. **The breakpoint-bind intermittency** — a dedicated investigation of the
    `CheckShouldBreak` sequence-point/method-hash race.
+
+## RESOLVED — `next` (step-over): Neo step-resume (child-13 follow-up)
+**The gap was mis-framed.** The "deep step-engine gap" was in fact a SPECIFIC,
+tractable NIE in the debugger's frame-capture path (the child-4/8/17/17sub3
+"likely a specific NIE, not a deep gap" lesson held -- 5-for-5).
+
+**Root cause (re-audited, fresh eyes):** the NIE site was
+`StackObject.ToObject`'s `default` branch (`StackObject.cs:131`), reached from
+`DebugService.AddStackFrameInfoVariables` -> `StackObject.ToObject` -- the LEGACY
+`StackObject*`-based frame-variable read. Under Neo the frame is a compact
+`byte[] Primitives + AutoList ManagedObjects` (NOT a `StackObject[]`), so the
+`StackObject*` arithmetic (`Add(basePointer, i)`) reads raw bytes as
+`StackObject`s -- the `ObjectType` field lands on an unrecognized value -> the
+`default` -> NIE.
+
+**Why ONLY `next` (not breakpoint-hit / continue-only):** the NIE is in
+`DoBreak`'s frame capture (`DoBreak` -> `GetStackFrameInfo` ->
+`InitializeStackFrameInfo` -> `AddStackFrameInfoVariables`), which runs on BOTH
+the breakpoint-hit AND the step-complete. On the breakpoint-hit (IP at
+`int after = Callee();`) the raw bytes happened to land on a recognized
+`ObjectTypes` value (a coincidence -- the read was garbage but did not throw),
+so Cell 3 passed. On the step-complete (IP at `return prim + after;`, a
+different byte alignment) the bytes hit the `default` -> NIE. The NIE, thrown
+INSIDE `DoBreak` (the step-complete path, `isStep=true`), ABORTED `DoBreak`
+BEFORE `intp.Break()` parked the worker -> the step-complete never fired AND
+the NIE propagated up the resumed worker. The bare-invoke + continue-only
+sessions never reach the step-complete `DoBreak`, so they ran clean -- which is
+why the gap APPEARED to be the step-resume engine.
+
+**The fix (Neo-gated, Legacy-neutral):** added
+`DebugService.AddStackFrameInfoVariablesNeo(ILIntepreter, StackFrame,
+StackFrameInfo, ILMethod)` -- a Neo-aware population of a `StackFrameInfo`'s
+`LocalVariables` (args + locals) off the compact `byte*` frame, reusing the
+SAME byte* slot dispatch `GetLocalVariableInfo`/`GetThisInfo` use (children
+11/12): `ReadNeoLocalValue` for locals/typed params + the absolute-`mStack`-index
+read for `this`/reference params. `AddStackFrameInfoVariables` was given a
+`StackFrame f` parameter (4 call sites in `InitializeStackFrameInfo` updated) +
+an `#if ENABLE_NEO_MODE` early-out that calls the Neo helper; the Neo helper
+returns false for non-Neo frames (Legacy falls through unchanged). Each
+variable entry is wrapped so a single unreadable slot does NOT abort the
+capture (mirrors the per-iteration resilience of the Neo `GetLocalVariableInfo`
+arm). No step-engine change was needed -- the `StepTypes.Over` logic in
+`CheckShouldBreak` (the `basePointer <= LastStepFrameBase` compare) was already
+correct; it simply never got to report its stop because `DoBreak` NIE'd first.
+
+**Verification:** `NeoDebuggerDap` Cell 4 is now a HARD gate
+(`StepGateIsHard=true`) that drives a REAL step session: breakpoint -> `next`
+(step-over) -> assert the step stops in the SAME frame (`RunToBreakpoint`, NOT
+descending into `Callee` = step-IN) -> `continue` -> completion (result 4343 =
+prim 4242 + Callee 101). NeoDebuggerDap 4/4 (stable 3/3 re-runs), NeoStep 279/0,
+NeoDebuggerFrame 6/6, NeoDebuggerAotBody 10/10. Plain `Debug` build of ILRuntime
++ CLI = 0 errors (the `StackFrame f` signature change is additive; the Neo
+helper is `#if ENABLE_NEO_MODE`-gated).
