@@ -1181,6 +1181,33 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             }
                         }
                         break;
+                    // neo-ilvt-boxing-roundtrip: type the dest of an Unbox /
+                    // Unbox_Any of an IL value type as the unboxed VT. The dest
+                    // register holds the in-frame VT (the runtime CopyILToFrame
+                    // arm writes the instance's bytes + refs into the dest's frame
+                    // region), so the caller's subsequent ldfld/stfld on the result
+                    // MUST be recognized as in-frame and rewritten to _Inline.
+                    // Without this, a `Move` that reads the unbox dest (e.g. the
+                    // inlined `T BoxUnbox<T>(T v){ object o = v; return (T)o; }`
+                    // body, where T is an IL struct) OVERWRITES the dest local's
+                    // initial VT type with null -- and the following ldfld then
+                    // falls back to the heap Ldfld_* arm, reading the dest's first 4
+                    // frame bytes (the int field) as an mStack index -> OOB /
+                    // NullReferenceException / corruption. This mirrors the Newobj
+                    // IL-VT dest-typing rule above (Unbox is the fourth in-frame-VT
+                    // address case). Box / Unbox of a reference or primitive type
+                    // is left untyped (the result is an mStack index / a primitive).
+                    case OpCodeREnum.Unbox:
+                    case OpCodeREnum.Unbox_Any:
+                        {
+                            var ut = appdomain.GetType(op.Operand);
+                            if (ut is ILType utIl
+                                && utIl.IsValueType && !utIl.IsEnum && !utIl.IsPrimitive)
+                            {
+                                SetRegisterType(registerTypes, op.Register1, utIl);
+                            }
+                        }
+                        break;
                 }
                 body[i] = op;
             }
