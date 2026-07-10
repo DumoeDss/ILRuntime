@@ -487,6 +487,55 @@ namespace ILRuntimeTest.TestFramework
         public static int ReadArea4dIntField(Area4dHolder h) { return h.intField; }
         public static string ReadArea4dRefField(Area4dHolder h) { return h.refField; }
 
+        // ---- child-14 (neo-byref-clr2il-delegate): the CLR->IL delegate
+        //      callback direction with a BYREF param. The IL side hands a
+        //      delegate bound to an IL method that takes a `ref int` / `out
+        //      int`; a CLR host helper invokes it WITH the byref. The IL
+        //      callee mutates the byref; the mutation MUST be observable on
+        //      the CLR side after the call returns (the write-back channel).
+        //      This is the REVERSE of F-7 (IL->IL delegate-invoke). ----
+
+        // A custom delegate type carrying a `ref int` param. The standard
+        // Action<>/Func<> family is by-value, so a byref callback requires a
+        // dedicated delegate type + a RegisterDelegateConvertor that marshals
+        // the byref through the NeoInvokeSub arg-write + a write-back.
+        public delegate void Clr2IlRefIntDelegate(ref int x);
+        public delegate void Clr2IlOutIntDelegate(out int x);
+        // Adversarial: a `ref long` (8-byte element, exercises the scratch-cell
+        // sizing past the 4-byte int case).
+        public delegate void Clr2IlRefLongDelegate(ref long x);
+        // Adversarial: a multicast ref-int delegate (two IL targets; each must
+        // see the prior target's mutation -- multicast ref-semantics).
+        public delegate void Clr2IlRefIntMulticastDelegate(ref int x);
+
+        // The host helper: invokes the (CLR-wrapped IL) delegate WITH the
+        // byref. IL code passes its IL-method delegate here; the helper calls
+        // del(ref x) and returns the resulting x so the IL side can assert.
+        public static int InvokeRefCallback(Clr2IlRefIntDelegate del, int seed)
+        {
+            int x = seed;
+            del(ref x);
+            return x;
+        }
+        public static int InvokeOutCallback(Clr2IlOutIntDelegate del)
+        {
+            int x;
+            del(out x);
+            return x;
+        }
+        public static long InvokeRefLongCallback(Clr2IlRefLongDelegate del, long seed)
+        {
+            long x = seed;
+            del(ref x);
+            return x;
+        }
+        public static int InvokeRefIntMulticastCallback(Clr2IlRefIntMulticastDelegate del, int seed)
+        {
+            int x = seed;
+            del(ref x);
+            return x;
+        }
+
 #if TEST_MISSING_METHOD
         public int missingField;
         public void MissingMethodGeneric<T>(T obj)

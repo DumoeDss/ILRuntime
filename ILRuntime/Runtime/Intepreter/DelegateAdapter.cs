@@ -1003,7 +1003,37 @@ namespace ILRuntime.Runtime.Intepreter
             return NeoInvokeSub(args);
         }
 
+        // child-14 (neo-byref-clr2il-delegate): the byref-aware CLR->IL delegate
+        // callback entry. Runs the IL target with byref params marshaled as
+        // self-referencing scratch cells (so the callee's mutation lands in a
+        // cell this method reads back) and writes the mutated values BACK into
+        // `args` after the run. The CLR RegisterDelegateByRefConvertor converter
+        // calls this with the delegate's byref-typed args and copies the
+        // write-back into its `ref`/`out` locals. Returns the boxed result (null
+        // for void). Defined on IDelegateAdapter so a cross-assembly converter
+        // (ILRuntimeTestBase) can invoke it without internals visibility.
+        public unsafe object NeoInvokeByRef(object[] args)
+        {
+            return NeoInvokeSub(args, true);
+        }
+
         internal unsafe object NeoInvokeSub(object[] args)
+        {
+            return NeoInvokeSub(args, false);
+        }
+
+        // child-14 (neo-byref-clr2il-delegate): the byref-aware entry. When
+        // marshalByRef is true, a `ref`/`out` param's value is staged in a
+        // SCRATCH cell (reserved past TotalStructSize) and the param's 8-byte
+        // Ref Slot is made SELF-REFERENCING -- `(objIdx == -1, off == scratch
+        // cell offset)` -- so the IL callee's ldind/stind deref the byref
+        // against THIS interpreter's frameBase + scratchOff, reading/writing
+        // the staged value. After ExecuteNeo returns, the scratch cell's
+        // (possibly mutated) value is read BACK into args[i], giving the CLR
+        // converter the write-back channel. Non-byref params use the existing
+        // WriteNeoCallSlot path byte-for-byte (marshalByRef == false is the
+        // legacy path -- NeoInvoke/NeoInvokePublic never read args[] back).
+        internal unsafe object NeoInvokeSub(object[] args, bool marshalByRef)
         {
             // Request a fresh interpreter (Legacy BeginInvoke semantics).
             // Wrapped in try/finally so the interpreter is returned to the pool
@@ -1028,11 +1058,46 @@ namespace ILRuntime.Runtime.Intepreter
             int paramCnt = method.ParameterCount;
             bool hasThis = method.HasThis;
 
+            // child-14: detect byref params and reserve a scratch cell per
+            // byref param (past TotalStructSize). The scratch cell holds the
+            // CLR value; the param's Ref Slot self-references it so the IL
+            // callee's ldind/stind land on the staged value.
+            int[] byRefScratchOff = null;
+            IType[] byRefElemType = null;
+            int scratchBase = nf.TotalStructSize;
+            int scratchCur = scratchBase;
+            if (marshalByRef && paramCnt > 0)
+            {
+                byRefScratchOff = new int[paramCnt];
+                byRefElemType = new IType[paramCnt];
+                var mParams = method.Parameters;
+                int firstParam = hasThis ? 1 : 0;
+                for (int i = 0; i < paramCnt; i++)
+                {
+                    byRefScratchOff[i] = -1;
+                    var pt = (mParams != null && i < mParams.Count) ? mParams[i] : null;
+                    if (pt == null || !pt.IsByRef)
+                        continue;
+                    int slotIdx = firstParam + i;
+                    if (slotIdx >= paramInfos.Length) break;
+                    if (paramInfos[slotIdx].Size != 8) continue; // not an 8-byte Ref Slot
+                    IType elemType = pt.ElementType;
+                    byRefElemType[i] = elemType;
+                    int elemSize = NeoByrefElemSize(appdomain, elemType);
+                    // 4-align the scratch cell (matches the Ref Slot resolution
+                    // granularity; ExecuteNeo reads frame cells as int-aligned).
+                    scratchCur = (scratchCur + 3) & ~3;
+                    byRefScratchOff[i] = scratchCur;
+                    scratchCur += elemSize;
+                }
+            }
+
             // Build the Neo frame at StackBase (the fresh interpreter has no
-            // in-flight frame).
+            // in-flight frame). Grow the frame by the scratch region so the
+            // self-referencing byrefs stay in-bounds for the whole run.
             byte* frameBase = (byte*)stack.StackBase;
             byte* esp = frameBase;
-            int frameSize = nf.TotalStructSize;
+            int frameSize = scratchCur;
             byte* newEsp = esp + frameSize;
 
             // Zero the locals primitive region (mirrors ExecuteNeo's own zeroing).
@@ -1068,7 +1133,21 @@ namespace ILRuntime.Runtime.Intepreter
             for (int i = 0; i < paramCnt; i++)
             {
                 object arg = (args != null && i < args.Length) ? args[i] : null;
-                WriteNeoCallSlot(paramInfos[argIdx], frameBase, mStack, frameRefBase, arg);
+                if (marshalByRef && byRefScratchOff != null && byRefScratchOff[i] >= 0)
+                {
+                    // child-14: stage the CLR value in the scratch cell and make
+                    // the param's 8-byte Ref Slot self-referencing so the IL
+                    // callee's ldind/stind read+write the staged value through
+                    // this frame. (objIdx == -1, off == scratchOff).
+                    WriteNeoByrefScratchValue(appdomain, frameBase + byRefScratchOff[i], byRefElemType[i], arg);
+                    int slotIdx = (hasThis ? 1 : 0) + i;
+                    *(int*)(frameBase + paramInfos[slotIdx].Offset + 0) = -1;
+                    *(int*)(frameBase + paramInfos[slotIdx].Offset + 4) = byRefScratchOff[i];
+                }
+                else
+                {
+                    WriteNeoCallSlot(paramInfos[argIdx], frameBase, mStack, frameRefBase, arg);
+                }
                 argIdx++;
             }
 
@@ -1082,6 +1161,17 @@ namespace ILRuntime.Runtime.Intepreter
 
             bool unhandled;
             intp.ExecuteNeo(method, frameBase, retDst, retRefBase, out unhandled);
+
+            // child-14: read the (possibly mutated) byref scratch cells BACK
+            // into args[] so the CLR converter sees the callee's write-back.
+            if (marshalByRef && byRefScratchOff != null && args != null)
+            {
+                for (int i = 0; i < paramCnt && i < args.Length; i++)
+                {
+                    if (byRefScratchOff[i] < 0) continue;
+                    args[i] = ReadNeoByrefScratchValue(appdomain, frameBase + byRefScratchOff[i], byRefElemType[i]);
+                }
+            }
 
             object result = null;
             if (!method.ReturnType.IsValueType && method.ReturnType != appdomain.VoidType
@@ -1105,10 +1195,13 @@ namespace ILRuntime.Runtime.Intepreter
 
             // Multicast: walk the next-chain, discarding intermediate returns
             // (Legacy ILInvokeSub:965-974 returns the LAST delegate's result).
+            // child-14: for a byref delegate, each subsequent target re-reads
+            // args[] (now carrying the prior target's write-back) so multicast
+            // ref-semantics hold (each target sees the accumulated mutation).
             if (next != null)
             {
                 DelegateAdapter n = (DelegateAdapter)next;
-                result = n.NeoInvokeSub(args);
+                result = n.NeoInvokeSub(args, marshalByRef);
             }
             return result;
             }
@@ -1162,6 +1255,103 @@ namespace ILRuntime.Runtime.Intepreter
                     ILIntepreter.WriteNeoValueType(value, frameBase + off, info.Size);
                     break;
             }
+        }
+
+        // ---- child-14 (neo-byref-clr2il-delegate): the byref scratch-cell
+        //      helpers for the CLR->IL delegate callback. The IL callee's
+        //      ldind/stind deref the self-referencing byref against frameBase +
+        //      scratchOff; these stage the CLR value before the run and read it
+        //      back after. ----
+
+        // The managed byte size of a byref param's element type (the de-byref'd
+        // referent). Primitives use GetPrimitiveSize; a CLR/IL value type uses
+        // TotalPrimitiveSize; a reference type is 4 (an mStack index).
+        internal static unsafe int NeoByrefElemSize(Enviorment.AppDomain appdomain, IType elemType)
+        {
+            if (elemType == null) return 4;
+            if (elemType.IsPrimitive)
+            {
+                int sz = appdomain.GetPrimitiveSize(elemType);
+                return sz > 0 ? sz : 4;
+            }
+            if (elemType.IsValueType)
+            {
+                if (elemType is CLR.TypeSystem.ILType ilt)
+                {
+                    int sz = ilt.TotalPrimitiveSize;
+                    return sz > 0 ? sz : 4;
+                }
+                // CLR value type: use the CLR managed size (TypeForCLR).
+                try { return System.Runtime.InteropServices.Marshal.SizeOf(elemType.TypeForCLR); }
+                catch { return 4; }
+            }
+            return 4; // reference type -> an mStack index (4 bytes)
+        }
+
+        // Stage a CLR value into a byref scratch cell (the inverse of the read).
+        // Primitives write typed bytes; CLR value types write flat managed bytes;
+        // reference types write -1 (the callee treats an unseeded ref slot as
+        // null); the converter's ref-byref shape is out of scope for the scratch
+        // path (a reference-typed referent would need an mStack slot -- recorded
+        // as a sequencing note; the common `ref int`/`out int` case is the core).
+        internal static unsafe void WriteNeoByrefScratchValue(Enviorment.AppDomain appdomain, byte* dst, IType elemType, object value)
+        {
+            if (value == null)
+            {
+                *(int*)dst = -1;
+                return;
+            }
+            if (elemType != null && elemType.IsPrimitive)
+            {
+                var clr = elemType.TypeForCLR;
+                if (clr == typeof(int) || clr.IsEnum) *(int*)dst = Convert.ToInt32(value);
+                else if (clr == typeof(uint)) *(uint*)dst = Convert.ToUInt32(value);
+                else if (clr == typeof(long)) *(long*)dst = Convert.ToInt64(value);
+                else if (clr == typeof(ulong)) *(ulong*)dst = Convert.ToUInt64(value);
+                else if (clr == typeof(short)) *(short*)dst = Convert.ToInt16(value);
+                else if (clr == typeof(ushort)) *(ushort*)dst = Convert.ToUInt16(value);
+                else if (clr == typeof(byte)) *dst = Convert.ToByte(value);
+                else if (clr == typeof(sbyte)) *(sbyte*)dst = Convert.ToSByte(value);
+                else if (clr == typeof(bool)) *(int*)dst = Convert.ToBoolean(value) ? 1 : 0;
+                else if (clr == typeof(char)) *(char*)dst = Convert.ToChar(value);
+                else if (clr == typeof(float)) *(float*)dst = Convert.ToSingle(value);
+                else if (clr == typeof(double)) *(double*)dst = Convert.ToDouble(value);
+                else *(int*)dst = Convert.ToInt32(value);
+                return;
+            }
+            // Value type or reference: write flat bytes via the area4 helper
+            // (mirrors WriteNeoCallSlot's default arm for value types).
+            int sz = NeoByrefElemSize(appdomain, elemType);
+            ILIntepreter.WriteNeoValueType(value, dst, sz);
+        }
+
+        // Read the (possibly mutated) scratch cell back to a boxed CLR object
+        // (the inverse of WriteNeoByrefScratchValue). Primitives read typed
+        // bytes; value types read flat bytes; reference types return the stored
+        // mStack index's object (the scratch path stores -1 for null).
+        internal static unsafe object ReadNeoByrefScratchValue(Enviorment.AppDomain appdomain, byte* src, IType elemType)
+        {
+            if (elemType != null && elemType.IsPrimitive)
+            {
+                var clr = elemType.TypeForCLR;
+                if (clr == typeof(int) || clr.IsEnum) return *(int*)src;
+                if (clr == typeof(uint)) return *(uint*)src;
+                if (clr == typeof(long)) return *(long*)src;
+                if (clr == typeof(ulong)) return *(ulong*)src;
+                if (clr == typeof(short)) return *(short*)src;
+                if (clr == typeof(ushort)) return *(ushort*)src;
+                if (clr == typeof(byte)) return *src;
+                if (clr == typeof(sbyte)) return *(sbyte*)src;
+                if (clr == typeof(bool)) return *src != 0;
+                if (clr == typeof(char)) return *(char*)src;
+                if (clr == typeof(float)) return *(float*)src;
+                if (clr == typeof(double)) return *(double*)src;
+                return *(int*)src;
+            }
+            int sz = NeoByrefElemSize(appdomain, elemType);
+            int cur = 0;
+            var clrT = elemType != null ? elemType.TypeForCLR : typeof(int);
+            return ILIntepreter.ReadNeoValueType(clrT, src, ref cur, sz);
         }
 #endif
 
@@ -1370,6 +1560,26 @@ namespace ILRuntime.Runtime.Intepreter
 
         public Delegate GetConvertor(Type type)
         {
+            // child-14 (neo-byref-clr2il-delegate): a byref-aware converter
+            // (RegisterDelegateByRefConvertor) routes a `ref`/`out`-carrying
+            // custom delegate type through NeoInvokeByRef. It is keyed on the
+            // delegate TYPE, not on a per-arity adapter match, so it must be
+            // consulted BEFORE the NativeDelegateType access below -- the IL
+            // method may have bound to a DummyDelegateAdapter (no by-value
+            // per-arity match for a `ref int` param), whose NativeDelegateType
+            // throws. DelegateManager.ConvertToDelegate handles the Dummy
+            // bypass for a byref-registered type.
+            if (appdomain.DelegateManager.HasByRefConvertor(type))
+            {
+                if (converters == null)
+                    converters = new Dictionary<System.Type, Delegate>(new ByReferenceKeyComparer<Type>());
+                Delegate resBr;
+                if (converters.TryGetValue(type, out resBr))
+                    return resBr;
+                resBr = appdomain.DelegateManager.ConvertToDelegate(type, this);
+                converters[type] = resBr;
+                return resBr;
+            }
             if (type.IsAssignableFrom(NativeDelegateType))
                 return Delegate;
             if (converters == null)
@@ -1457,6 +1667,11 @@ namespace ILRuntime.Runtime.Intepreter
 
         InvocationContext BeginInvoke();
         StackObject* ILInvoke(ILIntepreter intp, StackObject* esp, AutoList mStack);
+#if ENABLE_NEO_MODE
+        // child-14: byref-aware CLR->IL delegate callback (writes byref param
+        // mutations back into args). See DelegateAdapter.NeoInvokeByRef.
+        object NeoInvokeByRef(object[] args);
+#endif
         IDelegateAdapter Instantiate(Enviorment.AppDomain appdomain, ILTypeInstance instance, ILMethod method);
         bool IsClone { get; }
         IDelegateAdapter Clone();

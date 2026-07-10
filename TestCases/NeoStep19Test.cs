@@ -456,6 +456,77 @@ namespace TestCases
                 int z = 1; int dd = 0; int _ = z / dd;
             }
         }
+
+        // ---- child-14 (neo-byref-clr2il-delegate): the CLR->IL delegate
+        //      callback direction with a BYREF param (the REVERSE of F-7).
+        //      An IL method is bound to a CLR delegate type carrying a `ref
+        //      int` / `out int` param; a CLR host helper invokes the delegate
+        //      WITH the byref; the IL callee mutates the byref; the mutation
+        //      MUST be observable on the CLR side after the call (write-back).
+        //      The delegate type + host helper live in
+        //      TestFramework.TestClass3 (Clr2IlRefIntDelegate / InvokeRefCallback);
+        //      the converter marshals the byref through NeoInvokeSub. ----
+
+        // The IL delegate target: bumps the byref'd cell by 10 (read+write).
+        public static void Clr2IlBumpRef(ref int x) { x += 10; }
+        // The IL delegate target: assigns a constant (write-only out).
+        public static void Clr2IlSetOut(out int x) { x = 77; }
+
+        public static void NeoStep19_Clr2Il_ByRef()
+        {
+            // Build a CLR delegate (TestCLRBinding.Clr2IlRefIntDelegate) bound to
+            // the IL method Clr2IlBumpRef, then hand it to the CLR host helper
+            // InvokeRefCallback, which calls del(ref x) and returns the result.
+            // seed 5 -> the IL callee bumps by 10 -> 15.
+            TestCLRBinding.Clr2IlRefIntDelegate d = Clr2IlBumpRef;
+            int r = TestCLRBinding.InvokeRefCallback(d, 5);
+            if (r != 15)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        public static void NeoStep19_Clr2Il_Out()
+        {
+            TestCLRBinding.Clr2IlOutIntDelegate d = Clr2IlSetOut;
+            int r = TestCLRBinding.InvokeOutCallback(d);
+            if (r != 77)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // Adversarial: a `ref long` param (8-byte element). Verifies the
+        // scratch cell sizes to the element width (not a hardcoded 4) and the
+        // long write-back round-trips. seed 10 -> +1000L -> 1010L.
+        public static void Clr2IlBumpLong(ref long x) { x += 1000L; }
+        public static void NeoStep19_Clr2Il_ByRefLong()
+        {
+            TestCLRBinding.Clr2IlRefLongDelegate d = Clr2IlBumpLong;
+            long r = TestCLRBinding.InvokeRefLongCallback(d, 10L);
+            if (r != 1010L)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
+
+        // Adversarial: a multicast ref-int delegate (two IL targets; each must
+        // see the prior target's mutation -- multicast ref-semantics). The
+        // converter runs each target via NeoInvokeByRef, and each subsequent
+        // target re-reads args[0] (now carrying the prior write-back).
+        // +10 (5->15) then *2 (15->30) = 30.
+        public static void Clr2IlAddTen(ref int x) { x += 10; }
+        public static void Clr2IlDouble(ref int x) { x *= 2; }
+        public static void NeoStep19_Clr2Il_Multicast()
+        {
+            TestCLRBinding.Clr2IlRefIntMulticastDelegate d = Clr2IlAddTen;
+            d += Clr2IlDouble;
+            int r = TestCLRBinding.InvokeRefIntMulticastCallback(d, 5);
+            if (r != 30)
+            {
+                int z = 1; int dd = 0; int _ = z / dd;
+            }
+        }
     }
 
     // Helper for TC7: an instance with a Target list field, so a delegate over

@@ -141,6 +141,56 @@ namespace ILRuntimeTest.TestFramework
                     ((Action<System.Int64, System.Int64>)act)(oldVal, newVal);
                 });
             });
+            // child-14 (neo-byref-clr2il-delegate): the CLR->IL delegate callback
+            // with a `ref int` / `out int` param. The converter receives the
+            // DelegateAdapter (RegisterDelegateByRefConvertor) and routes the
+            // byref through NeoInvokeByRef, which stages the value in a self-
+            // referencing scratch cell, runs the IL callee (whose ldind/stind
+            // land on the staged value), and writes the mutation BACK into
+            // args[0]. The converter then copies args[0] into its `ref`/`out`.
+            // Neo-only: NeoInvokeByRef is on IDelegateAdapter only under
+            // ENABLE_NEO_MODE.
+#if ENABLE_NEO_MODE
+            app.DelegateManager.RegisterDelegateByRefConvertor<ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlRefIntDelegate>((adapter) =>
+            {
+                return new ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlRefIntDelegate((ref int x) =>
+                {
+                    int v = x;
+                    object[] args = new object[] { v };
+                    adapter.NeoInvokeByRef(args);
+                    x = (int)args[0];
+                });
+            });
+            app.DelegateManager.RegisterDelegateByRefConvertor<ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlOutIntDelegate>((adapter) =>
+            {
+                return new ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlOutIntDelegate((out int x) =>
+                {
+                    object[] args = new object[] { 0 };
+                    adapter.NeoInvokeByRef(args);
+                    x = (int)args[0];
+                });
+            });
+            app.DelegateManager.RegisterDelegateByRefConvertor<ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlRefLongDelegate>((adapter) =>
+            {
+                return new ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlRefLongDelegate((ref long x) =>
+                {
+                    long v = x;
+                    object[] args = new object[] { v };
+                    adapter.NeoInvokeByRef(args);
+                    x = (long)args[0];
+                });
+            });
+            app.DelegateManager.RegisterDelegateByRefConvertor<ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlRefIntMulticastDelegate>((adapter) =>
+            {
+                return new ILRuntimeTest.TestFramework.TestCLRBinding.Clr2IlRefIntMulticastDelegate((ref int x) =>
+                {
+                    int v = x;
+                    object[] args = new object[] { v };
+                    adapter.NeoInvokeByRef(args);
+                    x = (int)args[0];
+                });
+            });
+#endif
             // LitJson register
             LitJson.JsonMapper.RegisterILRuntimeCLRRedirection(app);
 

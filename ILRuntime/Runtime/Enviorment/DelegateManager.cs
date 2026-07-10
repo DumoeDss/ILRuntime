@@ -17,6 +17,12 @@ namespace ILRuntime.Runtime.Enviorment
         IDelegateAdapter zeroParamMethodAdapter = new MethodDelegateAdapter();
         IDelegateAdapter dummyAdapter = new DummyDelegateAdapter();
         Dictionary<Type, Func<Delegate, Delegate>> clrDelegates = new Dictionary<Type, Func<Delegate, Delegate>>(new ByReferenceKeyComparer<Type>());
+        // child-14 (neo-byref-clr2il-delegate): byref-aware converters that
+        // receive the adapter (not its by-value Delegate) so they can route a
+        // `ref`/`out` param through NeoInvokeByRef (which writes the callee's
+        // mutation back into the args array). Preferred over clrDelegates when
+        // both are registered for a type.
+        Dictionary<Type, Func<IDelegateAdapter, Delegate>> clrByRefDelegates = new Dictionary<Type, Func<IDelegateAdapter, Delegate>>(new ByReferenceKeyComparer<Type>());
         Func<Delegate, Delegate> defaultConverter;
         Enviorment.AppDomain appdomain;
         public DelegateManager(Enviorment.AppDomain appdomain)
@@ -36,6 +42,25 @@ namespace ILRuntime.Runtime.Enviorment
             if (type.IsSubclassOf(typeof(Delegate)))
             {
                 clrDelegates[type] = action;
+            }
+            else
+                throw new NotSupportedException();
+        }
+
+        // child-14 (neo-byref-clr2il-delegate): register a byref-aware converter
+        // for a custom delegate type whose Invoke signature carries a `ref`/`out`
+        // param. The converter receives the DelegateAdapter (not its by-value
+        // Delegate) so it can route the byref through NeoInvokeByRef, which
+        // stages the value in a self-referencing scratch cell and writes the
+        // callee's mutation back into the args array. The converter then copies
+        // the mutated args[i] into its `ref`/`out` local. Preferred over a plain
+        // RegisterDelegateConvertor for the same type.
+        public void RegisterDelegateByRefConvertor<T>(Func<IDelegateAdapter, Delegate> action)
+        {
+            var type = typeof(T);
+            if (type.IsSubclassOf(typeof(Delegate)))
+            {
+                clrByRefDelegates[type] = action;
             }
             else
                 throw new NotSupportedException();
@@ -133,9 +158,29 @@ namespace ILRuntime.Runtime.Enviorment
             RegisterDelegateConvertor<Func<T1, T2, T3, T4, TResult>>(defaultConverter);
         }
 
+        // child-14: true when a byref-aware converter is registered for this
+        // delegate type ( consulted by DelegateAdapter.GetConvertor to route a
+        // `ref`/`out`-carrying custom delegate type through NeoInvokeByRef
+        // WITHOUT needing a per-arity by-value adapter match).
+        public bool HasByRefConvertor(Type clrDelegateType)
+        {
+            return clrByRefDelegates.ContainsKey(clrDelegateType);
+        }
+
         internal Delegate ConvertToDelegate(Type clrDelegateType, IDelegateAdapter adapter)
         {
             Func<Delegate, Delegate> func;
+            // child-14: a byref-aware converter is keyed on the delegate TYPE
+            // and receives the adapter (possibly a DummyDelegateAdapter, since
+            // a `ref int` param never matches a by-value per-arity adapter).
+            // The converter routes through NeoInvokeByRef, which runs the IL
+            // target directly -- so the Dummy "register an adapter" guard does
+            // NOT apply. Consult it BEFORE the Dummy throw.
+            Func<IDelegateAdapter, Delegate> byRefFunc;
+            if (clrByRefDelegates.TryGetValue(clrDelegateType, out byRefFunc))
+            {
+                return byRefFunc(adapter);
+            }
             if(adapter is DummyDelegateAdapter)
             {
                 DelegateAdapter.ThrowAdapterNotFound(adapter.Method);
