@@ -48,7 +48,22 @@ namespace ILRuntime.Runtime.NeoAOT
         // loader's Version guard rejects a prior-Version `.neo` for the static-
         // field path. Each type writes StaticFields[] (EMPTY for a type with no
         // static fields), so a V3 reader reads every V3 `.neo` cleanly.
-        public const short Version = 3;
+        //
+        // neo-debugger-aot-body: Version bumped 3 -> 4. V4 adds the per-method
+        // LOCAL variable metadata (NeoMethodDefRecord.LocalVariables[] -- one
+        // NeoLocalVarRecord per declared local: TypeRefIdx + Name). A Cecil-free
+        // ILMethod shell (def == null, the S3-2 LoadNeoAssembly path) has NO
+        // Definition.Body.Variables, so the Neo debugger frame read needs the
+        // local type/name in the .neo to inspect AOT-body locals. ADDITIVE +
+        // backward-incompatible only via the Version guard: the same-AppDomain
+        // S1/S2/S3 path IGNORES LocalVariables[] (Definition.Body.Variables is
+        // present + authoritative); the Cecil-free loader resolves each local's
+        // TypeRef to a runtime IType at InitCodeBodyFromNeo. Each method writes
+        // LocalVariables[] (EMPTY for a method with no locals), so a V4 reader
+        // reads every V4 `.neo` cleanly. (The PARKED neo-aot-generic-cecilfree
+        // child originally planned the V4 bump for GenericParamNames -- it is
+        // re-routed to neo-aot-generic-cecilfree-backhalf + will use V5.)
+        public const short Version = 4;
         public const byte EndiannessLittle = 1;
         // 7 indexed tables (the static-ctor InitializerTable is folded into the
         // TypeDefTable via StaticCtorMethodRefIdx -- see design.md D4/D6).
@@ -155,6 +170,35 @@ namespace ILRuntime.Runtime.NeoAOT
         // Exception handlers as BODY INDICES (the Cecil-keyed addr[] map used at
         // JIT time is not serializable -- the EH table is re-represented here).
         public NeoExceptionHandlerRecord[] ExceptionHandlers;
+        // V4 (neo-debugger-aot-body): the method's LOCAL variable metadata, one
+        // entry per declared local (varCnt -- the SAME count as Cecil Body.
+        // Variables.Count, NOT LocalInfos.Length which also holds params + temp
+        // registers). Carries the local's declared TYPE (-> TypeRefTable, so a
+        // Cecil-free shell can resolve it to a runtime IType) + the local's NAME
+        // (from Cecil DebugInformation, or "v" + index when no debug name). This
+        // is what the Neo debugger frame read (DebugService.GetLocalVariableInfo)
+        // needs to inspect an AOT-loaded body's locals: a Cecil-free ILMethod
+        // shell (def == null) has NO Definition.Body.Variables, so the type/name
+        // must ride the .neo. The slot LAYOUT (offsets/sizes) is already in
+        // LocalInfos[paramCnt..paramCnt+varCnt). -1 TypeRefIdx = unavailable
+        // (the local renders as "<unknown local type>", mirroring the JIT-path
+        // null-type guard). ADDITIVE: V3 .neo readers reject this at the Version
+        // guard; same-AppDomain S1 Attach IGNORES it (Definition.Body.Variables
+        // is present + authoritative on the S1 path).
+        public NeoLocalVarRecord[] LocalVariables;
+    }
+
+    // V4 (neo-debugger-aot-body): one LOCAL variable's declared metadata. The
+    // declared type is a TypeRefTable index (resolved to a runtime IType at load
+    // via the same closure InitCodeBodyFromNeo uses for catch types); -1 if the
+    // type could not be indexed (renders as "<unknown local type>"). The name is
+    // the Cecil debug name (or "v" + index). Parallel to LocalVariables[]:
+    // local index i -> LocalInfos[ParameterCount + (HasThis?1:0) + i] for the
+    // slot layout, and LocalVariables[i] for the type/name.
+    internal struct NeoLocalVarRecord
+    {
+        public int TypeRefIdx;   // -> TypeRefTable (-1 if unavailable)
+        public string Name;      // Cecil debug name or "v" + index
     }
 
     internal struct NeoCallParamMapRecord

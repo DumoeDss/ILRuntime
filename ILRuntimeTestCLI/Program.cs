@@ -485,6 +485,28 @@ namespace ILRuntimeTestCLI
                 session.Dispose();
                 return failed <= 0 ? 0 : -1;
             }
+            // TEMPORARY diagnostic for neo-debugger-aot-body (child 12).
+            if (nameFilter == "NeoDebuggerAotBody")
+            {
+                int failed;
+                try
+                {
+                    var r = ILRuntime.Runtime.Debugger.NeoDebuggerAotBodyCheck.Run(session.Appdomain);
+                    failed = r.Failed;
+                    Console.WriteLine("===============================");
+                    Console.WriteLine($"NeoDebuggerAotBody: {r.Passed}/{r.TotalCells} cells passed, {r.Failed} failed.");
+                    foreach (var f in r.Failures)
+                        Console.WriteLine($"  FAIL: {f}");
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine("=== NeoDebuggerAotBody threw ===");
+                    Console.Error.WriteLine(ex.ToString());
+                    failed = -1;
+                }
+                session.Dispose();
+                return failed <= 0 ? 0 : -1;
+            }
             // neo-debugger-neo-frame capstone: the Neo debugger frame-inspection
             // self-check. Drives the unhandled-exception path (an IL method with
             // primitive + reference locals throws unhandled -> ExecuteNeo's unwind

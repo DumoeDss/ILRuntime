@@ -331,9 +331,28 @@ namespace ILRuntime.Runtime.NeoAOT
             WriteSwitchTargetPairs(bw, md.SwitchTargets);
             WriteNeoCallParamMaps(bw, md.NeoCallParams);
             WriteNeoExceptionHandlers(bw, md.ExceptionHandlers);
+            // V4 (neo-debugger-aot-body): the per-method LOCAL variable metadata
+            // (type + name), so a Cecil-free ILMethod shell can inspect its
+            // locals via the Neo debugger frame read. See D3 / LocalVariables.
+            WriteNeoLocalVars(bw, md.LocalVariables);
             // NOTE: CodeBody (register-index; inliner/debugger only) and Symbols
             // (Cecil-Instruction-keyed; not serializable) are intentionally NOT
             // serialized here -- ExecuteNeo runs against NeoExecuteBody. See D3.
+        }
+
+        // V4 (neo-debugger-aot-body): one NeoLocalVarRecord per declared local.
+        // The array carries the local's declared TYPE (-> TypeRefTable) + NAME;
+        // the slot LAYOUT stays in LocalInfos. Empty (not null) for a method
+        // with no locals, so the read is always exactly varCnt entries.
+        public static void WriteNeoLocalVars(BinaryWriter bw, NeoLocalVarRecord[] lvs)
+        {
+            if (lvs == null) { bw.Write(0); return; }
+            bw.Write(lvs.Length);
+            for (int i = 0; i < lvs.Length; i++)
+            {
+                bw.Write(lvs[i].TypeRefIdx);
+                bw.Write(lvs[i].Name ?? "");
+            }
         }
 
         static void WriteSwitchTargetPairs(BinaryWriter bw, KeyValuePair<int, int[]>[] pairs)
@@ -850,7 +869,47 @@ namespace ILRuntime.Runtime.NeoAOT
             rec.SwitchTargets = ToPairs(frame.SwitchTargets);
             rec.NeoCallParams = BuildCallParamMaps(frame.NeoCallParams);
             rec.ExceptionHandlers = BuildExceptionHandlers(method, addr, b);
+            // V4 (neo-debugger-aot-body): per-local declared type + name. The TYPE
+            // is a TypeRef index (the SAME table catch/return types use); a generic-
+            // parameter local's VariableType is a Cecil GenericParameter which has
+            // no ILType/CLRType, so IndexTypeRef accepts the raw TypeReference. The
+            // NAME comes from Cecil DebugInformation (or "v" + index when absent --
+            // DebugInformation.TryGetName is the SAME fallback the JIT-path debugger
+            // uses at DebugService.cs:366-367). One entry per declared local
+            // (Body.Variables.Count); the slot layout lives in LocalInfos. This is
+            // authoritative for a Cecil-free shell (def == null post-load); the S1
+            // same-AppDomain path IGNORES it (Definition.Body.Variables is present).
+            rec.LocalVariables = BuildLocalVars(method, b, module);
             return rec;
+        }
+
+        // V4 (neo-debugger-aot-body): build the per-local metadata array. Reads
+        // the Cecil Body.Variables (present at serialize time for every method --
+        // BuildMethodDef runs in the COMPILING AppDomain where Cecil is loaded),
+        // indexes each local's VariableType into the TypeRef table, and resolves
+        // the debug name. A method with no body / no variables yields an EMPTY
+        // array (the read is always exactly varCnt entries; never null on the
+        // wire). Generic-parameter locals index their Cecil GenericParameter (the
+        // reader's ResolveTypeRefToIType resolves a generic-param name via the
+        // method's generic-arg map; non-generic methods never hit this).
+        static NeoLocalVarRecord[] BuildLocalVars(ILMethod method, NeoRefTableBuilder b, ModuleDefinition module)
+        {
+            var body = method.Definition?.Body;
+            if (body == null || body.Variables == null || body.Variables.Count == 0)
+                return new NeoLocalVarRecord[0];
+            var res = new NeoLocalVarRecord[body.Variables.Count];
+            for (int i = 0; i < body.Variables.Count; i++)
+            {
+                var vd = body.Variables[i];
+                string name = null;
+                try { method.Definition.DebugInformation.TryGetName(vd, out name); } catch { }
+                res[i] = new NeoLocalVarRecord
+                {
+                    TypeRefIdx = vd.VariableType != null ? b.IndexTypeRef(vd.VariableType) : -1,
+                    Name = string.IsNullOrEmpty(name) ? ("v" + vd.Index) : name,
+                };
+            }
+            return res;
         }
 
         static KeyValuePair<int, int[]>[] ToPairs(Dictionary<int, int[]> st)

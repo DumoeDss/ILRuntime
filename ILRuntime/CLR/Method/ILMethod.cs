@@ -63,6 +63,34 @@ namespace ILRuntime.CLR.Method
         bool neoShellHasThis, neoShellIsCtor, neoShellIsStatic, neoShellIsVirtual;
         IType neoShellReturnType;
         List<IType> neoShellParameters;
+        // V4 (neo-debugger-aot-body): the LOCAL variable metadata deserialized
+        // from the .neo LocalVariables[] table (one entry per declared local).
+        // Populated by InitCodeBodyFromNeo (same closure that resolves catch
+        // types). Used by the Neo debugger frame read when Definition == null
+        // (a Cecil-free shell) -- the JIT path reads Definition.Body.Variables
+        // instead. null on the JIT/S1-Cecil-present path (the debugger falls
+        // back to Definition). Neo-only.
+        IType[] neoAotLocalTypes;
+        string[] neoAotLocalNames;
+        // True iff neoAotLocalTypes/Names were populated (an AOT body whose .neo
+        // carried LocalVariables[]). The debugger tests this to pick the source.
+        internal bool HasNeoAotLocalMeta { get { return neoAotLocalTypes != null; } }
+
+        // V4 (neo-debugger-aot-body): the debugger frame read calls these to get
+        // local i's resolved type + name when Definition == null (a Cecil-free
+        // shell). Bounds-safe; a null entry (an unresolved TypeRef) returns null
+        // for the type (rendered as "<unknown local type>" upstream, mirroring
+        // the JIT-path null-type guard). Neo-only.
+        internal IType GetNeoAotLocalType(int localIndex)
+        {
+            if (neoAotLocalTypes == null || (uint)localIndex >= (uint)neoAotLocalTypes.Length) return null;
+            return neoAotLocalTypes[localIndex];
+        }
+        internal string GetNeoAotLocalName(int localIndex)
+        {
+            if (neoAotLocalNames == null || (uint)localIndex >= (uint)neoAotLocalNames.Length) return null;
+            return neoAotLocalNames[localIndex];
+        }
 #endif
         bool isEventAdd, isEventRemove;
         int eventFieldIndex;
@@ -991,9 +1019,51 @@ namespace ILRuntime.CLR.Method
             bodyRegister     = rec.NeoExecuteBody;
             stackRegisterCnt = rec.StackRegisterCount;
             jumptablesR      = compiledFrame.SwitchTargets;
-            // OQ1: ExecuteNeo reads frame layout from CompiledFrame.LocalInfos, not
-            // ILMethod.Variables; set localVarCnt from LocalInfos.Length for consistency.
-            localVarCnt      = rec.LocalInfos != null ? rec.LocalInfos.Length : 0;
+            // V4 (neo-debugger-aot-body): localVarCnt is the DECLARED-LOCAL count
+            // (Body.Variables.Count), NOT LocalInfos.Length (which also holds params
+            // + temp stack registers). The prior `= LocalInfos.Length` over-counted
+            // (e.g. an instance method with 2 locals + 1 throw stack reg + `this`
+            // param -> LocalInfos.Length=4 but only 2 locals), which made the Neo
+            // debugger frame read over-iterate (harmless -- the extra iterations
+            // threw + were swallowed -- but a latent bug). The authoritative source
+            // is now rec.LocalVariables.Length (one entry per declared local). When
+            // LocalVariables is absent (a pre-V4 record -- rejected by the Version
+            // guard), fall back to the Cecil-derived count via the layout identity
+            // LocalInfos.Length - paramCount - stackRegisterCount.
+            int declaredLocalCount;
+            if (rec.LocalVariables != null)
+                declaredLocalCount = rec.LocalVariables.Length;
+            else
+            {
+                int pCnt = (HasThis ? 1 : 0) + ParameterCount;
+                int liLen = rec.LocalInfos != null ? rec.LocalInfos.Length : 0;
+                declaredLocalCount = liLen - pCnt - rec.StackRegisterCount;
+                if (declaredLocalCount < 0) declaredLocalCount = 0;
+            }
+            localVarCnt = declaredLocalCount;
+            // V4 (neo-debugger-aot-body): resolve each local's declared TYPE (the
+            // .neo LocalVariables[i].TypeRefIdx -> runtime IType, via the SAME
+            // closure the catch-type resolver uses) + carry its NAME. This is what
+            // the Neo debugger frame read uses for an AOT body's locals on BOTH the
+            // S1 path (same-AppDomain Attach) AND the S3-2 Cecil-free shell path
+            // (Definition == null). The debugger tests HasNeoAotLocalMeta (true for
+            // every AOT body whose .neo carried LocalVariables[]) and reads the
+            // resolved type/name from here; the JIT path (no .neo) reads Cecil
+            // Definition.Body.Variables instead. A TypeRef that does not resolve ->
+            // null (rendered as "<unknown local type>" upstream); a generic-
+            // parameter local's TypeRef resolves via the loader's name-keyed path
+            // (non-generic methods never hit this).
+            if (rec.LocalVariables != null && rec.LocalVariables.Length > 0)
+            {
+                neoAotLocalTypes = new IType[rec.LocalVariables.Length];
+                neoAotLocalNames = new string[rec.LocalVariables.Length];
+                for (int i = 0; i < rec.LocalVariables.Length; i++)
+                {
+                    var lv = rec.LocalVariables[i];
+                    neoAotLocalTypes[i] = lv.TypeRefIdx >= 0 ? resolveCatchType(lv.TypeRefIdx) : null;
+                    neoAotLocalNames[i] = lv.Name;
+                }
+            }
             // OQ2: registerSymbols stays null -- ExecuteNeo does not read symbols and
             // the Cecil-keyed symbol map is not serialized (debugger-on-AOT deferred).
 

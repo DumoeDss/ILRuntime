@@ -192,7 +192,27 @@ namespace ILRuntime.Runtime.NeoAOT
             md.SwitchTargets = ReadSwitchTargetPairs(br);
             md.NeoCallParams = ReadNeoCallParamMaps(br);
             md.ExceptionHandlers = ReadNeoExceptionHandlers(br);
+            md.LocalVariables = ReadNeoLocalVars(br);   // V4 (neo-debugger-aot-body)
             return md;
+        }
+
+        // V4 (neo-debugger-aot-body): read the per-local metadata array. One
+        // entry per declared local (varCnt). Empty array for a method with no
+        // locals (the writer always writes a count; never -1 here).
+        public static NeoLocalVarRecord[] ReadNeoLocalVars(BinaryReader br)
+        {
+            int n = br.ReadInt32();
+            if (n <= 0) return new NeoLocalVarRecord[0];
+            var arr = new NeoLocalVarRecord[n];
+            for (int i = 0; i < n; i++)
+            {
+                arr[i] = new NeoLocalVarRecord
+                {
+                    TypeRefIdx = br.ReadInt32(),
+                    Name = br.ReadString(),
+                };
+            }
+            return arr;
         }
 
         // ===== FieldLayout / InterfaceEntry =====

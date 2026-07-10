@@ -217,6 +217,16 @@ namespace ILRuntime.Runtime.Debugger
                 var m = topFrame.Method;
                 if (!m.HasThis)
                     return "null";
+                // neo-debugger-aot-body: a Cecil-free AOT shell (def == null, the
+                // S3-2 LoadNeoAssembly path) has NO TypeDefinition -> the IL field
+                // enumeration below (nInstance.Type.TypeDefinition.Fields) would
+                // NRE. THIS inspection is out of scope for this child (the local-
+                // variable inspection is the core); short-circuit to a placeholder
+                // so the ctor's try/catch (ILRuntimeException.cs:34-45) does NOT
+                // swallow the whole block (which would also skip GetLocalVariableInfo
+                // -- the core). AOT-body THIS-inspection is a follow-on child.
+                if (m is CLR.Method.ILMethod ilmThis && ilmThis.Definition == null)
+                    return "<this: Cecil-free AOT body (inspection deferred)>";
                 byte* frameBase = (byte*)topFrame.LocalVarPointer;
                 ref readonly var nf = ref m.CompiledFrame;
                 AutoList mStack = intepreter.Stack.ManagedStack;
@@ -352,20 +362,45 @@ namespace ILRuntime.Runtime.Debugger
                 // is the Cecil count (EXCLUDES this), so add the this slot here.
                 int paramCnt = m.ParameterCount + (m.HasThis ? 1 : 0);
                 var domain = intepreter.AppDomain;
+                // neo-debugger-aot-body (V4): the local's type/name source. The
+                // JIT path + the S1 same-AppDomain Attach path have a Cecil
+                // Definition.Body.Variables (authoritative). A Cecil-free AOT
+                // shell (def == null, the S3-2 LoadNeoAssembly path) has NO
+                // Definition -> use the .neo-deserialized local meta
+                // (m.HasNeoAotLocalMeta: the V4 LocalVariables[] table resolved
+                // to runtime ITypes + names at InitCodeBodyFromNeo). The slot
+                // LAYOUT (offsets/sizes) is the SAME LocalInfos[paramCnt+i] in
+                // both cases (the frame model is Cecil-independent).
+                bool useAotMeta = m.HasNeoAotLocalMeta;
                 for (int i = 0; i < m.LocalVariableCount; i++)
                 {
                     try
                     {
-                        var lv = m.Definition.Body.Variables[i];
-                        CLR.TypeSystem.IType lt = ResolveLocalType(m, lv, domain);
+                        CLR.TypeSystem.IType lt;
+                        string name;
+                        string typeName;
+                        if (useAotMeta)
+                        {
+                            // Cecil-free shell: type/name from the .neo table.
+                            lt = m.GetNeoAotLocalType(i);
+                            name = m.GetNeoAotLocalName(i);
+                            if (string.IsNullOrEmpty(name)) name = "v" + i;
+                            typeName = lt != null ? lt.Name : "<unknown local type>";
+                        }
+                        else
+                        {
+                            // Cecil-present (JIT or S1 Attach): type/name from Cecil.
+                            var lv = m.Definition.Body.Variables[i];
+                            lt = ResolveLocalType(m, lv, domain);
+                            string vName = null;
+                            m.Definition.DebugInformation.TryGetName(lv, out vName);
+                            name = string.IsNullOrEmpty(vName) ? "v" + lv.Index : vName;
+                            typeName = lt != null ? lt.Name : lv.VariableType.Name;
+                        }
                         var slot = nf.LocalInfos[paramCnt + i];
                         var v = ReadNeoLocalValue(frameBase, mStack, frameRefBase, slot, lt, domain);
                         if (v == null)
                             v = "null";
-                        string vName = null;
-                        m.Definition.DebugInformation.TryGetName(lv, out vName);
-                        string name = string.IsNullOrEmpty(vName) ? "v" + lv.Index : vName;
-                        string typeName = lt != null ? lt.Name : lv.VariableType.Name;
                         sb.AppendFormat("{0} {1} = {2}", typeName, name, v);
                         if ((i % 3 == 0 && i != 0) || i == m.LocalVariableCount - 1)
                             sb.AppendLine();
