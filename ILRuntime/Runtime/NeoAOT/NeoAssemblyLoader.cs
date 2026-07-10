@@ -122,12 +122,41 @@ namespace ILRuntime.Runtime.NeoAOT
                         continue;
                     }
                     int wantParam = mref.Parameters != null ? mref.Parameters.Length : 0;
-                    var def = MatchGenericDefinition(iltype, mref.Name, wantParam);
+                    // V5 (neo-aot-generic-cecilfree): a Cecil-free generic-def SHELL
+                    // cannot report GenericParameterCount > 0 (the .neo-stamped names
+                    // are not yet on the shell), so the Cecil-present
+                    // MatchGenericDefinition (which requires GenericParameterCount > 0)
+                    // never matches. The Cecil-free matcher matches by name +
+                    // param-count + !IsGenericInstance, THEN stamps the .neo
+                    // GenericParamNames onto the shell (so GenericParameterCount > 0
+                    // for the rest of the engine).
+                    var def = MatchGenericDefinitionCecilFree(iltype, mref.Name, wantParam);
                     if (def == null)
                     {
-                        report.Skipped.Add(("generic def not matched", typeFullName + "." + (mref.Name ?? "?")));
-                        continue;
+                        // The generic DEFINITION shell is NOT created at Cecil-free
+                        // type build (the .neo MethodDefs table carries NON-generic
+                        // methods only by the Step-24 partition; generic defs live
+                        // ONLY in the TemplateTable). The template's MethodRef IS the
+                        // open def's ref -- build the def shell from it + register it
+                        // on the type so the S2 bind + runtime generic dispatch find it.
+                        def = BuildAndRegisterGenericDefShell(iltype, mref, wantParam);
+                        if (def == null)
+                        {
+                            report.Skipped.Add(("generic def not matched", typeFullName + "." + (mref.Name ?? "?")));
+                            continue;
+                        }
                     }
+                    // Stamp the .neo generic-param names onto the shell BEFORE the
+                    // VariableType re-resolution (ResolveVariableType reads them).
+                    var gpn = trec.GenericParamNames;
+                    def.SetNeoShellGenericParamNames(gpn != null && gpn.Length > 0 ? gpn : null);
+                    // V5: set the open def's return type from the template's
+                    // ReturnTypeRefIdx (a generic-param return -> ILGenericParameterType
+                    // so the instance's MakeGenericMethodShell substitutes the concrete
+                    // arg; a fixed return -> the resolved CLR/IL type). The MethodRef
+                    // omits the return type; the .neo V5 template carries it.
+                    var retType = ResolveReturnTypeFromTemplate(appdomain, model, trec, def);
+                    if (retType != null) def.SetNeoShellReturnType(retType);
                     // The VariableTypes re-resolution closure (TypeRef idx -> Cecil
                     // TypeReference, same-AppDomain). A generic-parameter name maps to
                     // definition.Definition.GenericParameters[k]; an IL type to
@@ -211,7 +240,127 @@ namespace ILRuntime.Runtime.NeoAOT
             return hit;
         }
 
-        // Step 25 S2: re-resolve a VariableTypeRefIdx (-> TypeRef table) to a Cecil
+        // V5 (neo-aot-generic-cecilfree): match the OPEN generic-method
+        // DEFINITION by name + parameter count + !IsGenericInstance on a Cecil-
+        // free shell. Unlike MatchGenericDefinition, this does NOT filter on
+        // GenericParameterCount > 0 -- a Cecil-free generic-def shell cannot report
+        // its arity until the .neo GenericParamNames are stamped (which the S2
+        // caller does AFTER this match). A collision (2+ matches) -> null -> skip
+        // (the additive contract). This is the Cecil-free twin of MatchGenericDefinition.
+        static ILMethod MatchGenericDefinitionCecilFree(ILType iltype, string name, int paramCount)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            if (iltype.GetMethods() == null) return null;
+            ILMethod hit = null;
+            foreach (var m in iltype.GetMethods())
+            {
+                var ilm = m as ILMethod;
+                if (ilm == null) continue;
+                if (ilm.IsGenericInstance) continue;          // instance, not the def
+                if (ilm.Name != name) continue;
+                if (ilm.ParameterCount != paramCount) continue;
+                // A Cecil-free OWN declared method that is NOT a generic def has
+                // already been bound by the S1 Attach flow (an AOT body); skip it
+                // (it is not a template target). The discrimiator: isNeoAotBody
+                // (S1 bound a non-generic method body) vs a generic-def shell (no
+                // AOT body -- S1 skips generic defs).
+                if (ilm.IsNeoAotBodyBound) continue;
+                if (hit != null) return null;                  // collision -> skip
+                hit = ilm;
+            }
+            return hit;
+        }
+
+        // V5 (neo-aot-generic-cecilfree): build a Cecil-free generic-DEFINITION
+        // shell from a .neo template's open-def MethodRef + register it on the
+        // type. A generic def is absent from MethodDefs (Step-24 partition ->
+        // generic defs live ONLY in the TemplateTable), so the Cecil-free type
+        // build never created a shell for it. The shell's parameters are the
+        // open def's params (a generic-param arg "T" -> an ILGenericParameterType
+        // named "T"; a concrete type resolves by name). The return type is void
+        // here (the MethodRef omits it; the instance's RunNeoBackHalf resolves the
+        // concrete return via FindGenericArgument on the concrete arg). The caller
+        // stamps GenericParamNames AFTER. Neo-only.
+        static ILMethod BuildAndRegisterGenericDefShell(ILType iltype,
+            ILRuntime.Hybrid.MethodReferencePatchInfo mref, int wantParam)
+        {
+            if (mref == null || string.IsNullOrEmpty(mref.Name)) return null;
+            var domain = iltype.AppDomain;
+            int pc = mref.Parameters != null ? mref.Parameters.Length : 0;
+            var parameters = new List<IType>(pc);
+            for (int i = 0; i < pc; i++)
+            {
+                var pi = mref.Parameters[i];
+                string pname = pi != null ? pi.Name : null;
+                parameters.Add(ResolveGenericDefParamType(domain, pname));
+            }
+            var shell = ILMethod.CreateFromNeoShell(mref.Name, iltype, domain, parameters,
+                domain.VoidType, false, mref.IsStatic);
+            iltype.AddNeoAotShell(mref.Name, shell);
+            return shell;
+        }
+
+        // V5: resolve a generic-DEFINITION parameter type by name. A generic-param
+        // name (e.g. "T") -> an ILGenericParameterType (so MakeGenericMethodShell's
+        // SubstituteGenericParam can swap the concrete arg). A concrete type ->
+        // LoadedTypes / GetType. null name -> null (the caller tolerates it).
+        static IType ResolveGenericDefParamType(ILRuntime.Runtime.Enviorment.AppDomain domain, string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            IType it;
+            if (domain.LoadedTypes.TryGetValue(name, out it) && it != null) return it;
+            try
+            {
+                var resolved = domain.GetType(name);
+                if (resolved != null) return resolved;
+            }
+            catch { }
+            // A name that is NOT a loaded type is a generic-parameter name -> an
+            // ILGenericParameterType (the open def's param). MakeGenericMethodShell
+            // substitutes it with the concrete arg.
+            return new CLR.TypeSystem.ILGenericParameterType(name);
+        }
+
+        // V5 (neo-aot-generic-cecilfree): the synthetic GenericParameter owner.
+        // A Cecil-free AppDomain has no Cecil ModuleDefinition/MethodDefinition to
+        // own a GenericParameter, but GenericParameter's ctor requires a non-null
+        // IGenericParameterProvider. This tiny owner satisfies the contract (the
+        // GenericParameter is only ever read for Name + IsGenericParameter by the
+        // Cecil-free generic path). One shared owner instance backs all synthetic
+        // params (the Name distinguishes them). Neo-only.
+        sealed class NeoSyntheticGenericParamOwner
+            : ILRuntime.Mono.Cecil.IGenericParameterProvider
+        {
+            public bool HasGenericParameters { get { return false; } }
+            public bool IsDefinition { get { return false; } }
+            public ILRuntime.Mono.Cecil.ModuleDefinition Module { get { return null; } }
+            public Mono.Collections.Generic.Collection<ILRuntime.Mono.Cecil.GenericParameter> GenericParameters
+                { get { throw new NotSupportedException(); } }
+            public ILRuntime.Mono.Cecil.GenericParameterType GenericParameterType
+                { get { return ILRuntime.Mono.Cecil.GenericParameterType.Method; } }
+            public ILRuntime.Mono.Cecil.MetadataToken MetadataToken { get; set; }
+        }
+
+        // V5: one shared owner (the GenericParameters getter is never called).
+        static readonly NeoSyntheticGenericParamOwner s_syntheticGpOwner = new NeoSyntheticGenericParamOwner();
+        // V5: cache Name -> synthetic GenericParameter. The same logical generic
+        // param "T" must resolve to a STABLE Cecil object across the S2 bind +
+        // the runtime back-half, or mapTypeToken.GetHashCode()-keyed lookups (which
+        // use the GenericParameter's identity hash) would miss. One per name.
+        static readonly System.Collections.Generic.Dictionary<string, ILRuntime.Mono.Cecil.GenericParameter> s_syntheticGps
+            = new System.Collections.Generic.Dictionary<string, ILRuntime.Mono.Cecil.GenericParameter>();
+
+        static ILRuntime.Mono.Cecil.GenericParameter AcquireSyntheticGenericParam(string name)
+        {
+            ILRuntime.Mono.Cecil.GenericParameter gp;
+            if (!s_syntheticGps.TryGetValue(name, out gp))
+            {
+                gp = new ILRuntime.Mono.Cecil.GenericParameter(name, s_syntheticGpOwner);
+                s_syntheticGps[name] = gp;
+            }
+            return gp;
+        }
+
         // TypeReference in the SAME AppDomain. A generic-parameter name (e.g. "T")
         // maps to definition.Definition.GenericParameters[k]; an IL type to
         // iltype.TypeReference; a CLR type to module.ImportReference(TypeForCLR).
@@ -230,15 +379,35 @@ namespace ILRuntime.Runtime.NeoAOT
             //     the generic param's NAME; map it back to the Cecil GenericParameter
             //     on the live definition. BuildInitObjPrefix + GetTypeTokenHashCode
             //     resolve the concrete T via FindGenericArgument(name).
-            try
+            //     V5 (neo-aot-generic-cecilfree): a Cecil-free generic-def SHELL has
+            //     no Definition.GenericParameters; synthesize a Cecil GenericParameter
+            //     from the .neo-stamped names (a lightweight owner; no Cecil module
+            //     needed). The synthetic carries the NAME + IsGenericParameter=true,
+            //     which is all BuildInitObjPrefix / GetTypeTokenHashCode /
+            //     appdomain.GetType read.
+            var shellNames = definition.NeoShellGenericParamNames;
+            if (shellNames != null)
             {
-                var gps = definition.Definition.GenericParameters;
-                for (int i = 0; i < gps.Count; i++)
-                    if (gps[i].Name == fullName) return gps[i];
+                for (int i = 0; i < shellNames.Length; i++)
+                    if (shellNames[i] == fullName) return AcquireSyntheticGenericParam(fullName);
             }
-            catch { }
+            else
+            {
+                try
+                {
+                    var gps = definition.Definition.GenericParameters;
+                    for (int i = 0; i < gps.Count; i++)
+                        if (gps[i].Name == fullName) return gps[i];
+                }
+                catch { }
+            }
             // (b) Any loaded IType (IL via LoadedTypes; CLR via GetType). IL ->
-            //     ILType.TypeReference; CLR -> ImportReference(TypeForCLR).
+            //     ILType.TypeReference; CLR -> ImportReference(TypeForCLR) when a
+            //     Cecil module is present, ELSE a bare Cecil TypeReference whose
+            //     FullName resolves via appdomain.GetType (V5: a Cecil-free
+            //     AppDomain B has NO Cecil module -- ImportReference is unavailable;
+            //     the bare ref carries only Name + namespace + IsGenericParameter=
+            //     false, which is all BuildInitObjPrefix / appdomain.GetType read).
             IType it = null;
             if (!appdomain.LoadedTypes.TryGetValue(fullName, out it) || it == null)
             {
@@ -250,10 +419,52 @@ namespace ILRuntime.Runtime.NeoAOT
             {
                 var module = appdomain.LoadedModules != null && appdomain.LoadedModules.Count > 0
                     ? appdomain.LoadedModules[0] : null;
-                if (module == null) return null;
-                try { return module.ImportReference(clr.TypeForCLR); } catch { return null; }
+                if (module != null)
+                {
+                    try { return module.ImportReference(clr.TypeForCLR); } catch { }
+                }
+                // V5 Cecil-free fallback: a bare Cecil TypeReference (no module).
+                // appdomain.GetType(token) reads _ref.FullName + _ref.Scope(null)
+                // -> resolves by name via mapType / GetType(string). The ref is
+                // IsGenericParameter=false (a plain TypeReference), so it is never
+                // mistaken for a method generic param.
+                return BuildBareCecilTypeReference(fullName);
             }
             return null;
+        }
+
+        // V5: a bare Cecil TypeReference for a CLR type in a Cecil-free AppDomain.
+        // Split the FullName into namespace + name (last '.' is the separator; a
+        // name with no '.' is all name). No module/scope -- appdomain.GetType
+        // resolves it by FullName. Neo-only.
+        static ILRuntime.Mono.Cecil.TypeReference BuildBareCecilTypeReference(string fullName)
+        {
+            int dot = fullName.LastIndexOf('.');
+            if (dot < 0) return new ILRuntime.Mono.Cecil.TypeReference(string.Empty, fullName, null, null);
+            return new ILRuntime.Mono.Cecil.TypeReference(fullName.Substring(0, dot), fullName.Substring(dot + 1), null, null);
+        }
+
+        // V5: resolve the open generic def's RETURN type from the .neo template's
+        // ReturnTypeRefIdx. A generic-param name (e.g. "T") -> an
+        // ILGenericParameterType (so MakeGenericMethodShell's SubstituteGenericParam
+        // swaps the concrete arg). A concrete type -> LoadedTypes / GetType. null /
+        // void on a miss. Neo-only.
+        static IType ResolveReturnTypeFromTemplate(ILRuntime.Runtime.Enviorment.AppDomain appdomain,
+            NeoAssemblyModel model, NeoTemplateRecord trec, ILMethod definition)
+        {
+            if (trec.ReturnTypeRefIdx < 0 || trec.ReturnTypeRefIdx >= model.TypeRefs.Length) return null;
+            var tr = model.TypeRefs[trec.ReturnTypeRefIdx];
+            string name = tr != null ? tr.Name : null;
+            if (string.IsNullOrEmpty(name)) return null;
+            var shellNames = definition.NeoShellGenericParamNames;
+            if (shellNames != null)
+            {
+                for (int i = 0; i < shellNames.Length; i++)
+                    if (shellNames[i] == name) return new CLR.TypeSystem.ILGenericParameterType(name);
+            }
+            IType it;
+            if (appdomain.LoadedTypes.TryGetValue(name, out it) && it != null) return it;
+            try { return appdomain.GetType(name); } catch { return null; }
         }
 
         // Resolve a TypeRef index to the runtime IType. Used for EH catch-type

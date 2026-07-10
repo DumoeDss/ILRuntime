@@ -326,7 +326,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             else
                             {
                                 var freshInst = constDef.MakeGenericMethod(new IType[] { stringT }) as ILMethod;
-                                try { r = domainB2.Invoke(freshInst, null); }
+                                // ConstGeneric<T> is an INSTANCE method (HasThis); the
+                                // fresh generic-instance needs a `this`. Instantiate the
+                                // Cecil-free probe type + pass it as the instance arg.
+                                object probeInstance = null;
+                                try { probeInstance = domainB2.Instantiate(ProbeFullName); }
+                                catch { }
+                                try { r = domainB2.Invoke(freshInst, probeInstance); }
                                 catch (Exception ex) { r = new ThrownMarker(ex); }
                                 diff = ValueEqualsObj(r, MUTATED)
                                     ? null

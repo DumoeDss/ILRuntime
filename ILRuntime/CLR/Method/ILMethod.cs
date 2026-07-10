@@ -49,6 +49,10 @@ namespace ILRuntime.CLR.Method
         // InitCodeBodyFromNeo. The Cecil/JIT path is byte-identical when this is
         // false (the reference + the fallback). Neo-only.
         internal bool isNeoAotBody;
+        // V5 (neo-aot-generic-cecilfree): read accessor for the S2 Cecil-free
+        // generic-def matcher (a Cecil-free OWN method that S1 bound a non-generic
+        // body to is NOT a generic-def template target).
+        internal bool IsNeoAotBodyBound { get { return isNeoAotBody; } }
         // Step 25 S3-2 (Cecil-free load): true for an ILMethod built by
         // CreateFromNeoShell (no Cecil MethodDefinition). The Cecil-reading
         // properties (Name, HasThis, Parameters, ReturnType, SignatureString,
@@ -63,6 +67,11 @@ namespace ILRuntime.CLR.Method
         bool neoShellHasThis, neoShellIsCtor, neoShellIsStatic, neoShellIsVirtual;
         IType neoShellReturnType;
         List<IType> neoShellParameters;
+        // V5 (neo-aot-generic-cecilfree): a generic-method DEFINITION shell's
+        // generic-parameter names (e.g. ["T"]), stamped by the S2 template-bind
+        // loop from the .neo NeoTemplateRecord.GenericParamNames. A non-generic
+        // shell leaves this null (GenericParameterCount reads 0). Neo-only.
+        string[] neoShellGenericParamNames;
         // V4 (neo-debugger-aot-body): the LOCAL variable metadata deserialized
         // from the .neo LocalVariables[] table (one entry per declared local).
         // Populated by InitCodeBodyFromNeo (same closure that resolves catch
@@ -214,7 +223,12 @@ namespace ILRuntime.CLR.Method
                 if (IsGenericInstance)
                     return 0;
 #if ENABLE_NEO_MODE
-                if (isNeoAotShell) return 0;   // the capstone probe is non-generic; the shell carries no generic params
+                // V5 (neo-aot-generic-cecilfree): a Cecil-free generic-def shell
+                // reports its arity from the .neo-stamped names (a non-generic
+                // shell has null names -> 0). This is what the S2
+                // MatchGenericDefinition loop (GenericParameterCount > 0) + the
+                // generic dispatch read.
+                if (isNeoAotShell) return neoShellGenericParamNames != null ? neoShellGenericParamNames.Length : 0;
 #endif
                 return def.GenericParameters.Count;
             }
@@ -440,7 +454,11 @@ namespace ILRuntime.CLR.Method
                         return i.Value;
                 }
             }
-            if (res == null && def.HasGenericParameters)
+            if (res == null
+#if ENABLE_NEO_MODE
+                && !isNeoAotShell   // V5: a Cecil-free shell has no def.GenericParameters; the genericParameters dict (name->concrete) is the sole source
+#endif
+                && def.HasGenericParameters)
             {
                 bool found = false;
                 TypeReference pt = null;
@@ -828,6 +846,36 @@ namespace ILRuntime.CLR.Method
 
         internal void InitCodeBody(bool register)
         {
+#if ENABLE_NEO_MODE
+            // V5 (neo-aot-generic-cecilfree): a Cecil-free generic-INSTANCE shell
+            // (def == null, isNeoAotShell, IsGenericInstance) has no Cecil
+            // MethodDefinition.Body. Route it through the Step-22 template path
+            // (TryInstantiate -> CloneAndPatch -> RunNeoBackHalf) WITHOUT touching
+            // def. The instance's genericDefinition is the Cecil-free generic-def
+            // shell whose GenericMethodTemplateCache is the S2-bound .neo template.
+            // A miss (no cached template, or TryInstantiate returns false) is fatal
+            // here -- there is no JIT fallback for a shell (no Cecil body to JIT),
+            // so throw a descriptive NIE (a generic call reaching this point means
+            // the S2 bind skipped the template; the skip report records why).
+            if (isNeoAotShell && IsGenericInstance && genericDefinition != null)
+            {
+                var template = genericDefinition.GenericMethodTemplateCache;
+                if (template != null)
+                {
+                    var addr = new Dictionary<Mono.Cecil.Cil.Instruction, int>();
+                    if (Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.TryInstantiate(
+                            template, this, appdomain, declaringType, addr, ref compiledFrame))
+                    {
+                        bodyRegister = compiledFrame.CodeBody;
+                        stackRegisterCnt = compiledFrame.StackRegisterCount;
+                        jumptablesR = compiledFrame.SwitchTargets;
+                        registerSymbols = compiledFrame.Symbols;
+                        return;
+                    }
+                }
+                throw new NotImplementedException("Cecil-free generic instance has no cached template (S2 bind skipped): " + Name);
+            }
+#endif
             if (def.HasBody)
             {
                 localVarCnt = def.Body.Variables.Count;
@@ -1503,6 +1551,23 @@ namespace ILRuntime.CLR.Method
 
         public IMethod MakeGenericMethod(IType[] genericArguments)
         {
+#if ENABLE_NEO_MODE
+            // V5 (neo-aot-generic-cecilfree): the Cecil-free generic-def shell
+            // path. No Cecil MethodDefinition / MethodReference is available, so
+            // the Cecil ctor + GenericInstanceMethod arms below cannot run. Build
+            // a generic-INSTANCE shell directly: resolve each generic arg to its
+            // concrete name (from this def's .neo-stamped neoShellGenericParamNames),
+            // resolve the concrete parameter types (the open def's params are
+            // generic-param ILGenericParameterType; substitute the concrete arg),
+            // and set genericDefinition/genericArguments/genericParameters. The
+            // instance's BodyRegister getter then routes through the Step-22
+            // template path (TryInstantiate -> CloneAndPatch) -- it NEVER touches
+            // def (the instance is a shell, isNeoAotShell). Neo-only.
+            if (isNeoAotShell)
+            {
+                return MakeGenericMethodShell(genericArguments);
+            }
+#endif
             KeyValuePair<string, IType>[] genericParameters = new KeyValuePair<string, IType>[genericArguments.Length];
             for (int i = 0; i < genericArguments.Length; i++)
             {
@@ -1541,6 +1606,105 @@ namespace ILRuntime.CLR.Method
             return m;
         }
 
+#if ENABLE_NEO_MODE
+        // V5 (neo-aot-generic-cecilfree): the Cecil-free generic-instance shell
+        // constructor. Builds a generic-instance ILMethod (isNeoAotShell, no def)
+        // from a Cecil-free generic-DEFINITION shell + a concrete type-arg array.
+        // The instance carries:
+        //   - genericDefinition = this (the open def shell, whose
+        //     GenericMethodTemplateCache is the S2-bound .neo template),
+        //   - genericArguments = the concrete args,
+        //   - genericParameters = (name, concrete) pairs (name from this def's
+        //     neoShellGenericParamNames),
+        //   - neoShellParameters = the concrete parameter types (the open def's
+        //     params substituted with the concrete arg -- the back-half + the
+        //     Call arg-copy read the concrete param types),
+        //   - neoShellReturnType = the concrete return type (substituted).
+        // The instance's BodyRegister getter routes through TryInstantiate ->
+        // CloneAndPatch -> RunNeoBackHalf (which reads template.VariableTypes +
+        // the shell params, NEVER def). Neo-only.
+        ILMethod MakeGenericMethodShell(IType[] genericArguments)
+        {
+            int arity = neoShellGenericParamNames != null ? neoShellGenericParamNames.Length : 0;
+            var gps = new KeyValuePair<string, IType>[genericArguments.Length];
+            for (int i = 0; i < genericArguments.Length; i++)
+            {
+                string name = i < arity ? neoShellGenericParamNames[i] : ("T" + i);
+                gps[i] = new KeyValuePair<string, IType>(name, genericArguments[i]);
+            }
+            var m = new ILMethod();
+            m.isNeoAotShell = true;
+            m.appdomain = appdomain;
+            m.declaringType = declaringType;
+            m.neoShellName = neoShellName;
+            m.neoShellIsCtor = neoShellIsCtor;
+            m.neoShellIsStatic = neoShellIsStatic;
+            m.neoShellHasThis = neoShellHasThis;
+            m.neoShellIsVirtual = neoShellIsVirtual;
+            m.neoShellGenericParamNames = neoShellGenericParamNames;  // the instance reports the SAME arity (IsGenericInstance short-circuits GenericParameterCount to 0 anyway)
+            m.jitFlags = jitFlags;
+            m.jitImmediately = false;
+            m.jitOnDemand = false;
+            // Substitute the open def's generic-param params/return with the concrete arg.
+            var openParams = neoShellParameters ?? new List<IType>();
+            var subParams = new List<IType>(openParams.Count);
+            for (int i = 0; i < openParams.Count; i++)
+                subParams.Add(SubstituteGenericParam(openParams[i], gps));
+            m.neoShellParameters = subParams;
+            m.paramCnt = subParams.Count;
+            m.neoShellReturnType = SubstituteGenericParam(neoShellReturnType ?? appdomain.VoidType, gps);
+            m.genericParameters = gps;
+            m.genericArguments = genericArguments;
+            m.genericDefinition = this;
+            return m;
+        }
+
+        // V5: substitute a generic-parameter IType with its concrete binding from
+        // the (name, concrete) pairs. A non-generic-param type passes through. An
+        // ILGenericParameterType whose Name matches a pair is replaced by the pair's
+        // concrete type; arrays/byref of a generic param are rebuilt on the concrete
+        // element. Mirrors the Cecil-path generic-arg substitution semantics.
+        static IType SubstituteGenericParam(IType t, KeyValuePair<string, IType>[] gps)
+        {
+            if (t == null) return null;
+            if (t is ILGenericParameterType gpt)
+            {
+                for (int i = 0; i < gps.Length; i++)
+                    if (gps[i].Key == gpt.Name) return gps[i].Value;
+                return t;
+            }
+            if (t.IsArray && t.ElementType != null)
+            {
+                var et = SubstituteGenericParam(t.ElementType, gps);
+                return et != t.ElementType ? et.MakeArrayType(t.ArrayRank) : t;
+            }
+            if (t.IsByRef && t.ElementType != null)
+            {
+                var et = SubstituteGenericParam(t.ElementType, gps);
+                return et != t.ElementType ? et.MakeByRefType() : t;
+            }
+            return t;
+        }
+
+        // V5 (neo-aot-generic-cecilfree): stamp the .neo-stamped generic-param
+        // names onto a Cecil-free generic-def shell (called by the S2 bind loop
+        // BEFORE MatchGenericDefinition so GenericParameterCount > 0). Neo-only.
+        internal void SetNeoShellGenericParamNames(string[] names)
+        {
+            if (!isNeoAotShell) return;
+            neoShellGenericParamNames = names;
+        }
+        // V5 read accessor (the S2 VariableType re-resolution reads the names to
+        // synthesize a Cecil GenericParameter for a generic-param local on a shell).
+        internal string[] NeoShellGenericParamNames { get { return neoShellGenericParamNames; } }
+        // V5: set a Cecil-free generic-def shell's return type (from the .neo
+        // template's ReturnTypeRefIdx). Called by the S2 bind loop. Neo-only.
+        internal void SetNeoShellReturnType(IType retType)
+        {
+            if (!isNeoAotShell) return;
+            neoShellReturnType = retType ?? appdomain.VoidType;
+        }
+#endif
 #if ENABLE_NEO_MODE
         // Step 22: the cached template for THIS open generic definition (null until
         // the first capture-eligible concrete instantiation populates it). Not built

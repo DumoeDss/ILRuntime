@@ -1270,6 +1270,35 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             int idx = 0;
             if (method.HasThis)
                 registerTypes[idx++] = declaringType;
+#if ENABLE_NEO_MODE
+            // V5 (neo-aot-generic-cecilfree): a Cecil-free generic-instance shell
+            // (def == null) has no Cecil Parameters/Body.Variables. The concrete
+            // param types are on the shell (method.Parameters, already T-
+            // substituted at MakeGenericMethodShell); the open def's local types
+            // are on the cached template's VariableTypes (Cecil TypeReference[],
+            // re-resolved Cecil-free at S2 bind). Both flow through
+            // appdomain.GetType(token, declaringType, method), which resolves a
+            // generic-param TypeReference via the instance's FindGenericArgument
+            // (the concrete T). Never touches def.
+            TypeReference[] neoVarTypes = null;
+            if (def == null)
+            {
+                var mp = method.Parameters;
+                for (int i = 0; i < method.ParameterCount && idx < registerTypes.Length; i++, idx++)
+                {
+                    registerTypes[idx] = mp != null && i < mp.Count ? mp[i] : null;
+                }
+                neoVarTypes = GetTemplateVariableTypes();
+                int neoVarCnt = neoVarTypes != null ? neoVarTypes.Length : 0;
+                for (int i = 0; i < neoVarCnt; i++)
+                {
+                    int reg = locVarRegStart + i;
+                    if (reg < registerTypes.Length)
+                        registerTypes[reg] = appdomain.GetType(neoVarTypes[i], declaringType, method);
+                }
+                return registerTypes;
+            }
+#endif
             for (int i = 0; i < method.ParameterCount && idx < registerTypes.Length; i++, idx++)
             {
                 registerTypes[idx] = appdomain.GetType(def.Parameters[i].ParameterType, declaringType, method);
@@ -1282,6 +1311,38 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
             return registerTypes;
         }
+
+#if ENABLE_NEO_MODE
+        // V5 (neo-aot-generic-cecilfree): recover the cached Step-22 template's
+        // VariableTypes (the open def's local types, Cecil TypeReference[]) for a
+        // Cecil-free generic-instance shell. Null if the instance has no cached
+        // template (the caller guards def==null with a non-null template). Neo-only.
+        TypeReference[] GetTemplateVariableTypes()
+        {
+            var gd = method.GenericDefinition as ILMethod;
+            if (gd == null) return null;
+            var tpl = gd.GenericMethodTemplateCache;
+            return tpl != null ? tpl.VariableTypes : null;
+        }
+
+        // V5: the local count for a Cecil-free generic-instance shell = the cached
+        // template's VariableTypes length (the open def's declared-local count).
+        int GetLocalCount()
+        {
+            var vts = GetTemplateVariableTypes();
+            return vts != null ? vts.Length : 0;
+        }
+
+        // V5: local i's open-def Cecil type for a Cecil-free shell = the cached
+        // template's VariableTypes[i]. appdomain.GetType resolves it to the concrete
+        // T via the instance's FindGenericArgument. Bounds-safe (null -> the caller
+        // falls through; should not happen for a well-formed template).
+        TypeReference GetLocalType(int i)
+        {
+            var vts = GetTemplateVariableTypes();
+            return (vts != null && (uint)i < (uint)vts.Length) ? vts[i] : null;
+        }
+#endif
 
         static IType GetRegisterType(IType[] registerTypes, short reg)
         {
@@ -1696,8 +1757,22 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 
         void AllocateLocalStackSpaces(ref CompiledFrame frame)
         {
+#if ENABLE_NEO_MODE
+            // V5 (neo-aot-generic-cecilfree): a Cecil-free generic-instance shell
+            // (def == null) -- resolve varCnt + the per-local VariableType from the
+            // cached template's VariableTypes (Cecil TypeReference[] re-resolved
+            // Cecil-free at S2 bind), + the params from the shell's already-T-
+            // substituted Parameters. Never touches def.Body / def.Parameters.
+            // The shared body below reads types via the GetLocalCount/GetParamType/
+            // GetLocalType helpers, which branch on def==null.
+            Mono.Cecil.Cil.MethodBody body = def != null ? def.Body : null;
+            int varCnt = def != null ? body.Variables.Count : GetLocalCount();
+#else
             var body = def.Body;
             int varCnt = body.Variables.Count;
+#endif
+
+            // 1) Parameter slots
 
             // 1) Parameter slots
             int paramCnt = method.ParameterCount + (method.HasThis ? 1 : 0);
@@ -1734,8 +1809,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
             for (int i = 0; i < method.ParameterCount; i++)
             {
+#if ENABLE_NEO_MODE
+                var pt = def != null
+                    ? appdomain.GetType(def.Parameters[i].ParameterType, declaringType, method)
+                    : (method.Parameters != null && i < method.Parameters.Count ? method.Parameters[i] : null);
+#else
                 var pDef = def.Parameters[i];
                 var pt = appdomain.GetType(pDef.ParameterType, declaringType, method);
+#endif
                 StackSlotInfo slot = AllocateSlotForType(pt, ref offset, ref refOffset);
                 paramInfo[paramIdx++] = slot;
             }
@@ -1757,7 +1838,15 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
             for (int i = 0; i < varCnt; i++)
             {
+#if ENABLE_NEO_MODE
+                // V5: a Cecil-free shell reads the local's open-def type from the
+                // cached template's VariableTypes (a Cecil TypeReference, e.g. a
+                // GenericParameter "T"); appdomain.GetType resolves it to the
+                // concrete T via the instance's FindGenericArgument.
+                var vt = def != null ? body.Variables[i].VariableType : GetLocalType(i);
+#else
                 var vt = body.Variables[i].VariableType;
+#endif
                 StackSlotInfo slot = default;
                 if (vt.IsValueType && !vt.IsPrimitive)
                 {

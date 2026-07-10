@@ -319,6 +319,8 @@ namespace ILRuntime.Runtime.NeoAOT
             t.ConstrainedTypeRefIdxs = ReadIntArray(br);
             t.ConstrainedMethodRefIdxs = ReadIntArray(br);
             t.SwitchTargets = ReadSwitchTargetPairs(br);
+            t.GenericParamNames = ReadStringArray(br);   // V5
+            t.ReturnTypeRefIdx = br.ReadInt32();          // V5
             return t;
         }
 

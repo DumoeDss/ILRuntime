@@ -49,6 +49,27 @@ namespace ILRuntime.Runtime.NeoAOT
         // field path. Each type writes StaticFields[] (EMPTY for a type with no
         // static fields), so a V3 reader reads every V3 `.neo` cleanly.
         //
+        // neo-aot-generic-cecilfree: Version bumped 4 -> 5. V5 adds
+        // NeoTemplateRecord.GenericParamNames[] -- the open generic-method
+        // DEFINITION's generic-parameter NAMES (e.g. ["T"]). A Cecil-free
+        // AppDomain B loads a generic method's .neo template but has NO Cecil
+        // MethodDefinition for the open def (the MethodRef table stores only
+        // Name/DeclaringType/Parameters/IsStatic for a non-instance MethodRef),
+        // so the Cecil-free generic-def SHELL cannot report it is generic
+        // (GenericParameterCount) nor its param names -- which blocks the S2
+        // template bind (MatchGenericDefinition requires GenericParameterCount>0)
+        // + the VariableType re-resolution of a generic-param local (the local's
+        // type is the generic param NAME "T"). V5 carries the names so the loader
+        // stamps the shell + re-resolves "T" to a synthetic Cecil GenericParameter
+        // (no Cecil module needed in B). ADDITIVE + backward-incompatible only via
+        // the Version guard: the same-AppDomain S1/S2/S3 path IGNORES
+        // GenericParamNames[] (the live Cecil definition is authoritative); the
+        // Cecil-free loader reads it. Every template writes GenericParamNames[]
+        // (EMPTY for a non-generic method's template, which never happens by the
+        // Step-24 partition -- templates are generic defs only -- but the empty
+        // write keeps the reader uniform), so a V5 reader reads every V5 `.neo`
+        // cleanly.
+        //
         // neo-debugger-aot-body: Version bumped 3 -> 4. V4 adds the per-method
         // LOCAL variable metadata (NeoMethodDefRecord.LocalVariables[] -- one
         // NeoLocalVarRecord per declared local: TypeRefIdx + Name). A Cecil-free
@@ -63,7 +84,7 @@ namespace ILRuntime.Runtime.NeoAOT
         // reads every V4 `.neo` cleanly. (The PARKED neo-aot-generic-cecilfree
         // child originally planned the V4 bump for GenericParamNames -- it is
         // re-routed to neo-aot-generic-cecilfree-backhalf + will use V5.)
-        public const short Version = 4;
+        public const short Version = 5;
         public const byte EndiannessLittle = 1;
         // 7 indexed tables (the static-ctor InitializerTable is folded into the
         // TypeDefTable via StaticCtorMethodRefIdx -- see design.md D4/D6).
@@ -280,6 +301,24 @@ namespace ILRuntime.Runtime.NeoAOT
     {
         public int DefinitionMethodRefIdx;        // the open generic method def
         public OpCodeR[] TemplateBody;            // raw 24-byte OpCodeR[]
+        // V5 (neo-aot-generic-cecilfree): the open generic-method DEFINITION's
+        // generic-parameter NAMES (e.g. ["T"]). Sourced from
+        // tpl.Definition.Definition.GenericParameters[i].Name at serialize. A
+        // Cecil-free loader stamps the generic-def shell's
+        // neoShellGenericParamNames from this + uses it to re-resolve a
+        // generic-param local's type to a synthetic Cecil GenericParameter
+        // (VariableType re-resolution). EMPTY for a non-generic template (never
+        // the case by the Step-24 partition, but uniform). Same-AppDomain loads
+        // IGNORE it (the live Cecil definition is authoritative).
+        public string[] GenericParamNames;
+        // V5 (neo-aot-generic-cecilfree): the open generic-method DEFINITION's
+        // RETURN type (-> TypeRefTable). The MethodRef table omits the return
+        // type (HybridPatch's MethodReferencePatchInfo); a Cecil-free generic-def
+        // shell needs it so the generic-instance's RunNeoBackHalf return-slot
+        // sizing is correct (a generic-param return "T" -> the concrete arg; a
+        // fixed return e.g. int -> the int slot). -1 = void / unavailable.
+        // Same-AppDomain loads IGNORE it (the live Cecil definition is authoritative).
+        public int ReturnTypeRefIdx;
         public NeoPatchEntryRecord[] Patches;
         public short LocVarRegStart;
         public int TotalRegCnt;

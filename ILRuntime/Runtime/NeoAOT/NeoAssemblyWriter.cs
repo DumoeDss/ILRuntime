@@ -468,6 +468,11 @@ namespace ILRuntime.Runtime.NeoAOT
             WriteIntArray(bw, t.ConstrainedTypeRefIdxs);
             WriteIntArray(bw, t.ConstrainedMethodRefIdxs);
             WriteSwitchTargetPairs(bw, t.SwitchTargets);
+            // V5: the open def's generic-param names (null-tolerant; an absent
+            // field reads back as empty under V5). Sourced at BuildTemplate.
+            WriteStringArray(bw, t.GenericParamNames);
+            // V5: the open def's return type TypeRef index.
+            bw.Write(t.ReturnTypeRefIdx);
             // NOTE: Symbols / Addr (Cecil-Instruction-keyed; not serializable) and
             // RefBody / RefBodyAddr (runtime cache, rebuilt by Step 25's loader)
             // are intentionally NOT serialized here. See D5.
@@ -1185,7 +1190,38 @@ namespace ILRuntime.Runtime.NeoAOT
             rec.ConstrainedTypeRefIdxs = IndexTypeRefs(tpl.ConstrainedTypeTokens, b);
             rec.ConstrainedMethodRefIdxs = IndexMethodRefs(tpl.ConstrainedMethodTokens, b);
             rec.SwitchTargets = ToPairs(tpl.SwitchTargets);
+            // V5: capture the open generic def's generic-param names so a
+            // Cecil-free loader can stamp the generic-def shell + re-resolve a
+            // generic-param local's type. tpl.Definition is the live Cecil-loaded
+            // open def (this runs in the COMPILING AppDomain A).
+            rec.GenericParamNames = BuildGenericParamNames(tpl.Definition);
+            // V5: the open def's return type (a generic-param return "T" indexes the
+            // Cecil GenericParameter; a fixed return indexes the CLR/IL TypeRef). A
+            // Cecil-free loader resolves it to set the generic-instance's return.
+            var retType = tpl.Definition != null ? tpl.Definition.ReturnType : null;
+            rec.ReturnTypeRefIdx = retType != null
+                ? b.IndexTypeRef(ResolveReturnTypeCecilRef(retType, module), retType)
+                : -1;
             return rec;
+        }
+
+        // V5: the open generic def's generic-param names (empty for a non-generic
+        // def; but a template's Definition is always a generic def by the Step-24
+        // partition). Runs in the COMPILING AppDomain A (Cecil is present), so the
+        // live Cecil MethodDefinition is authoritative.
+        static string[] BuildGenericParamNames(ILMethod definition)
+        {
+            try
+            {
+                var gps = definition != null && definition.Definition != null
+                    ? definition.Definition.GenericParameters
+                    : null;
+                if (gps == null || gps.Count == 0) return Array.Empty<string>();
+                var res = new string[gps.Count];
+                for (int i = 0; i < gps.Count; i++) res[i] = gps[i].Name;
+                return res;
+            }
+            catch { return Array.Empty<string>(); }
         }
 
         static NeoPatchEntryRecord[] BuildPatches(PatchEntry[] patches, NeoRefTableBuilder b)
