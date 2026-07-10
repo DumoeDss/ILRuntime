@@ -139,19 +139,26 @@ namespace ILRuntime.Runtime.Enviorment
         private static ValueTaskAccessorState? _currentValueTaskState;
 
         // Recoverable observable state of a ValueTask<T> return, stashed at get_Task
-        // and consumed by the instance accessors. Exactly one of {BridgeTask,
-        // SyncResult} is the authoritative source:
-        //   - BridgeTask != null: the ValueTask wraps a Task<T>. Used for BOTH the
-        //     suspend case (ctx.GetTaskBridge() -- possibly incomplete) AND the
-        //     sync-faulted case (Task.FromException(ex) from SetException). The
-        //     accessor delegates IsCompleted/IsFaulted/Result to this Task (Task<T>.
-        //     Result rethrows on a faulted Task -- matches ValueTask<T>.Result).
-        //   - SyncResult != null (and BridgeTask == null): the sync-SUCCESS case;
-        //     the ValueTask was built from a result. IsCompleted=true, IsFaulted=
-        //     false, Result=SyncResult.
-        //   - both null: the defensive default (completed default T).
+        // and consumed by the instance accessors. The authoritative source is
+        // determined by which branch stashed (checked by the accessor in priority
+        // order: IValueTaskSource > BridgeTask > SyncResult):
+        //   - IValueTaskSource != null (ZERO-ALLOC suspend, neo-async-valuetask-
+        //     zeroalloc): the ValueTask<T> is backed by the IValueTaskSource<T>
+        //     (the ILAsyncContext<T> itself). The accessor reads IsCompleted/
+        //     IsFaulted/Result via GetStatus(token)/GetResult(token) -- NO
+        //     Task<T>/TCS bridge exists (the path is allocation-free on suspend).
+        //   - BridgeTask != null: the ValueTask wraps a Task<T>. Used for the
+        //     sync-faulted case (Task.FromException(ex) from SetException) AND the
+        //     Task-backed AsyncTaskMethodBuilder suspend fallback. The accessor
+        //     delegates IsCompleted/IsFaulted/Result to this Task (Task<T>.Result
+        //     rethrows on a faulted Task -- matches ValueTask<T>.Result).
+        //   - SyncResult != null: the sync-SUCCESS case; the ValueTask was built
+        //     from a result. IsCompleted=true, IsFaulted=false, Result=SyncResult.
+        //   - all null: the defensive default (completed default T).
         private struct ValueTaskAccessorState
         {
+            public object IValueTaskSource; // the ILAsyncContext<T> (IValueTaskSource<T>); null unless zero-alloc suspend
+            public short IValueTaskSourceToken; // the token the ValueTask<T>(IValueTaskSource<T>, token) ctor captured
             public Task BridgeTask;
             public object SyncResult;
         }
@@ -535,12 +542,33 @@ namespace ILRuntime.Runtime.Enviorment
             }
             else if (sm != null && SmContextMap.TryGetValue(sm, out IAsyncContextSink ctx))
             {
-                // SUSPEND: wrap the bridge Task<T> as a ValueTask<T>. The caller
-                // observes an incomplete ValueTask<T> that completes when the
-                // resumed SM's SetResult routes to the TCS bridge.
-                Task bridgeTask = ctx.GetTaskBridge() as Task;
-                vt = WrapBridgeAsValueTask(method, bridgeTask);
-                accessorState.BridgeTask = bridgeTask; // accessor delegates IsCompleted/IsFaulted/Result to the bridge
+                // SUSPEND (ZERO-ALLOC, neo-async-valuetask-zeroalloc): return a
+                // ValueTask<T> backed DIRECTLY by the parked context's
+                // IValueTaskSource<T> (the ILAsyncContext<T> itself), via the public
+                // ValueTask<T>(IValueTaskSource<T>, short) ctor. NO Task<T> /
+                // TaskCompletionSource<T> bridge is allocated (the prior path called
+                // ctx.GetTaskBridge() which eagerly created a TCS + its Task<T>).
+                // The resumed SM's SetResult routes to ctx.CompleteResult, which
+                // completes the IValueTaskSource core -- the accessor observes the
+                // completion via GetStatus(token)/GetResult(token).
+                //
+                // The token is core.Version at THIS get_Task call (the IValueTask-
+                // Source<T> contract: the ctor captures the token; GetStatus/
+                // GetResult must present the SAME token). Stash the source + token
+                // for the accessor (which runs in the CALLER's frame).
+                bool isZeroAlloc;
+                vt = BuildZeroAllocValueTask(method, ctx, out short token, out isZeroAlloc);
+                if (isZeroAlloc)
+                {
+                    accessorState.IValueTaskSource = ctx; // IValueTaskSource<T>
+                    accessorState.IValueTaskSourceToken = token;
+                }
+                else
+                {
+                    // Fallback (ctor unexpectedly absent): the ValueTask is bridge-
+                    // backed; the accessor reads the BridgeTask.
+                    accessorState.BridgeTask = ctx.GetTaskBridge() as Task;
+                }
             }
             else
             {
@@ -566,6 +594,41 @@ namespace ILRuntime.Runtime.Enviorment
             // faulted Task<T> yields a faulted ValueTask<T>; an incomplete Task<T>
             // yields an incomplete ValueTask<T> that completes with the Task.
             return Activator.CreateInstance(vtClosed, bridgeTask);
+        }
+
+        // ZERO-ALLOC suspend path (neo-async-valuetask-zeroalloc): build a
+        // ValueTask<T> backed DIRECTLY by the parked context's IValueTaskSource<T>
+        // (the ILAsyncContext<T> itself) via the public ValueTask<T>(IValueTask-
+        // Source<T>, short) ctor. Unlike WrapBridgeAsValueTask, this allocates NO
+        // Task<T>/TaskCompletionSource<T> -- the ValueTask<T> reads the context's
+        // ManualResetValueTaskSourceCore<T> (a struct field). The token
+        // (core.Version) is fetched via the non-generic IAsyncContextSink.
+        // GetSourceToken() and returned to the caller so the accessor can read
+        // status/result with the matching token.
+        private static object BuildZeroAllocValueTask(CLRMethod method, IAsyncContextSink ctx,
+            out short token, out bool isZeroAlloc)
+        {
+            Type t = GetResultClrType(method);
+            if (t == null) t = typeof(int);
+            token = ctx.GetSourceToken();
+            Type vtClosed = typeof(ValueTask<>).MakeGenericType(t);
+            Type ivtsClosed = typeof(System.Threading.Tasks.Sources.IValueTaskSource<>).MakeGenericType(t);
+            // ValueTask<T>(IValueTaskSource<T> source, short token) ctor.
+            ConstructorInfo ctor = vtClosed.GetConstructor(new[] { ivtsClosed, typeof(short) });
+            if (ctor == null)
+            {
+                // Fallback (defensive; the ctor exists on netstandard2.0+ /
+                // netcoreapp3.0+ -- the ILAsyncContext<T> already implements
+                // IValueTaskSource<T> against this same TFM). Fall back to the
+                // TCS bridge to preserve correctness if the ctor is unexpectedly
+                // absent (re-introduces the allocation, but does not break
+                // suspend+resume). The caller reads the BridgeTask via the accessor.
+                isZeroAlloc = false;
+                Task bridge = ctx.GetTaskBridge() as Task;
+                return WrapBridgeAsValueTask(method, bridge);
+            }
+            isZeroAlloc = true;
+            return ctor.Invoke(new object[] { ctx, token });
         }
 
         public static void AsyncValueTaskMethodBuilder_Create_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
@@ -1028,41 +1091,60 @@ namespace ILRuntime.Runtime.Enviorment
         // the struct bytes.
         // ================================================================
 
-        // ValueTask<T>.get_IsCompleted -- bridge != null ? bridge.IsCompleted : true.
+        // ValueTask<T>.get_IsCompleted. Priority: IValueTaskSource (zero-alloc
+        // suspend) > BridgeTask (sync-faulted / Task fallback) > true (sync-success
+        // / defensive default).
         public static void ValueTask_T_GetIsCompleted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
             bool isCompleted = true; // sync-success / defensive default
             var st = _currentValueTaskState;
-            if (st.HasValue && st.Value.BridgeTask != null)
-                isCompleted = st.Value.BridgeTask.IsCompleted;
+            if (st.HasValue)
+            {
+                if (st.Value.IValueTaskSource is IAsyncContextSink src)
+                    isCompleted = src.GetSourceIsCompleted(st.Value.IValueTaskSourceToken);
+                else if (st.Value.BridgeTask != null)
+                    isCompleted = st.Value.BridgeTask.IsCompleted;
+            }
             // Zero-extend to the full 8-byte dest slot (same hardening as
             // TaskAwaiter_T_GetIsCompleted_Neo :813 -- the dest slot is reused for a
             // managed pointer in the async SM and a 4-byte write leaves stale bits).
             if (retDst != null) *(long*)retDst = isCompleted ? 1 : 0;
         }
 
-        // ValueTask<T>.get_IsFaulted -- bridge != null ? bridge.IsFaulted : false.
+        // ValueTask<T>.get_IsFaulted. Priority: IValueTaskSource > BridgeTask >
+        // false (sync-success / defensive default).
         public static void ValueTask_T_GetIsFaulted_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
             bool isFaulted = false; // sync-success / defensive default
             var st = _currentValueTaskState;
-            if (st.HasValue && st.Value.BridgeTask != null)
-                isFaulted = st.Value.BridgeTask.IsFaulted;
+            if (st.HasValue)
+            {
+                if (st.Value.IValueTaskSource is IAsyncContextSink src)
+                    isFaulted = src.GetSourceIsFaulted(st.Value.IValueTaskSourceToken);
+                else if (st.Value.BridgeTask != null)
+                    isFaulted = st.Value.BridgeTask.IsFaulted;
+            }
             if (retDst != null) *(long*)retDst = isFaulted ? 1 : 0;
         }
 
-        // ValueTask<T>.get_Result -- bridge != null ? bridge.Result : SyncResult.
-        // A faulted bridge Task<T>.Result rethrows the inner exception (matches
-        // ValueTask<T>.Result semantics). For the suspend case the caller MUST poll
-        // IsCompleted first (Task<T>.Result blocks if incomplete) -- the probes do.
+        // ValueTask<T>.get_Result. Priority: IValueTaskSource > BridgeTask >
+        // SyncResult > default. A faulted source/bridge rethrows the inner
+        // exception (matches ValueTask<T>.Result semantics). For the suspend case
+        // the caller MUST poll IsCompleted first -- the probes do.
         public static void ValueTask_T_GetResult_Neo(ILIntepreter intp, byte* frameBase, AutoList mStack,
             CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
             object result;
             var st = _currentValueTaskState;
-            if (st.HasValue && st.Value.BridgeTask != null)
+            if (st.HasValue && st.Value.IValueTaskSource is IAsyncContextSink src)
+            {
+                // Zero-alloc suspend: read the IValueTaskSource<T> result (rethrows
+                // if faulted -- core.GetResult semantics match ValueTask<T>.Result).
+                result = src.GetSourceResult(st.Value.IValueTaskSourceToken);
+            }
+            else if (st.HasValue && st.Value.BridgeTask != null)
             {
                 // Delegate to the bridge Task<T>.Result (rethrows if faulted).
                 Task bt = st.Value.BridgeTask;

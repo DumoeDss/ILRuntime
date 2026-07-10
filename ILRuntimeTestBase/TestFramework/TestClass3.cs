@@ -263,6 +263,26 @@ namespace ILRuntimeTest.TestFramework
         // proves the suspend/resume actually ran. The cell is read-back only here.
         public static int GetAsyncVoidSuspendCell() { return s_asyncVoidCell; }
 
+        // ---- neo-async-valuetask-zeroalloc: allocation-measurement host helpers.
+        //      The IL probe resets the counters before a suspend+resume, then reads
+        //      the bridge counter to assert the TCS bridge was NOT allocated (the
+        //      zero-alloc path returns a ValueTask<T> backed by the IValueTaskSource<T>
+        //      directly). The decisive proof is the direct bridge counter; a GC byte
+        //      delta would be muddied by the shared Activator box + MoveNext frame
+        //      (present on both old + new paths), so it is not measured here. ----
+        public static void ResetAsyncAllocCounters()
+        {
+            ILRuntime.Runtime.Intepreter.NeoAsyncAllocCounters.Reset();
+        }
+        public static int GetAsyncBridgeTaskAllocs()
+        {
+            return ILRuntime.Runtime.Intepreter.NeoAsyncAllocCounters.BridgeTaskAllocs;
+        }
+        public static int GetAsyncContextAllocs()
+        {
+            return ILRuntime.Runtime.Intepreter.NeoAsyncAllocCounters.ContextAllocs;
+        }
+
         // neo-async-execctx-capture: a CUSTOM awaiter implementing INotifyCompletion
         // but NOT ICriticalNotifyCompletion -- the C# compiler lowers `await` on it
         // to AwaitOnCompleted (the EC-capturing path), not AwaitUnsafeOnCompleted. It
