@@ -1864,7 +1864,21 @@ namespace ILRuntime.Runtime.Intepreter
                                 continue;
                             case OpCodeREnum.Brtrue:
                             case OpCodeREnum.Brtrue_S:
-                                if (ip->Operand2 == 8 ? *(long*)(frameBase + ip->DstOffset) != 0 : *(int*)(frameBase + ip->DstOffset) != 0)
+                                // Brtrue/Brfalse test a truth value (CIL int32 / object
+                                // ref). Under the Neo flat frame a temp register's slot is
+                                // sized to the method's MAX value-type size (>=8), so the
+                                // bool/int32 result a compare or a bool-returning call
+                                // writes only the LOW 4 bytes, leaving STALE upper bytes
+                                // when the register was reused (e.g. `||`-chained string-!=
+                                // on IL-VT fields -- the array-element read leaves a non-
+                                // zero high dword). Reading the full slot width (the prior
+                                // `Operand2 == 8 ? *(long*)` path) then mis-fires the branch
+                                // on the stale high bytes. Roslyn lowers every non-int32
+                                // truthiness (long, float, object) to a compare/ceq whose
+                                // result IS a 4-byte int32 0/1, so the truth value reaching
+                                // here is ALWAYS the low int32. Test only that. (See
+                                // openspec/changes/neo-vt-field-orchain-compare/design.md.)
+                                if (*(int*)(frameBase + ip->DstOffset) != 0)
                                 {
                                     ip = ptr + ip->Operand;
                                     continue;
@@ -1872,7 +1886,7 @@ namespace ILRuntime.Runtime.Intepreter
                                 break;
                             case OpCodeREnum.Brfalse:
                             case OpCodeREnum.Brfalse_S:
-                                if (ip->Operand2 == 8 ? *(long*)(frameBase + ip->DstOffset) == 0 : *(int*)(frameBase + ip->DstOffset) == 0)
+                                if (*(int*)(frameBase + ip->DstOffset) == 0)
                                 {
                                     ip = ptr + ip->Operand;
                                     continue;
