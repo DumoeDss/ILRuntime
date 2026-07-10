@@ -505,12 +505,10 @@ namespace TestCases
 
         // IL-VT-element [,] ldelema mutate: `ref a[i,j]` on a multi-dim IL-VT array.
         // This lowers to a multi-dim `Address` method + a byref param call -- a
-        // DISTINCT sub-gap (3) from the Set/Get element box/unbox (sub-gaps 1+2):
-        // the JIT of the Address/byref shape hits a type-resolution NRE (an
-        // ILType with a null TypeDefinition). PARKED for a follow-up (the Set/Get
-        // element path -- sub-gaps 1+2 -- is GREEN; this probe is NOT kept so the
-        // NeoStep smoke stays green). See child-17 blocked.md sub-gap 3.
-        /*
+        // DISTINCT sub-gap (3) from the Set/Get element box/unbox (sub-gaps 1+2).
+        // Previously PARKED: the JIT of the Address/byref shape hit a type-resolution
+        // NRE (an ILType with a null TypeDefinition). Sub-gap 3 resolution: see
+        // child-17 design.md sub-gap 3.
         static void BumpByRef(ref NeoStep16Vt v)
         {
             v.num = 99;
@@ -527,6 +525,5 @@ namespace TestCases
                 int z = 1; int d = 0; int _ = z / d;
             }
         }
-        */
     }
 }

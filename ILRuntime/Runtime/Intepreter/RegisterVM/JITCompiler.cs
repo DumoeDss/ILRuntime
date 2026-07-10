@@ -1095,6 +1095,69 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             }
                         }
                         break;
+                    // neo-array-multidim-ilvt (sub-gap 3): a Call/Callvirt/etc.
+                    // result is NEVER an in-frame value type -- it is a reference
+                    // (heap object / mStack index), a primitive, or a managed
+                    // pointer (byref). When the call's dest register was REUSED
+                    // from an earlier in-frame-VT operand (e.g. an `ldloca` of a
+                    // VT local seeded it with a VT type), that STALE VT type would
+                    // otherwise make a subsequent (possibly inlined) `stfld`/
+                    // `ldflda` on the call result mis-lower to the _Inline variant.
+                    // For the multi-dim `ref a[i,j]` case the `Address` call returns
+                    // a byref into a register previously seeded as an in-frame VT by
+                    // the source struct's `ldloca`; the inlined `ref T` callee's
+                    // `stfld` then wrongly wrote into the frame instead of through
+                    // the byref to the array cell's box. A call dest that carries a
+                    // stale VT type must be cleared so the field-access discriminator
+                    // (TryRewriteFieldAccessForInline) does not rewrite it to inline.
+                    // (Newobj of an IL VT is the exception -- handled in its own
+                    // case below -- its dest genuinely IS an in-frame VT.)
+                    case OpCodeREnum.Call:
+                    case OpCodeREnum.Callvirt:
+                    case OpCodeREnum.Callvirt_IL:
+                    case OpCodeREnum.Callvirt_CLR:
+                    case OpCodeREnum.Call_Redirect:
+                        {
+                            // Only clear a STALE in-frame-VT type when the call's
+                            // return is NOT itself a by-value IL value type. A
+                            // byref return (the multi-dim IL-VT array `Address`
+                            // case), a reference, or a primitive return is never
+                            // an in-frame VT, so a reused dest register must drop
+                            // its stale VT type (else a subsequent stfld/ldfld on
+                            // the byref/reference result mis-lowers to _Inline and
+                            // writes into the frame instead of through the byref).
+                            // A by-value IL-VT return IS materialized into the dest
+                            // frame region (the runtime CopyILToFrame path), so its
+                            // in-frame-VT type is correct and is KEPT. The resolved
+                            // method's ReturnType is the shared CLR `ILTypeInstance`
+                            // for IL-VT-element array calls (the element IL-VT is
+                            // lost post-resolution); recover it via the token-keyed
+                            // element map so the `Get` case keeps its VT type.
+                            if (op.Register1 >= 0)
+                            {
+                                IType cur = GetRegisterType(registerTypes, op.Register1);
+                                if (cur is ILType cil && cil.IsValueType && !cil.IsEnum)
+                                {
+                                    var cm = appdomain.GetMethod(op.Operand2);
+                                    IType rt = cm != null ? cm.ReturnType : null;
+                                    if (rt is ILType rtil)
+                                        rt = rtil.IsByRef ? null : rtil;
+                                    else if (rt == null || (!rt.IsValueType && !rt.IsPrimitive))
+                                        rt = null;
+                                    if (rt == null)
+                                    {
+                                        ILType elemIl = JITCompiler.GetNeoIlVtArrayElementType(op.Operand2);
+                                        if (elemIl != null && cm != null && cm.Name == "Get")
+                                            rt = elemIl;
+                                    }
+                                    bool retIsInFrameVt = rt is ILType rtil2
+                                        && rtil2.IsValueType && !rtil2.IsEnum && !rtil2.IsByRef;
+                                    if (!retIsInFrameVt)
+                                        SetRegisterType(registerTypes, op.Register1, null);
+                                }
+                            }
+                        }
+                        break;
                     // VT-THIS-ADDR (D1): type the dest of a Newobj of an IL value
                     // type as the constructed VT. The dest register holds the in-
                     // frame VT (the runtime Newobj IL-VT branch constructs it in

@@ -1,8 +1,10 @@
 # Design — neo-array-multidim-ilvt
 
 > Capability: `neo-arrays`. Branch `features/object-model-overhaul`.
-> Status: **SHIPPED (sub-gaps 0, 1, 2)** — IL-VT-element `[,]` Get/Set works. Sub-gap 3
-> (multi-dim `ref a[i,j]` ldelema) PARKED (a distinct JIT-level type-resolution gap).
+> Status: **SHIPPED (sub-gaps 0, 1, 2, 3)** — IL-VT-element `[,]` Get/Set works AND
+> `ref a[i,j]` ldelema mutate works. Sub-gap 3 (the parked "distinct JIT-layer NRE")
+> was RESOLVED on re-audit: two focused guards (a ByRef null-guard + a stale-Call-dest
+> type clear), NOT a deep rework.
 > This design supersedes the prior PARK framing: the "foundational multi-step" gap was
 > DISPROVEN (child-4 re-audit lesson applied) — sub-gaps 1+2 were tractable, each a
 > focused intercept + a JIT-time type stamping (NOT a per-param ABI rework).
@@ -120,16 +122,51 @@ the caller frame, (b) by a JIT-time token-keyed type map. This is the same shape
 child-4's disproof: a "foundational/plumbing" framing that was actually a specific bug
 + a registration/stamping miss.
 
-## Sub-gap 3 — multi-dim `ref a[i,j]` ldelema (PARKED — a DISTINCT gap)
+## Sub-gap 3 — multi-dim `ref a[i,j]` ldelema (RESOLVED — re-audited: NOT a deep gap)
 
-The `ref a[i,j]` lowering (a multi-dim `Address` method + a byref param call) hits an
-NRE during JIT: `ILType.get_IsValueType` dereferences a null `definition` (an ILType
-constructed for the Address/byref shape with no TypeDefinition). This is NOT the same
-mechanism as sub-gaps 1+2 (it's a JIT-level type-resolution failure for the multi-dim
-ref-address shape, not the Set/Get reflection reader). The probe
-(`NeoStep16_MultiDimIlVtLdelemaMutate`) was probed, found to fail at this distinct JIT
-point, and is NOT kept (commented out) so the NeoStep smoke stays green. Route to a
-follow-up.
+The "distinct JIT-layer NRE" framing was, per the child-4/8/17 re-audit lesson, a specific
+tractable bug — in fact TWO focused bugs, neither a deep rework:
+
+### (a) The NRE — a null-guard miss on a ByRef ILType (`ILType.cs`, shared-engine)
+
+The `ref T` param's register type is a ByRef ILType: `MakeByRefType` constructs an ILType
+wrapping a `ByReferenceType`, and `RetriveDefinitino` deliberately leaves `definition` null
+for a byref/array shape. `ILType.get_IsValueType` dereferenced that null `definition`. Fix:
+an `IsByRef` short-circuit in `IsValueType` (a byref is itself never a value type — return
+false before the deref). Legacy-safe (semantically correct for both engines; plain `Debug`
+builds 0 errors; the NeoStep16-on-Legacy failures are pre-existing Neo-on-Legacy gaps).
+
+### (b) Stale in-frame-VT type on a Call dest — `JITCompiler.Translate` type-inference pass (Neo)
+
+After the NRE was fixed, the probe's mutation was NOT observable: `BumpByRef(ref a[0,0])` is
+inlined, and the inlined `stfld` (the `v.num = 99` body) was mis-lowered to `Stfld_I4_Inline`
+(writing into the frame), NOT the non-inline `Stfld_I4` (which writes through the byref's
+mStack index to the array cell's box).
+
+Root cause: the `Address` call's dest register was REUSED from an earlier `ldloca` of the VT
+local `s` (the type-inference pass seeds an `ldloca` of a VT local with that VT type —
+correct for the in-frame `s.num=5` writes). The type-inference switch had NO `Call` case, so
+the dest RETAINED the stale VT type after the `Address` call. `TryRewriteFieldAccessForInline`
+then saw the inlined `stfld`'s operand as an in-frame VT and rewrote it to `_Inline`.
+
+Fix: a `Call`/`Callvirt`/`Callvirt_IL`/`Callvirt_CLR`/`Call_Redirect` case in the type-
+inference switch that clears a stale in-frame-VT type on the dest (`Register1`) when the
+call's return is NOT a by-value IL-VT. A Call result is NEVER an in-frame VT (it is a
+reference / primitive / byref); a by-value IL-VT return (the `Get` path, or any VT-returning
+IL method) IS materialized into the dest via CopyILToFrame and is KEPT. The IL-VT-element
+array `Get`'s element type is recovered via `GetNeoIlVtArrayElementType` (its resolved
+ReturnType is the shared CLR `ILTypeInstance`).
+
+### Runtime `Address` intercept — `ILIntepreter.Neo.cs` `TryNeoIlVtElementArrayCall` (Neo)
+
+An `Address` branch (symmetric to the Set/Get branches) materializes the element's box
+(lazy-inits a null cell), pushes it onto mStack, and writes an 8-byte Ref Slot
+`(mStackIdx_of_the_box, fieldOffset=0)` to the caller's return dest. With fix (b) the
+inlined `stfld` stays non-inline, resolves `mStack[mStackIdx]` -> the SAME box the array cell
+references, and mutates `box.Primitives` — observable on a subsequent `a[i,j]` Get.
+
+The probe `NeoStep16_MultiDimIlVtLdelemaMutate` is now GREEN and part of the NeoStep smoke
+(278 -> 279).
 
 ## Probes (kept)
 
@@ -142,6 +179,10 @@ follow-up.
   PRE-EXISTING rank-1 string-comparison bug on HEAD — see below — separate statements
   avoid it and still prove per-cell isolation).
 - `NeoStep16_MultiDimIlVtRefFieldNonNull` — IL-VT `[,]` ref field non-null + correct.
+- `NeoStep16_MultiDimIlVtLdelemaMutate` — IL-VT `[,]` `ref a[i,j]` in-place mutate
+  (sub-gap 3): `BumpByRef(ref a[0,0])` writes `v.num=99` through the byref to the cell's
+  box; a subsequent `a[0,0]` Get observes `r.num==99`. Previously PARKED (the JIT NRE);
+  now GREEN.
 
 ### PRE-EXISTING bug found (out of scope, NOT kept)
 
@@ -155,11 +196,16 @@ child-17 changes). Reported here; NOT fixed (out of child-17 scope).
 
 ## Verification
 
-- Neo `NeoStep` **278/0/0** (274 baseline + 4 IL-VT multidim probes).
-- Neo `NeoStep16` **26/0/0**; `NeoOptHardening` **24/0/0**.
+- Neo `NeoStep` **279/0/0** (274 baseline + 4 IL-VT multidim Get/Set probes + the
+  ldelema-mutate probe, sub-gap 3).
+- Neo `NeoStep16` **27/0/0**; `NeoOptHardening` **24/0/0**.
 - **Legacy-neutral-by-improvement:** full Legacy suite 812 tests: HEAD 20 failed ->
-  with this change 17 failed (3 FEWER, no regression). The 15 NeoStep-filter failures
-  on Legacy are pre-existing Neo-on-Legacy gaps (unrelated).
-- **Stash-toggle (load-bearing):** `NeoStep16_MultiDimIlVtRoundTrip` FAILs on HEAD with
-  `KeyNotFoundException: Cannot find method:.ctor in type:...NeoStep16Vt[0...,0...]`;
-  +fix PASSES (4/4 IL-VT probes green).
+  with this change 17 failed (3 FEWER, no regression). The NeoStep16-on-Legacy failures
+  (TC8 StelemI + the ldelema probe) are pre-existing Neo-on-Legacy gaps (identical on
+  HEAD; the sub-gap-3 `IsByRef` guard is Legacy-safe — plain `Debug` builds 0 errors).
+- **Stash-toggle (load-bearing):**
+  - `NeoStep16_MultiDimIlVtRoundTrip` FAILs on HEAD with `KeyNotFoundException: Cannot
+    find method:.ctor in type:...NeoStep16Vt[0...,0...]`; +fix PASSES.
+  - `NeoStep16_MultiDimIlVtLdelemaMutate` (sub-gap 3) NREs on HEAD at
+    `ILType.get_IsValueType()` (the null-`definition` deref); +fix PASSES (in-place
+    mutate via `ref a[0,0]` observable — `r.num == 99`).

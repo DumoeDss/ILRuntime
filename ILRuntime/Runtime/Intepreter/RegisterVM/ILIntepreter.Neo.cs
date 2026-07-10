@@ -1138,12 +1138,14 @@ namespace ILRuntime.Runtime.Intepreter
             ILType elemIl = JITCompiler.GetNeoIlVtArrayElementType(ip->Operand2);
             if (elemIl == null)
                 return false;
-            // Only Set / Get on the array (ctor is handled by the reflection path,
-            // which works once the ILType.GetConstructor delegation resolves it).
+            // Only Set / Get / Address on the array (ctor is handled by the
+            // reflection path, which works once the ILType.GetConstructor
+            // delegation resolves it).
             string mname = targetMethod.Name;
             bool isSet = mname == "Set";
             bool isGet = mname == "Get";
-            if (!isSet && !isGet)
+            bool isAddress = mname == "Address";
+            if (!isSet && !isGet && !isAddress)
                 return false;
 
             // Read the array `this` from targetBase (the thisArg offset is the
@@ -1171,7 +1173,46 @@ namespace ILRuntime.Runtime.Intepreter
             int elemPrimSize = elemIl.TotalPrimitiveSize;
             int elemRefCount = elemIl.TotalReferenceCount;
 
-            if (isSet)
+            if (isAddress)
+            {
+                // Address (multi-dim `ref a[i,j]` ldelema). Return a byref to the
+                // IL-VT element's storage. The element lives as a boxed
+                // ILTypeInstance cell (the multi-dim Set path boxes it); the byref
+                // encodes (mStackIdx_of_the_box, fieldOffset=0), mirroring the
+                // rank-1 Ldelema IL-VT-element encoding. A consumer that mutates
+                // through the byref (a `ref T` param's `stfld`/`stobj`) resolves
+                // mStack[mStackIdx] -> the SAME box the array cell references, so the
+                // in-place mutation is observable on a subsequent `a[i,j]` Get.
+                // A null (uninitialized) cell is materialized as a fresh default
+                // instance + stored back into the cell (lazy init) so the byref
+                // points at a mutable box (matches `ref` semantics: the element must
+                // exist before its address is taken).
+                object got = arr.GetValue(indices);
+                ILTypeInstance elemIns;
+                if (got is ILTypeInstance ei && ei.Type == elemIl)
+                {
+                    elemIns = ei;
+                }
+                else
+                {
+                    // null or mismatched cell -> materialize a default box + store it
+                    // back so the returned byref is observable via a later Get.
+                    elemIns = elemIl.Instantiate(false);
+                    elemIns.Boxed = true;
+                    arr.SetValue(elemIns, indices);
+                }
+                int elemMStackIdx = mStack.Count;
+                mStack.Add(elemIns);
+                // 8-byte Ref Slot: (mStackIdx, 0). The Address call's return dest is
+                // retDstPtr (a byref value lives in the caller's frame byte region).
+                if (retDstPtr != null)
+                {
+                    *(int*)(retDstPtr + 0) = elemMStackIdx;
+                    *(int*)(retDstPtr + 4) = 0;
+                }
+                return true;
+            }
+            else if (isSet)
             {
                 // The element value is the LAST param. Its caller-frame primitive
                 // source is the LAST PrimitiveSrc entry; its ref-region source is

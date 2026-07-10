@@ -1828,6 +1828,15 @@ namespace ILRuntime.CLR.TypeSystem
             {
                 if ( IsArray )
                     return false;
+                // A ByRef type (a managed pointer `ref T` built by MakeByRefType)
+                // wraps a ByReferenceType; RetriveDefinitino deliberately leaves
+                // `definition` null for it. A byref is itself NOT a value type
+                // (it's a pointer), so short-circuit before the null deref.
+                // (Neo-array-multidim-ilvt sub-gap 3: the multi-dim
+                // `ref a[i,j]` IL-VT ldelema hit a NRE here during JIT because the
+                // byref param's register type is this ByRef ILType.)
+                if ( IsByRef )
+                    return false;
 #if ENABLE_NEO_MODE
                 // Cecil-free: the capstone probe is a class (not a valuetype).
                 // A valuetype probe would need the flag carried (sub-surface 2
