@@ -1072,6 +1072,36 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldfld_R8:
                         SetRegisterType(registerTypes, op.Register1, appdomain.DoubleType);
                         break;
+                    // neo-addi-on-float: seed the indirect- and element-load
+                    // producers so a float/double/long operand loaded via a
+                    // byref/CLR-struct-field indirection (ldflda; ldind.r4) or an
+                    // array element (ldelem.r4) is correctly typed. Without this,
+                    // only Ldc_*/Ldfld_* seeded these types, so such an operand
+                    // fell back to the default I4, the typed immediate/binary
+                    // specialization (Addi->Addi_R4 etc., keyed on
+                    // registerTypes[Register2]) silently no-oped, and a plain
+                    // integer Addi integer-added the raw IEEE bits (e.g.
+                    // a.X += 100 lowered to addi r,r,0x42C80000). Seeding a
+                    // primitive is safe for the other type-spec decisions, which
+                    // all key on IsNeoReferenceSlot/IsValueType (a primitive is
+                    // neither). I4 is seeded for symmetry (it matches the prior
+                    // default fallback, so today it is a no-op).
+                    case OpCodeREnum.Ldind_R4:
+                    case OpCodeREnum.Ldelem_R4:
+                        SetRegisterType(registerTypes, op.Register1, appdomain.FloatType);
+                        break;
+                    case OpCodeREnum.Ldind_R8:
+                    case OpCodeREnum.Ldelem_R8:
+                        SetRegisterType(registerTypes, op.Register1, appdomain.DoubleType);
+                        break;
+                    case OpCodeREnum.Ldind_I8:
+                    case OpCodeREnum.Ldelem_I8:
+                        SetRegisterType(registerTypes, op.Register1, appdomain.LongType);
+                        break;
+                    case OpCodeREnum.Ldind_I4:
+                    case OpCodeREnum.Ldelem_I4:
+                        SetRegisterType(registerTypes, op.Register1, appdomain.IntType);
+                        break;
                     // Step 12: ldloca/ldloca.s of a value-type local produces a
                     // managed pointer, but for the Neo in-frame-VT model the
                     // pointer aliases the local's byte range. Propagate the
