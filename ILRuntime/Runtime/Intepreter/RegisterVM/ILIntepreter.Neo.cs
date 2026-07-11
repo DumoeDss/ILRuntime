@@ -1968,6 +1968,31 @@ namespace ILRuntime.Runtime.Intepreter
                             case OpCodeREnum.Ceq:
                                 *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + ip->SrcOffset) == *(int*)(frameBase + ip->OperandOffset) ? 1 : 0;
                                 break;
+                            // neo-ceq-null-sentinel: the type-specialized Ceq for a
+                            // REFERENCE operand. Under the Neo flat frame a reference
+                            // is an mStack index in the slot's primitive bytes, and
+                            // null is a NON-ZERO index (IL-static Ldsfeld
+                            // mStack.Add(null)+index) or the -1 sentinel (CLR-static
+                            // Ldsfeld / Ldnull), so the raw-int32 Ceq above mis-
+                            // compares the index integers (e.g. index N vs ldnull -1
+                            // -> "not equal" -> x==null wrongly FALSE -> lazy-init
+                            // skipped -> downstream NRE). Resolve each operand to its
+                            // referenced object (or null) and compare by C# reference
+                            // equality: null==null -> true, obj==null -> false,
+                            // obj1==obj2 -> identity (Legacy Ceq parity,
+                            // ILIntepreter.Register.cs:4557-4603 -- same-type Object =
+                            // mStack[a]==mStack[b], Null = true, mixed Object/Null =
+                            // mStack[v]==null). a = SrcOffset/Register2, b =
+                            // OperandOffset/Register3, dest = DstOffset/Register1.
+                            case OpCodeREnum.Ceq_Ref:
+                                {
+                                    int cra = *(int*)(frameBase + ip->SrcOffset);
+                                    int crb = *(int*)(frameBase + ip->OperandOffset);
+                                    object rra = cra >= 0 ? mStack[cra] : null;
+                                    object rrb = crb >= 0 ? mStack[crb] : null;
+                                    *(int*)(frameBase + ip->DstOffset) = rra == rrb ? 1 : 0;
+                                }
+                                break;
                             case OpCodeREnum.Cgt:
                                 *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + ip->SrcOffset) > *(int*)(frameBase + ip->OperandOffset) ? 1 : 0;
                                 break;
@@ -2141,11 +2166,45 @@ namespace ILRuntime.Runtime.Intepreter
                                     continue;
                                 }
                                 break;
+                            // neo-ceq-null-sentinel: Beq_Ref / Bne_Un_Ref -- the
+                            // type-specialized conditional branches for a REFERENCE
+                            // operand (sibling of Ceq_Ref above and Brtrue_Ref at
+                            // :2091). Resolve each operand to its referenced object
+                            // (or null) and branch on reference identity, not the raw
+                            // mStack-index int32s. a = DstOffset/Register1, b =
+                            // SrcOffset/Register2 (Legacy Beq/Bne_Un parity,
+                            // ILIntepreter.Register.cs:2090-2136 / :2172-2220).
+                            case OpCodeREnum.Beq_Ref:
+                                {
+                                    int bra = *(int*)(frameBase + ip->DstOffset);
+                                    int brb = *(int*)(frameBase + ip->SrcOffset);
+                                    object bra2 = bra >= 0 ? mStack[bra] : null;
+                                    object brb2 = brb >= 0 ? mStack[brb] : null;
+                                    if (bra2 == brb2)
+                                    {
+                                        ip = ptr + ip->Operand;
+                                        continue;
+                                    }
+                                }
+                                break;
                             case OpCodeREnum.Bne_Un:
                                 if (*(int*)(frameBase + ip->DstOffset) != *(int*)(frameBase + ip->SrcOffset))
                                 {
                                     ip = ptr + ip->Operand;
                                     continue;
+                                }
+                                break;
+                            case OpCodeREnum.Bne_Un_Ref:
+                                {
+                                    int bnra = *(int*)(frameBase + ip->DstOffset);
+                                    int bnrb = *(int*)(frameBase + ip->SrcOffset);
+                                    object bnra2 = bnra >= 0 ? mStack[bnra] : null;
+                                    object bnrb2 = bnrb >= 0 ? mStack[bnrb] : null;
+                                    if (bnra2 != bnrb2)
+                                    {
+                                        ip = ptr + ip->Operand;
+                                        continue;
+                                    }
                                 }
                                 break;
                             case OpCodeREnum.Blt:

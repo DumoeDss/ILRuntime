@@ -457,6 +457,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Shr:
                     case OpCodeREnum.Shr_Un:
                     case OpCodeREnum.Ceq:
+                    case OpCodeREnum.Ceq_Ref:
                     case OpCodeREnum.Cgt:
                     case OpCodeREnum.Cgt_Un:
                     case OpCodeREnum.Clt:
@@ -652,7 +653,9 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         break;
 
                     case OpCodeREnum.Beq:
+                    case OpCodeREnum.Beq_Ref:
                     case OpCodeREnum.Bne_Un:
+                    case OpCodeREnum.Bne_Un_Ref:
                     case OpCodeREnum.Blt:
                     case OpCodeREnum.Blt_Un:
                     case OpCodeREnum.Bgt:

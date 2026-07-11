@@ -108,10 +108,17 @@
       "completedDate": "2026-07-12", "smoke": "NeoStep 332/0 (330 + 2); Tr2/Tr5/OrChain/TC10 all pass; the Call-case clear toggle-proven load-bearing (off -> 2 regressions); F4+F3 coupling confirmed (F3-alone breaks); Legacy-neutral (332 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major; 3 Minor all in design Risks). Deref + Call-case-clear (toggle-proven) + Ldsfld-seeding + coupling all confirmed. Fixes the DIRECT ldsfld;brtrue form; the ceq form (ldsfld;ldnull;ceq;brfalse) is a clean separate follow-up.",
       "shipped": "commit+push 2026-07-12"
+    },
+    "neo-ceq-null-sentinel": {
+      "pipeline": "small-feature", "wave": 1, "scope": "CORRECTNESS sibling of child-11: the ceq form of the null-comparison gap. Ceq/Beq/Bne_Un -> Ceq_Ref/Beq_Ref/Bne_Un_Ref (deref R(v)=v>=0?mStack[v]:null + C# identity). x==null (ceq form) now works; null-comparison gap CLOSED",
+      "prerequisites": ["neo-brtrue-on-reference"], "dependsOn": ["neo-brtrue-on-reference"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-12", "smoke": "NeoStep 335/0 (332 + 3); child-11 canaries 5/5 (orthogonal); TestStaticFieldInstance PROGRESSED (ceq NRE gone -> downstream IL-static-ref-field read-back gap); stash-toggle TC1+TC2 FAIL (DivByZero) -> PASS; Legacy-neutral (335 ran/17 failed == baseline)",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). 3-deref-correct + child-11-orthogonal(3 ways) + bookkeeping-complete + Ceq_Ref-probe-load-bearing all confirmed. F1 (Beq_Ref/Bne_Un_Ref no direct coverage, symmetric siblings) accepted-known. Root cause = shared InferPrimTag I4-fallback for references.",
+      "shipped": "commit+push 2026-07-12"
     }
   },
-  "runnableFrontier": ["neo-ceq-null-sentinel"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference"],
+  "runnableFrontier": ["neo-il-static-ref-field-readback"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },

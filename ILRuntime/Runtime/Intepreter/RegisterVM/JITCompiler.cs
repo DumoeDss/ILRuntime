@@ -906,6 +906,28 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Clt_Un:
                         op.Code = GetTypedCompareOpcode(op.Code, InferPrimTag(GetRegisterType(registerTypes, op.Register2), appdomain));
                         SetRegisterType(registerTypes, op.Register1, appdomain.IntType);
+                        // neo-ceq-null-sentinel: a reference-typed Ceq compares the
+                        // referenced objects' identity/nullness, not the raw mStack-
+                        // index int32s (null = a non-zero index to a null entry, or
+                        // the -1 sentinel). When EITHER operand register (Register2/
+                        // Register3, the two compare sources) is a reference slot,
+                        // upgrade the still-plain Ceq to Ceq_Ref. Runs AFTER the typed
+                        // rewrite so I8/R4/R8 variants win for primitive operands --
+                        // only a plain Ceq whose InferPrimTag fell back to I4 because
+                        // it is a reference is upgraded. Dest stays IntType (a real
+                        // 0/1 int32), so a following brtrue/brfalse on the result
+                        // stays a plain branch (no Brtrue_Ref interaction). Only Ceq:
+                        // Cgt/Clt reference ordering is invalid CIL, and Cgt_Un
+                        // already has its Step-15 null-sentinel runtime arm. Sibling
+                        // of the Brtrue/Brfalse -> _Ref rewrite below (closes the ceq
+                        // form of the null-comparison gap). Legacy parity: Ceq
+                        // (Register.cs:4557-4603).
+                        if (op.Code == OpCodeREnum.Ceq
+                            && (IsNeoReferenceSlot(GetRegisterType(registerTypes, op.Register2))
+                                || IsNeoReferenceSlot(GetRegisterType(registerTypes, op.Register3))))
+                        {
+                            op.Code = OpCodeREnum.Ceq_Ref;
+                        }
                         break;
                     case OpCodeREnum.Beq:
                     case OpCodeREnum.Beq_S:
@@ -928,6 +950,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Bge_Un:
                     case OpCodeREnum.Bge_Un_S:
                         op.Code = GetTypedBranchOpcode(NormalizeBranchOpcode(op.Code), InferPrimTag(GetRegisterType(registerTypes, op.Register1), appdomain));
+                        // neo-ceq-null-sentinel: a reference-typed Beq/Bne_Un must
+                        // compare the referenced objects' identity, not the raw
+                        // mStack-index int32s (null = a non-zero index or -1). When
+                        // EITHER operand register (Register1/Register2, the two
+                        // compare sources) is a reference slot, upgrade the still-
+                        // plain Beq/Bne_Un to its _Ref variant. Runs AFTER the typed
+                        // rewrite so the I8/R4/R8 branch variants win for primitives
+                        // -- only a plain Beq/Bne_Un whose InferPrimTag fell back to
+                        // I4 because it is a reference is upgraded. Only Beq/Bne_Un:
+                        // Blt/Bgt/... reference ordering is invalid CIL. Sibling of
+                        // the Ceq -> Ceq_Ref rewrite above and the Brtrue/Brfalse ->
+                        // _Ref rewrite below. Legacy parity: Beq (Register.cs:2090-
+                        // 2136), Bne_Un (Register.cs:2172-2220).
+                        if ((op.Code == OpCodeREnum.Beq || op.Code == OpCodeREnum.Bne_Un)
+                            && (IsNeoReferenceSlot(GetRegisterType(registerTypes, op.Register1))
+                                || IsNeoReferenceSlot(GetRegisterType(registerTypes, op.Register2))))
+                        {
+                            op.Code = op.Code == OpCodeREnum.Beq ? OpCodeREnum.Beq_Ref : OpCodeREnum.Bne_Un_Ref;
+                        }
                         break;
                     case OpCodeREnum.Addi:
                     case OpCodeREnum.Subi:

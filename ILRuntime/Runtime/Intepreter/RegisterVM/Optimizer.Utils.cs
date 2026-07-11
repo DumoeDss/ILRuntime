@@ -373,6 +373,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Beq_S:
                 case OpCodeREnum.Bne_Un:
                 case OpCodeREnum.Bne_Un_S:
+                case OpCodeREnum.Beq_Ref:
+                case OpCodeREnum.Bne_Un_Ref:
                     return true;
             }
             return false;
@@ -630,6 +632,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Beq_S:
                 case OpCodeREnum.Bne_Un:
                 case OpCodeREnum.Bne_Un_S:
+                case OpCodeREnum.Beq_Ref:
+                case OpCodeREnum.Bne_Un_Ref:
                     r1 = op.Register1;
                     r2 = op.Register2;
                     return true;
@@ -657,6 +661,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Cgt:
                 case OpCodeREnum.Cgt_Un:
                 case OpCodeREnum.Ceq:
+                case OpCodeREnum.Ceq_Ref:
                 case OpCodeREnum.Ldelem_I1:
                 case OpCodeREnum.Ldelem_U1:
                 case OpCodeREnum.Ldelem_I2:
@@ -888,6 +893,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Beq_S:
                 case OpCodeREnum.Bne_Un:
                 case OpCodeREnum.Bne_Un_S:
+                case OpCodeREnum.Beq_Ref:
+                case OpCodeREnum.Bne_Un_Ref:
                 case OpCodeREnum.Nop:
                 case OpCodeREnum.Constrained:
                 case OpCodeREnum.Ret:
@@ -981,6 +988,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Cgt:
                 case OpCodeREnum.Cgt_Un:
                 case OpCodeREnum.Ceq:
+                case OpCodeREnum.Ceq_Ref:
                 case OpCodeREnum.Addi:
                 case OpCodeREnum.Subi:
                 case OpCodeREnum.Muli:
@@ -1206,6 +1214,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Cgt:
                 case OpCodeREnum.Cgt_Un:
                 case OpCodeREnum.Ceq:
+                case OpCodeREnum.Ceq_Ref:
                 case OpCodeREnum.Ldelem_I1:
                 case OpCodeREnum.Ldelem_U1:
                 case OpCodeREnum.Ldelem_I2:
@@ -1321,6 +1330,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Beq_S:
                 case OpCodeREnum.Bne_Un:
                 case OpCodeREnum.Bne_Un_S:
+                case OpCodeREnum.Beq_Ref:
+                case OpCodeREnum.Bne_Un_Ref:
                     switch (idx)
                     {
                         case 0:
@@ -1391,6 +1402,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Cgt:
                 case OpCodeREnum.Cgt_Un:
                 case OpCodeREnum.Ceq:
+                case OpCodeREnum.Ceq_Ref:
                 case OpCodeREnum.Conv_I:
                 case OpCodeREnum.Conv_I1:
                 case OpCodeREnum.Conv_I2:
@@ -1550,6 +1562,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Beq_S:
                 case OpCodeREnum.Bne_Un:
                 case OpCodeREnum.Bne_Un_S:
+                case OpCodeREnum.Beq_Ref:
+                case OpCodeREnum.Bne_Un_Ref:
                 case OpCodeREnum.Nop:
                 case OpCodeREnum.Ret:
                 case OpCodeREnum.Push:

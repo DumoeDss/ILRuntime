@@ -1066,5 +1066,28 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
         /// condition is a reference slot.
         /// </summary>
         Brfalse_Ref,
+        /// <summary>
+        /// Neo type-specialized Ceq: an OPERAND register holds a REFERENCE (an
+        /// mStack index in the slot's primitive bytes; null = a non-zero index to a
+        /// null entry or the -1 sentinel). Compares the REFERENCED objects' identity/
+        /// nullness (R(a) == R(b), R(v)=v&gt;=0?mStack[v]:null), not the raw index
+        /// int32s. Dest stays a real 0/1 int32 (IntType). Produced by
+        /// TypeSpecializeNeoOpcodes when a Ceq's operand is a reference slot. Sibling
+        /// of Brtrue_Ref (closes the ceq form of the null-comparison gap).
+        /// </summary>
+        Ceq_Ref,
+        /// <summary>
+        /// Neo type-specialized Beq: an operand register holds a REFERENCE. Branches
+        /// when the referenced objects are identity-equal (R(a) == R(b)). Produced by
+        /// TypeSpecializeNeoOpcodes when a Beq's operand is a reference slot.
+        /// </summary>
+        Beq_Ref,
+        /// <summary>
+        /// Neo type-specialized Bne_Un: an operand register holds a REFERENCE.
+        /// Branches when the referenced objects are NOT identity-equal
+        /// (R(a) != R(b)). Produced by TypeSpecializeNeoOpcodes when a Bne_Un's
+        /// operand is a reference slot.
+        /// </summary>
+        Bne_Un_Ref,
     }
 }
