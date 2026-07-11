@@ -931,6 +931,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.Operand4 = ref2;
                         }
                         break;
+                    // Raw Ldfld: a CLR-declaring-type field (the typed-splitter's
+                    // `else` branch leaves this raw opcode; OperandLong carries
+                    // (typeHash<<32)|fieldHash). Same R1/R2 -> DstOffset/SrcOffset
+                    // shape as the typed arms (R1=R2=owner/dest); the Ldfld_Ref-only
+                    // Operand stamp below is skipped (op.Code != Ldfld_Ref). Do NOT
+                    // touch Operand/Operand4 -- field identity lives in OperandLong.
+                    case OpCodeREnum.Ldfld:
                     case OpCodeREnum.Ldfld_I1:
                     case OpCodeREnum.Ldfld_I2:
                     case OpCodeREnum.Ldfld_I4:
@@ -957,6 +964,10 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             op.SrcOffset = (ushort)localInfos[r2].Offset;
                         }
                         break;
+                    // Raw Stfld: a CLR-declaring-type field (see raw Ldfld above).
+                    // Same R1/R2 -> DstOffset(=owner)/SrcOffset(=value) shape as the
+                    // typed Stfld arms. OperandLong carries field identity -- untouched.
+                    case OpCodeREnum.Stfld:
                     case OpCodeREnum.Stfld_I1:
                     case OpCodeREnum.Stfld_I2:
                     case OpCodeREnum.Stfld_I4:

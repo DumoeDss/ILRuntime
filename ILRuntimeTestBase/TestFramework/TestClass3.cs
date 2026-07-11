@@ -15,6 +15,10 @@ namespace ILRuntimeTest.TestFramework
         // neo-clr-static-fields: a writable CLR static int for the Stsfld+Ldsfld
         // primitive round-trip probe (mscorlib's statics are mostly initonly).
         public static int NeoClrStaticProbe;
+        // neo-raw-stfld-ldfld: a writable CLR INSTANCE int for the raw Stfld+Ldfld
+        // primitive round-trip probe (the field's declaring type is this CLR class,
+        // so the Neo typed-splitter leaves the raw opcode; ExecuteNeo handles it).
+        public int NeoClrInstProbe;
         public static string getString(int startIndex = 0, int length = -1)
         {
             throw new Exception();

@@ -3617,6 +3617,80 @@ namespace ILRuntime.Runtime.Intepreter
                                     *(int*)(frameBase + ip->DstOffset) = boxed != null ? dstIdx : -1;
                                 }
                                 break;
+                            // Raw Ldfld: the field's DECLARING type is a CLRType. The Neo
+                            // typed-splitter rewrites ldfld into a typed Ldfld_* arm ONLY for
+                            // an ILType declaring type; for a CLR declaring type the JIT's
+                            // `else` branch leaves this raw opcode with
+                            // OperandLong = (typeHash<<32)|fieldHash (identical to Legacy's raw
+                            // Ldfld). Decode field identity, resolve the owner from the SrcOffset
+                            // slot (== DstOffset for Ldfld; R1==R2), read the CLR field, and push
+                            // the value to DstOffset. Owner shape splits on the declaring type's
+                            // value/ref kind: a CLR value-type owner is inline FLAT BYTES (ldloc
+                            // by-value) -> box the whole struct + reflection GetValue; a CLR
+                            // reference-type owner is a boxed mStack object -> Area 4d accessor.
+                            // (Mirrors the Stobj/Ldobj byref resolution + Step 13 Area 4d helpers.)
+                            case OpCodeREnum.Ldfld:
+                                {
+                                    int typeHash = (int)((ulong)ip->OperandLong >> 32);
+                                    int fieldHash = (int)ip->OperandLong;
+                                    var declType = AppDomain.GetType(typeHash);
+                                    var ct = declType as CLRType;
+                                    if (ct == null)
+                                        throw new NotImplementedException("Neo raw Ldfld: declaring type " + (declType == null ? "<null>" : declType.FullName) + " is not a CLRType (raw opcode expected only for CLR-declaring-type fields)");
+                                    var f = ct.GetField(fieldHash);
+                                    if (f == null)
+                                        throw new NotImplementedException("Neo raw Ldfld: CLR field hash " + fieldHash + " not resolved on type " + ct.FullName);
+                                    Type fldClrType = f.FieldType;
+                                    int ownerOff = ip->SrcOffset; // == DstOffset (Ldfld R1==R2)
+                                    object fldVal;
+                                    if (ct.TypeForCLR.IsValueType)
+                                    {
+                                        // CLR value-type owner loaded by value: the owner slot
+                                        // holds the struct's FLAT MANAGED BYTES (not a byref, not
+                                        // an mStack index). Box the whole struct and reflection-
+                                        // read the field (handles primitive / nested-struct / ref
+                                        // fields uniformly; a struct with unmappable ref fields
+                                        // NIEs inside ReadNeoValueType -- the Step-13b sibling).
+                                        int ownerSz = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
+                                        int cur = ownerOff;
+                                        object boxedOwner = ILIntepreter.ReadNeoValueType(ct.TypeForCLR, frameBase, ref cur, ownerSz);
+                                        fldVal = f.GetValue(boxedOwner);
+                                    }
+                                    else
+                                    {
+                                        // CLR reference-type owner: owner slot's first int is the
+                                        // mStack index of the boxed CLR object. Route through the
+                                        // Area 4d reflection accessor. An ILTypeInstance /
+                                        // CrossBindingAdaptorType owner (an IL type inheriting a
+                                        // CLR base) or an Array owner (a CLR-struct array element)
+                                        // is a distinct shape deferred here with a tagged NIE (not
+                                        // the Step-6 default) so progress is measurable.
+                                        int objIdx = *(int*)(frameBase + ownerOff);
+                                        object target = objIdx >= 0 ? mStack[objIdx] : null;
+                                        if (target == null)
+                                            throw new NullReferenceException();
+                                        if (target is ILTypeInstance || target is CrossBindingAdaptorType)
+                                            throw new NotImplementedException("Neo raw Ldfld: IL-instance owner with a CLR-base field is deferred (CLR-base field on an IL type; follow-up). Field " + f.Name + " on " + ct.FullName);
+                                        if (target is Array)
+                                            throw new NotImplementedException("Neo raw Ldfld: array-element field read is deferred (ldfld on a CLR array element; follow-up). Field " + f.Name + " on " + ct.FullName);
+                                        fldVal = NeoReadClrObjectField(AppDomain, target, fieldHash);
+                                        if (fldVal is CrossBindingAdaptorType cba) fldVal = cba.ILInstance;
+                                    }
+                                    // Marshal the boxed field value into the dest register by the
+                                    // field's CLR type category (mirrors the Ldsfld CLR-static dest
+                                    // push). A null ref value writes a -1 ref-slot index.
+                                    byte* dstSlot = frameBase + ip->DstOffset;
+                                    if (fldClrType.IsPrimitive)
+                                        NeoWritePrimitiveToFrame(fldVal, dstSlot);
+                                    else if (fldClrType.IsValueType)
+                                        ILIntepreter.WriteNeoValueType(fldVal, dstSlot, Optimizer.GetNeoValueTypeManagedSize(fldClrType));
+                                    else
+                                    {
+                                        mStack.Add(fldVal);
+                                        *(int*)dstSlot = fldVal != null ? mStack.Count - 1 : -1;
+                                    }
+                                }
+                                break;
                             case OpCodeREnum.Ldfld_I1:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
                                 *(int*)(frameBase + ip->DstOffset) = (sbyte)ins.Primitives[ip->Operand2];
@@ -3684,6 +3758,86 @@ namespace ILRuntime.Runtime.Intepreter
                                     dstIdx = frameRefBase + ip->Operand;
                                     mStack[dstIdx] = obj;
                                     *(int*)(frameBase + ip->DstOffset) = obj != null ? dstIdx : -1;
+                                }
+                                break;
+                            // Raw Stfld: the field's DECLARING type is a CLRType (see raw Ldfld
+                            // above). Owner lives in the DstOffset slot (Stfld R1=owner=
+                            // baseRegIdx-2); the value lives in the SrcOffset slot (R2=value=
+                            // baseRegIdx-1). Decode field identity, marshal the source value to a
+                            // boxed object, and write the CLR field. Owner shape splits on the
+                            // declaring type's value/ref kind: a CLR value-type owner is a frame-
+                            // native byref (-1, structBaseOff) produced by ldloca (a value-type
+                            // field WRITE always goes through the struct's address) -> box/mutate/
+                            // unbox at the byref target; a CLR reference-type owner is a boxed
+                            // mStack object -> Area 4d accessor.
+                            case OpCodeREnum.Stfld:
+                                {
+                                    int typeHash = (int)((ulong)ip->OperandLong >> 32);
+                                    int fieldHash = (int)ip->OperandLong;
+                                    var declType = AppDomain.GetType(typeHash);
+                                    var ct = declType as CLRType;
+                                    if (ct == null)
+                                        throw new NotImplementedException("Neo raw Stfld: declaring type " + (declType == null ? "<null>" : declType.FullName) + " is not a CLRType (raw opcode expected only for CLR-declaring-type fields)");
+                                    var f = ct.GetField(fieldHash);
+                                    if (f == null)
+                                        throw new NotImplementedException("Neo raw Stfld: CLR field hash " + fieldHash + " not resolved on type " + ct.FullName);
+                                    Type fldClrType = f.FieldType;
+                                    int ownerOff = ip->DstOffset;          // owner
+                                    byte* valSlot = frameBase + ip->SrcOffset; // value
+                                    // Marshal the source value to a boxed object by the field's
+                                    // CLR type category (mirrors the Stsfld CLR-static source read).
+                                    object value;
+                                    if (fldClrType.IsPrimitive)
+                                        value = NeoBoxPrimitiveByType(fldClrType, valSlot);
+                                    else if (fldClrType.IsValueType)
+                                    {
+                                        int vsz = Optimizer.GetNeoValueTypeManagedSize(fldClrType);
+                                        int vcur = ip->SrcOffset;
+                                        value = ILIntepreter.ReadNeoValueType(fldClrType, frameBase, ref vcur, vsz);
+                                    }
+                                    else
+                                    {
+                                        int srcRefIdx = *(int*)valSlot;
+                                        value = srcRefIdx >= 0 ? mStack[srcRefIdx] : null;
+                                    }
+                                    if (ct.TypeForCLR.IsValueType)
+                                    {
+                                        // CLR value-type owner: the owner slot holds a frame-native
+                                        // byref (objIdx, off). Box the whole struct from the byref
+                                        // target, reflection-write the field, and write the mutated
+                                        // struct back (box/mutate/unbox). An array-element byref
+                                        // (objIdx>=0, mStack[objIdx] is Array) is deferred with a
+                                        // tagged NIE (not the Step-6 default).
+                                        int objIdx = *(int*)(frameBase + ownerOff);
+                                        int off = *(int*)(frameBase + ownerOff + 4);
+                                        if (objIdx == -1)
+                                        {
+                                            int ownerSz = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
+                                            int cur = off;
+                                            object boxedOwner = ILIntepreter.ReadNeoValueType(ct.TypeForCLR, frameBase, ref cur, ownerSz);
+                                            f.SetValue(boxedOwner, value);
+                                            ILIntepreter.WriteNeoValueType(boxedOwner, frameBase + off, ownerSz);
+                                        }
+                                        else if (objIdx >= 0 && mStack[objIdx] is Array)
+                                            throw new NotImplementedException("Neo raw Stfld: array-element field write is deferred (stfld on a CLR array element; follow-up). Field " + f.Name + " on " + ct.FullName);
+                                        else
+                                            throw new NotImplementedException("Neo raw Stfld: unrecognized CLR value-type owner byref shape (objIdx=" + objIdx + "). Field " + f.Name + " on " + ct.FullName);
+                                    }
+                                    else
+                                    {
+                                        // CLR reference-type owner: owner slot's first int is the
+                                        // mStack index of the boxed CLR object. Route through Area
+                                        // 4d. IL-instance / array owners are deferred (tagged NIE).
+                                        int objIdx = *(int*)(frameBase + ownerOff);
+                                        object target = objIdx >= 0 ? mStack[objIdx] : null;
+                                        if (target == null)
+                                            throw new NullReferenceException();
+                                        if (target is ILTypeInstance || target is CrossBindingAdaptorType)
+                                            throw new NotImplementedException("Neo raw Stfld: IL-instance owner with a CLR-base field is deferred (CLR-base field on an IL type; follow-up). Field " + f.Name + " on " + ct.FullName);
+                                        if (target is Array)
+                                            throw new NotImplementedException("Neo raw Stfld: array-element field write is deferred (stfld on a CLR array element; follow-up). Field " + f.Name + " on " + ct.FullName);
+                                        NeoWriteClrObjectField(AppDomain, target, fieldHash, value);
+                                    }
                                 }
                                 break;
                             case OpCodeREnum.Stfld_I1:
