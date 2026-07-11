@@ -698,6 +698,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Brtrue_S:
                     case OpCodeREnum.Brfalse:
                     case OpCodeREnum.Brfalse_S:
+                    case OpCodeREnum.Brtrue_Ref:
+                    case OpCodeREnum.Brfalse_Ref:
                         {
                             short r1 = op.Register1;
                             int size = localInfos[r1].Size;

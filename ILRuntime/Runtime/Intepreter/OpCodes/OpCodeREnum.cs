@@ -1051,5 +1051,20 @@ namespace ILRuntime.Runtime.Intepreter.OpCodes
         /// VTable. Same Neo call ABI as Callvirt_IL.
         /// </summary>
         Callvirt_Interface,
+        /// <summary>
+        /// Neo type-specialized Brtrue: the condition register holds a REFERENCE
+        /// (an mStack index in the slot's primitive bytes; null = a non-zero index
+        /// to a null entry or the -1 sentinel). Tests the REFERENCED object's
+        /// nullness (mStack[idx] != null), not the raw index int32. Produced by
+        /// TypeSpecializeNeoOpcodes when a Brtrue's condition is a reference slot.
+        /// </summary>
+        Brtrue_Ref,
+        /// <summary>
+        /// Neo type-specialized Brfalse: the condition register holds a REFERENCE.
+        /// Branches when the referenced object IS null (mStack[idx] == null, or the
+        /// -1 sentinel). Produced by TypeSpecializeNeoOpcodes when a Brfalse's
+        /// condition is a reference slot.
+        /// </summary>
+        Brfalse_Ref,
     }
 }

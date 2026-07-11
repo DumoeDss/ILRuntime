@@ -351,6 +351,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Brtrue_S:
                 case OpCodeREnum.Brfalse:
                 case OpCodeREnum.Brfalse_S:
+                case OpCodeREnum.Brtrue_Ref:
+                case OpCodeREnum.Brfalse_Ref:
                 case OpCodeREnum.Blt:
                 case OpCodeREnum.Blt_S:
                 case OpCodeREnum.Blt_Un:
@@ -589,6 +591,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Brtrue_S:
                 case OpCodeREnum.Brfalse:
                 case OpCodeREnum.Brfalse_S:
+                case OpCodeREnum.Brtrue_Ref:
+                case OpCodeREnum.Brfalse_Ref:
                 case OpCodeREnum.Push:
                 case OpCodeREnum.Initobj:
                 case OpCodeREnum.Throw:
@@ -861,6 +865,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Brtrue_S:
                 case OpCodeREnum.Brfalse:
                 case OpCodeREnum.Brfalse_S:
+                case OpCodeREnum.Brtrue_Ref:
+                case OpCodeREnum.Brfalse_Ref:
                 case OpCodeREnum.Switch:
                 case OpCodeREnum.Blt:
                 case OpCodeREnum.Blt_S:
@@ -1276,6 +1282,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Brtrue_S:
                 case OpCodeREnum.Brfalse:
                 case OpCodeREnum.Brfalse_S:
+                case OpCodeREnum.Brtrue_Ref:
+                case OpCodeREnum.Brfalse_Ref:
                 case OpCodeREnum.Switch:
                 case OpCodeREnum.Push:
                 case OpCodeREnum.Throw:
@@ -1519,6 +1527,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Brtrue_S:
                 case OpCodeREnum.Brfalse:
                 case OpCodeREnum.Brfalse_S:
+                case OpCodeREnum.Brtrue_Ref:
+                case OpCodeREnum.Brfalse_Ref:
                 case OpCodeREnum.Switch:
                 case OpCodeREnum.Blt:
                 case OpCodeREnum.Blt_S:

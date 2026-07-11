@@ -1155,6 +1155,26 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     if (!retIsInFrameVt)
                                         SetRegisterType(registerTypes, op.Register1, null);
                                 }
+                                else if (IsNeoReferenceSlot(cur))
+                                {
+                                    // neo-brtrue-on-reference: a reused dest that held a
+                                    // REFERENCE, now overwritten by a call result. If the
+                                    // call does NOT also return a reference (a bool/int
+                                    // compare like op_Inequality, a byref, or void), the
+                                    // stale reference type MUST be dropped -- otherwise a
+                                    // following brtrue mis-specializes to brtrue.ref and
+                                    // dereferences a non-index bool/int. (The `||`-chain
+                                    // regression: a register reused from a string-ref
+                                    // ldfeld.ref.inline for the bool compare result.) A
+                                    // reference-RETURNING call leaves the reference type in
+                                    // place (correct: brtrue on it SHOULD test nullness).
+                                    var cm2 = appdomain.GetMethod(op.Operand2);
+                                    IType rt2 = cm2 != null ? cm2.ReturnType : null;
+                                    if (rt2 is ILType rtil3) rt2 = rtil3.IsByRef ? null : rtil3;
+                                    bool retIsRef = rt2 != null && !rt2.IsValueType && !rt2.IsPrimitive;
+                                    if (!retIsRef)
+                                        SetRegisterType(registerTypes, op.Register1, rt2 != null && rt2.IsPrimitive ? rt2 : null);
+                                }
                             }
                         }
                         break;
@@ -1205,6 +1225,58 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 && utIl.IsValueType && !utIl.IsEnum && !utIl.IsPrimitive)
                             {
                                 SetRegisterType(registerTypes, op.Register1, utIl);
+                            }
+                        }
+                        break;
+                    // neo-brtrue-on-reference (D2): seed the Ldsfeld dest register
+                    // type from the static field's type. Ldsfeld is the dominant
+                    // feeder for the canonical C# lazy-init / delegate-cache pattern
+                    // (`if(x==null){init}` -> Roslyn emits `ldsfld x; brtrue skipInit`
+                    // with NO ceq). Without seeding, the per-register type map has no
+                    // entry for the ldsfeld dest, so the Brtrue/Brfalse -> _Ref rewrite
+                    // below would never fire for this chain and null would stay truthy.
+                    // IL: StaticFieldTypes[sIdx] is the field's IType directly; CLR:
+                    // resolve FieldInfo.FieldType (System.Type) via the domain (same
+                    // IL/CLR split + OperandLong=(typeHash<<32)|fieldIdx encoding the
+                    // runtime Ldsfeld arm uses). Stsfld consumes its operand (no dest),
+                    // so it needs no seeding.
+                    case OpCodeREnum.Ldsfld:
+                        {
+                            var declType = appdomain.GetType((int)(op.OperandLong >> 32));
+                            int sIdx = (int)op.OperandLong;
+                            IType ft = null;
+                            if (declType is ILType ilt && sIdx >= 0 && sIdx < ilt.StaticFieldTypes.Length)
+                                ft = ilt.StaticFieldTypes[sIdx];
+                            else if (declType is CLRType ct)
+                            {
+                                var f = ct.GetField(sIdx);
+                                if (f != null)
+                                    ft = appdomain.GetType(f.FieldType);
+                            }
+                            SetRegisterType(registerTypes, op.Register1, ft);
+                        }
+                        break;
+                    // neo-brtrue-on-reference (D1/D3): type-specialize the branch
+                    // condition. Under the Neo flat frame a reference is an mStack
+                    // index in the slot's primitive bytes, and null is a NON-ZERO
+                    // index (IL-static Ldsfeld does mStack.Add(null)+index) or the -1
+                    // sentinel (CLR-static Ldsfeld / Ldnull). The plain Brtrue/Brfalse
+                    // int32 (!=0 / ==0) test therefore misreads null as TRUTHY, which
+                    // silently skips the `if(x==null){init}` initializer (x stays null
+                    // -> downstream NRE). When the condition register's tracked type is
+                    // a reference slot, rewrite to Brtrue_Ref/Brfalse_Ref, whose runtime
+                    // arm tests mStack[idx] != null (Legacy mStack[v]!=null parity). A
+                    // ceq-normalized condition stays plain: ceq seeds its dest IntType
+                    // (a real 0/1 int32), so IsNeoReferenceSlot is false here.
+                    case OpCodeREnum.Brtrue:
+                    case OpCodeREnum.Brtrue_S:
+                    case OpCodeREnum.Brfalse:
+                    case OpCodeREnum.Brfalse_S:
+                        {
+                            if (IsNeoReferenceSlot(GetRegisterType(registerTypes, op.Register1)))
+                            {
+                                bool isBrtrue = op.Code == OpCodeREnum.Brtrue || op.Code == OpCodeREnum.Brtrue_S;
+                                op.Code = isBrtrue ? OpCodeREnum.Brtrue_Ref : OpCodeREnum.Brfalse_Ref;
                             }
                         }
                         break;

@@ -2074,6 +2074,40 @@ namespace ILRuntime.Runtime.Intepreter
                                     continue;
                                 }
                                 break;
+                            // neo-brtrue-on-reference: the type-specialized branch
+                            // for a REFERENCE condition. Under the Neo flat frame a
+                            // reference is an mStack index in the slot's primitive
+                            // bytes, and null is a NON-ZERO index (IL-static Ldsfeld
+                            // does mStack.Add(null)+index) or the -1 sentinel (CLR-
+                            // static Ldsfeld / Ldnull). The plain int32 (!=0) test
+                            // therefore misreads null as truthy. Test the REFERENCED
+                            // object's nullness instead: mStack[idx] != null (Legacy
+                            // `mStack[reg1->Value] != null` parity,
+                            // ILIntepreter.Register.cs:2053). `idx >= 0` makes the -1
+                            // sentinel falsey; a non-negative index to a null
+                            // mStack entry is falsey via mStack[idx] == null. Covers
+                            // all three null encodings. Brtrue/Brfalse ARE lowered by
+                            // LowerNeoOffsets, so ip->DstOffset is a real byte offset.
+                            case OpCodeREnum.Brtrue_Ref:
+                                {
+                                    int idx = *(int*)(frameBase + ip->DstOffset);
+                                    if (idx >= 0 && mStack[idx] != null)
+                                    {
+                                        ip = ptr + ip->Operand;
+                                        continue;
+                                    }
+                                }
+                                break;
+                            case OpCodeREnum.Brfalse_Ref:
+                                {
+                                    int idx = *(int*)(frameBase + ip->DstOffset);
+                                    if (!(idx >= 0 && mStack[idx] != null))
+                                    {
+                                        ip = ptr + ip->Operand;
+                                        continue;
+                                    }
+                                }
+                                break;
                             case OpCodeREnum.Switch:
                                 {
                                     // CIL switch: jump-table dispatch. The index value
@@ -4132,7 +4166,17 @@ namespace ILRuntime.Runtime.Intepreter
                                         // lives at DstOffset (the same slot the typed Stfld_*
                                         // ops read from SrcOffset -- Stsfld has no instance,
                                         // so the value is the lone operand at Register1).
-                                        byte* srcSlot = frameBase + ip->DstOffset;
+                                        // Stsfld/Ldsfeld are NOT lowered by LowerNeoOffsets, so
+                                        // ip->DstOffset is still the raw Register1 INDEX, not a
+                                        // byte offset. Resolve the register's byte offset via the
+                                        // frame LocalInfos (in scope here as `localInfos`),
+                                        // exactly as LowerR1 does at compile time + the CLR-static
+                                        // arm below. Without this, a following Brtrue_Ref on a
+                                        // reference static would dereference a garbage mStack
+                                        // index read from the raw-index'th frame byte.
+                                        int ilStRegIdx = ip->DstOffset;
+                                        int ilStOff = (localInfos != null && ilStRegIdx < localInfos.Length) ? localInfos[ilStRegIdx].Offset : ilStRegIdx;
+                                        byte* srcSlot = frameBase + ilStOff;
                                         if (ft != null && ft.IsPrimitive)
                                         {
                                             int psz = AppDomain.GetPrimitiveSize(ft);
@@ -4183,12 +4227,10 @@ namespace ILRuntime.Runtime.Intepreter
                                         // INDEX, not a byte offset. Resolve the register's byte
                                         // offset at runtime via the frame LocalInfos (in scope
                                         // here as `localInfos`), exactly as LowerR1 does at
-                                        // compile time for every other single-register op. The
-                                        // IL-static arms above still read the raw index -- a
-                                        // pre-existing gap for the capstone's IL-static .cctor
-                                        // (tracked separately; lowering it globally exposes a
-                                        // raw-brtrue-on-reference gap in the delegate-cache
-                                        // pattern), so this fix is deliberately CLR-static only.
+                                        // compile time for every other single-register op. The IL-
+                                        // static arms above now resolve via localInfos too (the
+                                        // neo-brtrue-on-reference child landed F3 here so a
+                                        // following Brtrue_Ref dereferences a valid mStack index).
                                         int stRegIdx = ip->DstOffset;
                                         int stOff = (localInfos != null && stRegIdx < localInfos.Length) ? localInfos[stRegIdx].Offset : stRegIdx;
                                         byte* srcSlot = frameBase + stOff;
@@ -4274,7 +4316,13 @@ namespace ILRuntime.Runtime.Intepreter
                                         var sinst = ilt.StaticInstance;
                                         var off = ilt.GetStaticFieldOffset(sIdx);
                                         var ft = ilt.StaticFieldTypes.Length > sIdx ? ilt.StaticFieldTypes[sIdx] : null;
-                                        byte* dstSlot = frameBase + ip->DstOffset;
+                                        // See the IL-static Stsfeld arm: Stsfld/Ldsfeld are NOT
+                                        // lowered, so ip->DstOffset is the raw Register1 INDEX.
+                                        // Resolve the dest register's byte offset via localInfos
+                                        // (mirrors the CLR-static arm below).
+                                        int ilLdRegIdx = ip->DstOffset;
+                                        int ilLdOff = (localInfos != null && ilLdRegIdx < localInfos.Length) ? localInfos[ilLdRegIdx].Offset : ilLdRegIdx;
+                                        byte* dstSlot = frameBase + ilLdOff;
                                         if (ft != null && ft.IsPrimitive)
                                         {
                                             int psz = AppDomain.GetPrimitiveSize(ft);
