@@ -187,6 +187,60 @@ namespace ILRuntime.CLR.Method
             }
         }
 
+#if ENABLE_NEO_MODE
+        // rasen neo-overhaul-eh-table-remap: build the Neo (Register) exception-
+        // handler table from the front-half `addr` map. Extracted verbatim from
+        // InitCodeBody so it can be invoked BEFORE the Neo back-half
+        // (RunNeoBackHalf -> LowerNeoOffsets) at BOTH RunNeoBackHalf funnels
+        // (JITCompiler.Compile + GenericMethodTemplate.DoCloneAndPatch).
+        //
+        // Why: exceptionHandlerR is otherwise NULL while LowerNeoOffsets runs --
+        // InitCodeBody builds it (at the :959 site) AFTER Compile, but Compile's
+        // tail is RunNeoBackHalf -> LowerNeoOffsets (the Push-deletion pass). So
+        // the deletion pass could not keep the EH table consistent with the post-
+        // deletion body, leaving TryStart/TryEnd/HandlerStart/HandlerEnd stale
+        // and causing a thrown exception to miss its handler. Building it from
+        // `addr` before the back-half lets FixBranchTargetsAfterRemove re-map the
+        // four fields in lockstep with the branch targets.
+        //
+        // Idempotent: a no-op if exceptionHandlerR is already populated (the Neo
+        // back-half path builds it first; the :959 site then skips). Methods with
+        // no protected regions leave exceptionHandlerR null.
+        internal void BuildExceptionHandlerRegister(Dictionary<Mono.Cecil.Cil.Instruction, int> addr)
+        {
+            if (exceptionHandlerR != null)
+                return;
+            if (def == null || !def.HasBody || def.Body.ExceptionHandlers.Count == 0)
+                return;
+            exceptionHandlerR = new ExceptionHandler[def.Body.ExceptionHandlers.Count];
+            for (int i = 0; i < def.Body.ExceptionHandlers.Count; i++)
+            {
+                var eh = def.Body.ExceptionHandlers[i];
+                ExceptionHandler e = new ExceptionHandler();
+                e.HandlerStart = addr[eh.HandlerStart];
+                e.HandlerEnd = eh.HandlerEnd != null ? addr[eh.HandlerEnd] - 1 : def.Body.Instructions.Count - 1;
+                e.TryStart = addr[eh.TryStart];
+                e.TryEnd = addr[eh.TryEnd] - 1;
+                switch (eh.HandlerType)
+                {
+                    case Mono.Cecil.Cil.ExceptionHandlerType.Catch:
+                        e.CatchType = appdomain.GetType(eh.CatchType, declaringType, this);
+                        e.HandlerType = ExceptionHandlerType.Catch;
+                        break;
+                    case Mono.Cecil.Cil.ExceptionHandlerType.Finally:
+                        e.HandlerType = ExceptionHandlerType.Finally;
+                        break;
+                    case Mono.Cecil.Cil.ExceptionHandlerType.Fault:
+                        e.HandlerType = ExceptionHandlerType.Fault;
+                        break;
+                    default:
+                        throw new NotImplementedException();
+                }
+                exceptionHandlerR[i] = e;
+            }
+        }
+#endif
+
         public string Name
         {
             get
@@ -959,11 +1013,26 @@ namespace ILRuntime.CLR.Method
                 if (def.Body.ExceptionHandlers.Count > 0)
                 {
                     ExceptionHandler[] ehs;
+                    bool neoEhAlreadyBuilt = false;
                     if (register)
                     {
+#if ENABLE_NEO_MODE
+                        // rasen neo-overhaul-eh-table-remap: idempotent. The Neo
+                        // back-half (RunNeoBackHalf -> LowerNeoOffsets) already
+                        // materialized exceptionHandlerR from `addr` BEFORE the
+                        // Push-deletion pass, so the table is complete here and
+                        // the shared fill loop below is skipped (avoids a double
+                        // build / clobber). For any register path reaching here
+                        // without a Neo back-half, BuildExceptionHandlerRegister
+                        // builds it now (it is a no-op if already populated).
+                        BuildExceptionHandlerRegister(addr);
+                        ehs = exceptionHandlerR;
+                        neoEhAlreadyBuilt = true;
+#else
                         if (exceptionHandlerR == null)
                             exceptionHandlerR = new Method.ExceptionHandler[def.Body.ExceptionHandlers.Count];
                         ehs = exceptionHandlerR;
+#endif
                     }
                     else
                     {
@@ -972,30 +1041,33 @@ namespace ILRuntime.CLR.Method
                         ehs = exceptionHandler;
                     }
 
-                    for (int i = 0; i < def.Body.ExceptionHandlers.Count; i++)
+                    if (!neoEhAlreadyBuilt)
                     {
-                        var eh = def.Body.ExceptionHandlers[i];
-                        ExceptionHandler e = new ExceptionHandler();
-                        e.HandlerStart = addr[eh.HandlerStart];
-                        e.HandlerEnd = eh.HandlerEnd != null ? addr[eh.HandlerEnd] - 1 : def.Body.Instructions.Count - 1;
-                        e.TryStart = addr[eh.TryStart];
-                        e.TryEnd = addr[eh.TryEnd] - 1;
-                        switch (eh.HandlerType)
+                        for (int i = 0; i < def.Body.ExceptionHandlers.Count; i++)
                         {
-                            case Mono.Cecil.Cil.ExceptionHandlerType.Catch:
-                                e.CatchType = appdomain.GetType(eh.CatchType, declaringType, this);
-                                e.HandlerType = ExceptionHandlerType.Catch;
-                                break;
-                            case Mono.Cecil.Cil.ExceptionHandlerType.Finally:
-                                e.HandlerType = ExceptionHandlerType.Finally;
-                                break;
-                            case Mono.Cecil.Cil.ExceptionHandlerType.Fault:
-                                e.HandlerType = ExceptionHandlerType.Fault;
-                                break;
-                            default:
-                                throw new NotImplementedException();
+                            var eh = def.Body.ExceptionHandlers[i];
+                            ExceptionHandler e = new ExceptionHandler();
+                            e.HandlerStart = addr[eh.HandlerStart];
+                            e.HandlerEnd = eh.HandlerEnd != null ? addr[eh.HandlerEnd] - 1 : def.Body.Instructions.Count - 1;
+                            e.TryStart = addr[eh.TryStart];
+                            e.TryEnd = addr[eh.TryEnd] - 1;
+                            switch (eh.HandlerType)
+                            {
+                                case Mono.Cecil.Cil.ExceptionHandlerType.Catch:
+                                    e.CatchType = appdomain.GetType(eh.CatchType, declaringType, this);
+                                    e.HandlerType = ExceptionHandlerType.Catch;
+                                    break;
+                                case Mono.Cecil.Cil.ExceptionHandlerType.Finally:
+                                    e.HandlerType = ExceptionHandlerType.Finally;
+                                    break;
+                                case Mono.Cecil.Cil.ExceptionHandlerType.Fault:
+                                    e.HandlerType = ExceptionHandlerType.Fault;
+                                    break;
+                                default:
+                                    throw new NotImplementedException();
+                            }
+                            ehs[i] = e;
                         }
-                        ehs[i] = e;
                     }
                     //Mono.Cecil.Cil.ExceptionHandlerType.
                 }

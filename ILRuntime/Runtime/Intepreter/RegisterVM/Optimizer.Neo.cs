@@ -11,7 +11,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 {
     partial class Optimizer
     {
-        public static void LowerNeoOffsets(ref CompiledFrame frame, Enviorment.AppDomain domain)
+        public static void LowerNeoOffsets(ref CompiledFrame frame, Enviorment.AppDomain domain, ILRuntime.CLR.Method.ExceptionHandler[] ehs)
         {
             if (frame.TotalStructSize > ushort.MaxValue)
             {
@@ -1253,7 +1253,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                         body[j] = body[j + 1];
                                     }
                                     Array.Resize(ref body, body.Length - 1);
-                                    FixBranchTargetsAfterRemove(body, scanIdx, frame.SwitchTargets, frame.Symbols);
+                                    FixBranchTargetsAfterRemove(body, scanIdx, frame.SwitchTargets, frame.Symbols, ehs);
                                     // 因为当前指令(Call)的位置前移了，我们需要更新外层循环的 i 和当前 op
                                     i--;
                                     op = body[i];
@@ -1700,7 +1700,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             return paramInfos;
         }
 
-        static void FixBranchTargetsAfterRemove(OpCodeR[] body, int removedIndex, Dictionary<int, int[]> jumpTables, Dictionary<int, RegisterVMSymbol> symbols)
+        static void FixBranchTargetsAfterRemove(OpCodeR[] body, int removedIndex, Dictionary<int, int[]> jumpTables, Dictionary<int, RegisterVMSymbol> symbols, ILRuntime.CLR.Method.ExceptionHandler[] ehs)
         {
             for (int i = 0; i < body.Length; i++)
             {
@@ -1754,6 +1754,31 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     {
                         symbols[item.Key - 1] = item.Value;
                     }
+                }
+            }
+
+            // rasen neo-overhaul-eh-table-remap: re-map the body-indexed exception-
+            // handler table. Each Method.ExceptionHandler holds four body-indexed
+            // ints (TryStart/TryEnd/HandlerStart/HandlerEnd; there is NO FilterStart
+            // -- IL filter blocks are unsupported). ExecuteNeo indexes into the
+            // POST-deletion body, so every field strictly after `removedIndex` must
+            // shift down by one, identical to the branch-target rule above. Applied
+            // per-deletion (this helper is called once per deleted Push, inside the
+            // LowerNeoOffsets deletion loop) so the EH table stays in the same
+            // current-body frame as `removedIndex` (= scanIdx) and the branch
+            // targets, ending in final NeoExecuteBody-order. A field that equals
+            // removedIndex is never a try/handler boundary (the deleted instruction
+            // is always a synthetic Push), so it is left untouched. Null `ehs`
+            // (method has no protected regions) is a no-op.
+            if (ehs != null)
+            {
+                for (int i = 0; i < ehs.Length; i++)
+                {
+                    var eh = ehs[i];
+                    if (eh.TryStart > removedIndex) eh.TryStart--;
+                    if (eh.TryEnd > removedIndex) eh.TryEnd--;
+                    if (eh.HandlerStart > removedIndex) eh.HandlerStart--;
+                    if (eh.HandlerEnd > removedIndex) eh.HandlerEnd--;
                 }
             }
         }

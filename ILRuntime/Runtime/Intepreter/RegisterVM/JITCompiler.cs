@@ -661,6 +661,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             // byte-identical to the previous inlined sequence. RunNeoBackHalf sets
             // frame.CodeBody (after TypeSpecialize mutates `res`), so the Neo arm
             // does not assign CodeBody here (the Legacy #else arm does).
+            // rasen neo-overhaul-eh-table-remap: materialize the Neo EH table from
+            // `addr` BEFORE the back-half so it is non-null during LowerNeoOffsets
+            // (the Push-deletion pass). This lets FixBranchTargetsAfterRemove re-map
+            // the four body-indexed EH fields (TryStart/TryEnd/HandlerStart/
+            // HandlerEnd) in lockstep with the branch targets. InitCodeBody's :959
+            // build is idempotent (skips, already populated here).
+            method.BuildExceptionHandlerRegister(addr);
             RunNeoBackHalf(ref frame, res, locVarRegStart, totalRegCnt, neoCatchExRegFinal);
 #else
             frame.CodeBody = res.ToArray();
@@ -712,7 +719,9 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             // ExecuteNeo runs against a lowered copy where Register1/2/3 hold
             // byte offsets after LowerNeoOffsets.
             frame.NeoExecuteBody = (OpCodeR[])frame.CodeBody.Clone();
-            Optimizer.LowerNeoOffsets(ref frame, appdomain);
+            // rasen neo-overhaul-eh-table-remap: pass the (pre-back-half-built) EH
+            // table so the Push-deletion pass re-maps its four body-indexed fields.
+            Optimizer.LowerNeoOffsets(ref frame, appdomain, method.ExceptionHandlerRegister);
         }
 
         // Step 22: snapshot the T-invariant front-half artifacts into the capture

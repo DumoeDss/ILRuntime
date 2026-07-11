@@ -723,6 +723,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             frame.Symbols = template.Symbols;
             var resList = new List<OpCodeR>(finalBody.Length);
             for (int i = 0; i < finalBody.Length; i++) resList.Add(finalBody[i]);
+            // rasen neo-overhaul-eh-table-remap: build the instance's EH table from
+            // the (delta-shifted) `addr` BEFORE the back-half. The delta-shift above
+            // already finalized `addr` for the pre-deletion body, so the table is
+            // delta-correct here; RunNeoBackHalf then deletes Pushes and the per-
+            // deletion re-map keeps the four EH fields consistent with the post-
+            // deletion body (identical to the direct JIT path).
+            instance.BuildExceptionHandlerRegister(addr);
             var jit = new JITCompiler(appdomain, declaringType, instance);
             jit.RunNeoBackHalf(ref frame, resList, template.LocVarRegStart, template.TotalRegCnt, template.NeoCatchExRegFinal);
             return true;

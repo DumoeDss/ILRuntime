@@ -122,10 +122,17 @@
       "completedDate": "2026-07-12", "smoke": "NeoStep 339/0 (335 + 4); TestStaticFieldInstance PASSES (was InvalidCastException); child-11/12 canaries intact; stash-toggle FAIL (DivByZero) -> PASS; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=planner-author; 0 Blocker/Major). New-root-cause confirmed (static arms correct; newoj dest/arg ref-alias is the defect). Fix correct on all 4 (alias detection via map.RefSrc + rebase + primitive-int exclusion + no-overfire; retDstPtr reorder load-bearing). F1/F2 doc nits, F3 out-of-scope downstream, F4 trivial.",
       "shipped": "commit+push 2026-07-12"
+    },
+    "neo-overhaul-eh-table-remap": {
+      "pipeline": "small-feature", "wave": 1, "scope": "LATENT CORRECTNESS (child-1 sibling): method.exceptionHandlerR (TryStart/TryEnd/HandlerStart/HandlerEnd) was NULL during LowerNeoOffsets + stale post-deletion -> a thrown exception in a try/catch + >3-arg-call method could miss its handler. Fix: build EH table before the back-half at both funnels (idempotent) + per-deletion lockstep remap in FixBranchTargetsAfterRemove. CLOSES the child-1 EH-table landmine",
+      "prerequisites": ["neo-il-static-ref-field-readback"], "dependsOn": ["neo-il-static-ref-field-readback"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-12", "smoke": "NeoStep 341/0 (339 + 2); NeoStep14 (EH) 26/26 UNREGRESSED (the build-order change load-bearing for all protected-region Neo methods); stash-toggle FAIL (throw escapes catch) -> PASS; Legacy-neutral (341 ran/17 failed == baseline)",
+      "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major). Build-order-correct + remap-correct (ExceptionHandler class mutation works) + NeoStep14-gate 26/26 + probe-reliable all confirmed. 1 Minor (no dedicated generic-instance EH probe, CloneAndPatch structurally identical + stash-proven, low risk).",
+      "shipped": "commit+push 2026-07-12"
     }
   },
   "runnableFrontier": ["neo-ldind-stind-byref-clr-struct"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
