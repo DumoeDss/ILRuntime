@@ -1584,7 +1584,33 @@ namespace ILRuntime.Runtime.Intepreter
                                             var off = ilt.GetStaticFieldOffset(sIdx);
                                             var ft = ilt.StaticFieldTypes.Length > sIdx ? ilt.StaticFieldTypes[sIdx] : null;
                                             byte* dstSlot = frameBase + ip->DstOffset;
-                                            if (ft != null && ft.IsPrimitive)
+                                            // Array-initializer blob (child-6): a C# `new T[]{ many }`
+                                            // lowers to `ldtoken <PrivateImplementationDetails> <blob
+                                            // field>; call RuntimeHelpers.InitializeArray`. The blob
+                                            // field's declared type is a compiler-generated `.size N`
+                                            // struct with NO instance fields, so its computed
+                                            // TotalPrimitiveSize/TotalReferenceCount are both 0 -- the
+                                            // value-type arm below would copy 0 bytes, and the Neo
+                                            // static instance never materialised the byte[] either
+                                            // (ManagedObjects is null when the declaring type has no
+                                            // reference statics; ILTypeInstance's InitialValue replay
+                                            // skips the store). The blob lives only in Cecil's
+                                            // FieldDefinition.InitialValue, so surface it here as a
+                                            // Neo reference for the downstream InitializeArray Neo
+                                            // redirect to bulk-copy (mirrors Legacy, whose static
+                                            // instance stores the byte[] and whose redirect reads
+                                            // param 1 as byte[]). Must precede the value-type arm --
+                                            // the blob field IS a value-type ILType.
+                                            byte[] initBlob = null;
+                                            var sfd = ilt.StaticFieldDefinitions;
+                                            if (sfd != null && sfd.Length > sIdx)
+                                                initBlob = sfd[sIdx].InitialValue;
+                                            if (initBlob != null && initBlob.Length > 0)
+                                            {
+                                                mStack.Add(initBlob);
+                                                *(int*)dstSlot = mStack.Count - 1;
+                                            }
+                                            else if (ft != null && ft.IsPrimitive)
                                             {
                                                 int psz = AppDomain.GetPrimitiveSize(ft);
                                                 if (psz == 1) *(int*)dstSlot = (sbyte)sinst.Primitives[off.PrimitiveOffset];

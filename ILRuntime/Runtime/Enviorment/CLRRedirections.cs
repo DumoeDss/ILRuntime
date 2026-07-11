@@ -504,6 +504,44 @@ namespace ILRuntime.Runtime.Enviorment
         }*/
 
 #if ENABLE_NEO_MODE
+        // child-6 (neo-arrays): Neo redirect for
+        // System.Runtime.CompilerServices.RuntimeHelpers.InitializeArray --
+        // the C# array-initializer lowering
+        //   newarr; dup; ldtoken <PrivateImplementationDetails blob>;
+        //   call RuntimeHelpers.InitializeArray
+        // Reads param 0 (the destination Array) and param 1 (the initializer
+        // byte[]) as Neo references, then bulk-copies the blob into the pinned
+        // array via Marshal.Copy (mirrors the Legacy CLRRedirections.Initialize
+        // Array body). Void method -- no retDst write. The byte[] reaches
+        // param 1 because the Neo ldtoken field path surfaces the
+        // <PrivateImplementationDetails> RVA blob as a reference; CopyNeoCall-
+        // Arguments copies each param by the callee's declared size (param 1 is
+        // RuntimeFieldHandle, ~8 managed bytes), but ReadNeoReference consumes
+        // only the leading 4-byte mStack index, so the byte[] is recovered
+        // correctly regardless of the slot width. Cursor discipline mirrors
+        // DelegateCombineNeo: param 0 is a 4-byte ref (Array), so param 1's
+        // index sits at frameBase+4.
+        public unsafe static void InitializeArrayNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            object array = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object data = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            if (data is byte[] bytes && array is Array arr && bytes.Length > 0)
+            {
+                var h = System.Runtime.InteropServices.GCHandle.Alloc(arr, System.Runtime.InteropServices.GCHandleType.Pinned);
+                try
+                {
+                    var dst = System.Runtime.InteropServices.Marshal.UnsafeAddrOfPinnedArrayElement(arr, 0);
+                    System.Runtime.InteropServices.Marshal.Copy(bytes, 0, dst, bytes.Length);
+                }
+                finally
+                {
+                    h.Free();
+                }
+            }
+            // void method -> no retDst write.
+        }
+
         // Step 19: Neo redirect for System.Delegate.Combine (the C# `+=`
         // multicast lowering). Reads two Delegate params from the Neo param
         // region (each a 4-byte mStack index -- the object is an IDelegateAdapter

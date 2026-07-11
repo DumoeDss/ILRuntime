@@ -148,6 +148,15 @@ namespace ILRuntime.Runtime.Enviorment
             loadedAssemblies = System.AppDomain.CurrentDomain.GetAssemblies();
             var mi = typeof(System.Runtime.CompilerServices.RuntimeHelpers).GetMethod("InitializeArray");
             RegisterCLRMethodRedirection(mi, CLRRedirections.InitializeArray);
+#if ENABLE_NEO_MODE
+            // child-6 (neo-arrays): Neo dispatch consults RedirectMapNeo
+            // exclusively (CLRMethod.RedirectionNeo), which has no entry for
+            // InitializeArray -> array initializers fell through to the
+            // reflection fallback and hit the Step-13b RuntimeFieldHandle NIE.
+            // Register the Neo redirect so InvokeNeoClrMethod serves it.
+            // Register the Neo redirect so InvokeNeoClrMethod serves it.
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.InitializeArrayNeo);
+#endif
             mi = typeof(AppDomain).GetMethod("GetCurrentStackTrace");
             RegisterCLRMethodRedirection(mi, CLRRedirections.GetCurrentStackTrace);
             foreach (var i in typeof(System.Activator).GetMethods())
