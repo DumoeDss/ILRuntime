@@ -158,6 +158,16 @@ namespace ILRuntime.Runtime.Intepreter
         static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtWriterDelegate> s_neoVtWriters
             = new System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtWriterDelegate>();
 
+        // rasen neo-jit-bogus-opcode: the named OpCodeREnum range is implicit
+        // 0..<count> (zero explicit-value members). Cached once so the ExecuteNeo
+        // dispatch guard can detect a garbage/out-of-range Code with a single int
+        // compare and self-maintains as Neo opcodes are appended.
+        // INVARIANT: OpCodeREnum must stay a CONTIGUOUS implicit range (no explicit
+        // values, no gaps) for `raw < NeoOpCodeCount` to be a valid named-range test.
+        // If explicit values/gaps are ever introduced, switch this guard to a name-set
+        // lookup (Enum.IsDefined / a HashSet) instead of the int-range compare.
+        static readonly int NeoOpCodeCount = Enum.GetValues(typeof(OpCodeREnum)).Length;
+
         // Custom delegate types: pointer types cannot be generic type arguments
         // (CS0306), so Func<byte*,object>/Action<byte*,object> are illegal. These
         // custom delegates accept the frame byte pointer directly.
@@ -1407,6 +1417,21 @@ namespace ILRuntime.Runtime.Intepreter
                         frame.Address.Value = insOffset;
                         AppDomain.DebugService.CheckShouldBreak(method, this, insOffset);
 #endif
+                        // Permanent Neo dispatch guard (rasen neo-jit-bogus-opcode, task 4.1).
+                        // The loop's termination relies on a Ret/throw; an unconditional ip++
+                        // with no bounds check would otherwise read a garbage Code past
+                        // body.Length (an un-terminated body or a control-flow target past the
+                        // end) and silently dispatch it. This one-int-compare tripwire is checked
+                        // BEFORE the ip->Code deref so an overrun never reads OOB; it turns the
+                        // failure into a loud, locatable throw. Ships in ALL Neo builds.
+                        {
+                            int _ipIdx = (int)(ip - ptr);
+                            if (_ipIdx >= body.Length)
+                                throw new InvalidOperationException(
+                                    "Neo: ip ran past body end in " + method
+                                    + " at index " + _ipIdx + "/" + body.Length
+                                    + " (unterminated body or a control-flow target past the end)");
+                        }
                         OpCodeREnum code = ip->Code;
                         switch (code)
                         {
@@ -5354,7 +5379,29 @@ namespace ILRuntime.Runtime.Intepreter
                                     continue;
                                 }
                             default:
-                                throw new NotImplementedException(string.Format("Neo: opcode {0} not yet implemented (Step 6)", code));
+                                {
+                                    // Permanent Neo dispatch guard (rasen neo-jit-bogus-opcode,
+                                    // task 4.2). A Code outside the named OpCodeREnum range is
+                                    // garbage (operand/register bytes read as Code via a
+                                    // mis-targeted ip, or a future lowering regression). Throw a
+                                    // locatable diagnostic BEFORE the garbage can alias a real
+                                    // case label. Named-but-unimplemented opcodes (e.g. ldtoken)
+                                    // fall through to the existing Step-6 message below.
+                                    int _rawCode = (int)code;
+                                    if (_rawCode < 0 || _rawCode >= NeoOpCodeCount)
+                                    {
+                                        int _idx = (int)(ip - ptr);
+                                        throw new InvalidOperationException(
+                                            "Neo: corrupt opcode " + _rawCode
+                                            + " at " + method + ":" + _idx + "/" + body.Length
+                                            + " R1=" + ip->Register1 + " R2=" + ip->Register2
+                                            + " R3=" + ip->Register3 + " R4=" + ip->Register4
+                                            + " Op=" + ip->Operand + " Op2=" + ip->Operand2
+                                            + " Op3=" + ip->Operand3 + " Op4=" + ip->Operand4
+                                            + " OpL=" + ip->OperandLong);
+                                    }
+                                    throw new NotImplementedException(string.Format("Neo: opcode {0} not yet implemented (Step 6)", code));
+                                }
                         }
                         ip++;
                     }

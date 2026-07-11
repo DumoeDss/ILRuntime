@@ -1664,7 +1664,16 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             for (int i = 0; i < body.Length; i++)
             {
                 var op = body[i];
-                if (IsBranching(op.Code))
+                // Leave / Leave_S carry their EH control-flow target in Operand
+                // (consumed by ExecuteNeo as `ip = ptr + ip->Operand` and recorded
+                // into finallyEndAddress). They are NOT covered by IsBranching /
+                // IsIntermediateBranching, so without this arm a Push-deletion that
+                // shifts indices below a Leave target leaves the target pointing
+                // past the (now shorter) body -- an ip overrun that reads a garbage
+                // Code. (rasen neo-jit-bogus-opcode; confirmed via instrumented dump
+                // on async state-machine MoveNext: Leave_S Op==body.Length.)
+                bool isLeave = op.Code == OpCodeREnum.Leave || op.Code == OpCodeREnum.Leave_S;
+                if (IsBranching(op.Code) || isLeave)
                 {
                     if (op.Operand > removedIndex)
                     {

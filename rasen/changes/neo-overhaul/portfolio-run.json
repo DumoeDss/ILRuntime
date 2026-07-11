@@ -1,0 +1,54 @@
+{
+  "parent": "neo-overhaul",
+  "kind": "portfolio",
+  "pipeline": "auto-decompose",
+  "childPipeline": "small-feature",
+  "tier": "A",
+  "createdAt": "2026-07-11",
+  "spunOffFrom": "neo-completion-portfolio (closed 2026-07-11, lead-11: 59 children done, frontier empty)",
+  "policy": "STRICT SERIAL -- every child touches ILIntepreter.Neo.cs and/or JITCompiler.cs (shared files); no parallel cohorts. Parent directive = full autonomy: --no-gate (gates auto-approved+recorded), commit+push after each clean child, relay-not-stop on context limit, drive DEEP on the 1M window. NOTE: openspec->rasen migration done (2026-07-11); read/write the rasen/ tree now. Mandate (lead-11 next-action): the broader Neo overhaul -- drive the unimplemented-opcode + JIT-correctness surface to functional completion. Lesson (lead-10 12-for-12): re-audit any 'foundational gap' verdict before accepting it; it is almost always a specific tractable bug.",
+  "scopeBasis": {
+    "method": "full Neo TestCases run (no NeoStep filter) captured NIE surface + static switch-diff vs OpCodeREnum",
+    "fullRunCaveat": "the full Neo run CRASHES (exit 127, NullReferenceException in GenericMethodTest.GenericTest ~Dictionary Enumerator) -- frequency data is pre-crash only, not exhaustive",
+    "findings": {
+      "jit_bogus_opcode": "ExecuteNeo default case (ILIntepreter.Neo.cs:5357) reads ip->Code; value 2359324 (0x23F70C) is NOT a named OpCodeREnum member (enum is all-implicit 0..328, zero explicit values) -> the JIT emits a garbage Code field for ~8 consistent sites. Likely a field-offset/uninitialized-Code bug in OpCodeR emission. CORRECTNESS (could silently corrupt), not a missing feature. HIGHEST PRIORITY -- do first.",
+      "ldtoken": "dominant missing opcode (~60 pre-crash hits). ldtoken pushes a RuntimeTypeHandle/MethodHandle/FieldHandle from a metadata token (typeof() via ldtoken+GetTypeFromHandle, reflection).",
+      "bare_nie": "5x 'The method or operation is not implemented.' (bare throw new NotImplementedException() with no message) -- locate + implement/fix.",
+      "clr_static_fields": "Stsfld/Ldsfld on a CLR static field throw (Step 25 S3-4 capstone was IL-only). ~10 pre-crash hits combined.",
+      "raw_field_edges": "raw Ldfld/Stfld (and Ldloc/Stloc/Ldarg) occasionally reach the Step 6 default -- the Neo splitter that lowers these into typed arms (Ldfld_Primitive/Ldfld_Ref/ldfld.value etc.) misses some shapes.",
+      "valuetask_marshal": "VT1/VT2/VT6 ValueTask<T> async failures = a call-arg-marshalling bug (the builder byref-this occupies 16 call-frame bytes [8-byte F-10 byref + 8-byte struct flat-bytes] but AsyncValueTaskMethodBuilder_T_SetResult_Neo skips only 8 -> reads stale residue). Re-routed from the disproven neo-clrstruct-sm-field-layout child. Deepest, lowest-frequency -- last."
+    }
+  },
+  "completionPlan": {
+    "orderedFrontier": [
+      { "id": "neo-jit-bogus-opcode", "scope": "JIT correctness: ip->Code=2359324 garbage opcode (~8 sites). Instrument the ExecuteNeo default case to log method+IL-offset, build a minimal reproducer, find the OpCodeR emission bug (field offset / uninitialized Code), fix, add a NeoStep guard.", "deps": [], "size": "mod", "priority": "CRITICAL-correctness" },
+      { "id": "neo-ldtoken", "scope": "Implement ldtoken in ExecuteNeo: push RuntimeTypeHandle/RuntimeMethodHandle/RuntimeFieldHandle from the metadata token (Operand). Wire the handle -> IType/IMethod/IField resolution. typeof()/reflection unblocks. Add NeoStep probe.", "deps": ["neo-jit-bogus-opcode"], "size": "mod", "priority": "HIGH-dominant" },
+      { "id": "neo-bare-nie", "scope": "Locate the 5 bare 'throw new NotImplementedException()' (no message) sites reached in Neo mode; implement or correctly guard each. Add probes.", "deps": ["neo-ldtoken"], "size": "small-mod" },
+      { "id": "neo-clr-static-fields", "scope": "Step 25 S3-4 capstone: Stsfld/Ldsfld on a CLR static field (currently throws 'IL-only capstone'). Resolve the CLR static via CLRType + read/write the CLR FieldInfo. Add NeoStep probe.", "deps": ["neo-bare-nie"], "size": "mod" },
+      { "id": "neo-raw-field-edges", "scope": "Raw Ldfld/Stfld/Ldloc/Ldarg reaching the Step 6 default: find why the Neo typed-splitter does not lower them, add the missing lowering arm or default-case handling. Add probes.", "deps": ["neo-clr-static-fields"], "size": "small-mod" },
+      { "id": "neo-valuetask-marshal", "scope": "VT1/VT2/VT6 ValueTask<T> async: the 16-byte builder byref-this call-arg marshalling skip in AsyncValueTaskMethodBuilder_T_SetResult_Neo (CLRRedirections.AsyncNeo.cs) + matching SetException/AwaitUnsafeOnCompleted. Dump the call-frame layout vs AsyncTaskMethodBuilder<int> (TC8, works). Deepest.", "deps": ["neo-raw-field-edges"], "size": "mod-large" },
+      { "id": "neo-overhaul-eh-table-remap", "scope": "LATENT landmine surfaced by child-1 review (F-1, pre-existing): method.ExceptionHandlerRegister (TryStart/TryEnd/HandlerStart/HandlerEnd, body-indexed) is NOT remapped by LowerNeoOffsets Push-deletion. Trigger: try/catch/finally + >3-arg call/newobj that THROWS -> mis-routed exception handler. Same family as child 1 (Leave remap). Plumb exceptionHandlerR through LowerNeoOffsets + add a THROWING-EH regression probe. Not triggered by the current 306 smoke.", "deps": ["neo-valuetask-marshal"], "size": "mod", "priority": "correctness-followup" }
+    ]
+  },
+  "executionOrder": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-bare-nie", "neo-clr-static-fields", "neo-raw-field-edges", "neo-valuetask-marshal", "neo-overhaul-eh-table-remap"],
+  "children": {
+    "neo-jit-bogus-opcode": {
+      "pipeline": "small-feature", "wave": 1, "scope": "JIT correctness: ip->Code=2359324 garbage opcode (~8 sites) -> root-cause + fix + permanent ExecuteNeo dispatch guard",
+      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-11", "smoke": "NeoStep 306/0 (301 baseline + 5 probes); stash-toggle FAIL-on-HEAD overrun-throw -> PASS-after; Legacy-neutral (#if ENABLE_NEO_MODE)",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker; 1 Major PRE-EXISTING/deferred -> neo-overhaul-eh-table-remap; 2 Minor fixed inline F-2/F-3; 1 Trivial accepted-known). Root cause H1 confirmed via instrumented dump: FixBranchTargetsAfterRemove missed Leave/Leave_S Operand remap after Push-deletion.",
+      "shipped": "commit+push 2026-07-11"
+    }
+  },
+  "runnableFrontier": ["neo-ldtoken"],
+  "completedChildren": ["neo-jit-bogus-opcode"],
+  "interruptedChildren": [],
+  "escalatedChildren": [],
+  "housekeeping": {
+    "unarchived_stragglers_in_rasen_changes": ["neo-async-execctx-capture (done, in completion-portfolio)", "neo-async-multi-await (done, in completion-portfolio)", "neo-clrstruct-sm-field-layout (DISPROVEN; not in any portfolio; archive as disproven)"],
+    "note": "archive these 3 after the first overhaul child ships (or in parallel); they are cosmetic, non-blocking."
+  },
+  "planner": null,
+  "sessionHandoff": null,
+  "notes": "Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push. Serial-by-shared-interpreter/JIT-files. Build/test: dotnet build ILRuntimeTestCLI -c Debug_Neo --no-incremental + dotnet build TestCases -c Debug; run: dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- TestCases/bin/Debug/netstandard2.1/TestCases.dll HotfixAOT/Patched/HotfixAOT.patch true [filter]. NeoStep smoke must stay green (301/0/0 baseline at lead-11)."
+}
