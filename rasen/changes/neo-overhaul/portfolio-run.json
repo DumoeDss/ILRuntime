@@ -59,16 +59,24 @@
       "completedDate": "2026-07-11", "smoke": "NeoStep 316/0 (314 + 2); typed arms UNREGRESSED (NeoStep12/13/17 green); full-smoke raw Stfld 36->0, Ldfld 80->0; stash-toggle FAIL-on-HEAD Step-6 NIE -> PASS; Legacy-neutral (316 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Optimizer-additive + 3-owner-case + typed-arm-unregressed all confirmed. Root cause: raw Stfld/Ldfld escape the splitter when the declaring type is CLRType (no JIT change). M2 (IL-instance-with-CLR-base-field, 10 hits, Legacy handles) -> follow-up child; M1/M3 deferred fail-loud; T1 perf accepted.",
       "shipped": "commit+push 2026-07-11"
+    },
+    "neo-bare-nie": {
+      "pipeline": "small-feature", "wave": 1, "scope": "Bare throw new NotImplementedException() (~38 hits) -> all collapse to AppDomain.GetPrimitiveSize lacking enum/CLR-VT branches; 1 additive fix + 5 guard-tags",
+      "prerequisites": ["neo-raw-stfld-ldfld"], "dependsOn": ["neo-raw-stfld-ldfld"], "status": "done", "capability": "neo-value-types",
+      "completedDate": "2026-07-11", "smoke": "NeoStep 318/0 (316 + 2); full-smoke bare-default ~38->6 (all 6 = deferred framework Enum.GetValues); GetPrimitiveSize ~16->0; stash-toggle FAIL-on-HEAD (JIT + runtime) -> PASS; Legacy-neutral (318 ran/17 failed == baseline)",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). SIZING-correct confirmed (GetNeoValueTypeManagedSize canonical). F1 (ref-field CLR struct stobj/ldobj refCount=0, latent missed-GC-root, line unchanged by PR) -> follow-up; F2 trivial.",
+      "shipped": "commit+push 2026-07-11"
     }
   },
-  "runnableFrontier": ["neo-bare-nie"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld"],
+  "runnableFrontier": ["neo-clr-vt-reffields-binder"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RuntimeHelpers.InitializeArray has no RedirectionNeo -> its RuntimeFieldHandle param fails the Step-13b ValueTypeBinder marshal; C# array initializers cannot complete end-to-end in Neo. The 20 former ldtoken field-path NREs became 20 downstream NIEs after child 2 (red->red). Add a Neo redirect.", "source": "child 2 review" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
     { "id": "neo-optimizer-dead-expr-operand4", "scope": "Optimizer.Neo.cs:1218 `op.Operand4 == 1;` is a dead no-assignment expression (likely intended `=`). Pre-existing latent bug. Trivial fix.", "source": "child 2 re-review TRIVIAL-A" },
     { "id": "neo-brtrue-on-reference", "scope": "PAIRED CORRECTNESS (child-3 F3+F4, latent, masked): brtrue/brfalse tests low-int32 !=0 but a null reference is a non-zero mStack index (IL-static) / -1 (CLR-static Ldsfld) -> the Roslyn delegate-cache `ldsfld cache; brtrue` pattern misclassifies null as truthy. F3 = the IL-static Stsfld/Ldsfld arms ALSO read raw DstOffset (same bug child-3 fixed for CLR). Masked by F3 + ceq lowering. Fix F3 (IL-static runtime offset) + F4 (brtrue null-sentinel) TOGETHER. Reviewer confirmed child-3's no-global-lowering scoping is correct (fixes target without unmasking).", "source": "child 3 review F3+F4" },
-    { "id": "neo-il-instance-clr-base-field", "scope": "An IL instance accessing a field declared on a CLR base type (TestCls..ctor, 10 full-smoke hits). Legacy handles it (Register.cs:3113); Neo raw-Stfld/Ldfld handler defers via tagged NIE. Real parity gap. Follow-up to child 4.", "source": "child 4 review M2" }
+    { "id": "neo-il-instance-clr-base-field", "scope": "An IL instance accessing a field declared on a CLR base type (TestCls..ctor, 10 full-smoke hits). Legacy handles it (Register.cs:3113); Neo raw-Stfld/Ldfld handler defers via tagged NIE. Real parity gap. Follow-up to child 4.", "source": "child 4 review M2" },
+    { "id": "neo-clr-vt-refcount-stobjldobj", "scope": "Child-5 F1: the Stobj/Ldobj arm computes refCount=0 for CLR structs (doesn't consult ValueTypeBinder, unlike AllocateNeoCallParamSlot:1592). Post-child-5 the size is correct so the copy proceeds -> a CLR struct WITH managed ref fields copied via stobj/ldobj has untracked refs (latent missed-GC-root). Wire the binder's managedCount or guard ref-field CLR structs. Related to neo-clr-vt-reffields-binder.", "source": "child 5 review F1" }
   ],
   "interruptedChildren": [],
   "escalatedChildren": [],

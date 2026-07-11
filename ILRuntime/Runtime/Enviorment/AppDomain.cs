@@ -1714,7 +1714,8 @@ namespace ILRuntime.Runtime.Enviorment
             }
             else
             {
-                throw new NotImplementedException();
+                throw new NotImplementedException(
+                    $"Neo GetType(token): unhandled token shape {token?.GetType().Name} [neo-bare-nie]");
             }
             res = GetType(typename);
             if (res == null)
@@ -2159,7 +2160,8 @@ namespace ILRuntime.Runtime.Enviorment
             }
             else
             {
-                throw new NotImplementedException();
+                throw new NotImplementedException(
+                    $"Neo GetMethod(token): unhandled method-reference shape {token?.GetType().Name} [neo-bare-nie]");
                 //Mono.Cecil.GenericInstanceMethod gmethod = _def as Mono.Cecil.GenericInstanceMethod;
                 //genlist = new MethodParamList(environment, gmethod);
             }
@@ -2301,8 +2303,28 @@ namespace ILRuntime.Runtime.Enviorment
             {
                 return 8;
             }
+            else if (fieldType.IsValueType && fieldType.TypeForCLR != null
+                     && !(fieldType is CLR.TypeSystem.ILType))
+            {
+                // neo-bare-nie: an enum or a CLR value type (struct) that callers
+                // legitimately route into this primitive-size helper. The Neo JIT
+                // call-param-slot allocator AllocateNeoCallParamSlot calls here for
+                // any type whose TypeForCLR.IsEnum (enum-typed call params), and the
+                // ExecuteNeo Stobj/Ldobj arms call here for a value-type token that
+                // is NOT an ILType (ilType == null, a CLR struct such as TestVector3).
+                // Size it via the canonical Neo managed-size helper: an enum maps to
+                // its underlying primitive; a CLR struct uses Unsafe.SizeOf. This is
+                // STRICTLY ADDITIVE -- the helper previously threw for ALL
+                // non-primitives, so every caller reaching this branch was already
+                // broken (a whole-method JIT failure or a runtime opcode throw). IL
+                // value types are sized by their CALLERS (ilType.TotalPrimitiveSize)
+                // before reaching this helper, so they are intentionally excluded and
+                // an ILType that does reach the residual throw is a caller bug.
+                return Optimizer.GetNeoValueTypeManagedSize(fieldType.TypeForCLR);
+            }
             else
-                throw new NotImplementedException();
+                throw new NotImplementedException(
+                    $"Neo GetPrimitiveSize: unsupported IType '{fieldType?.FullName}' (not a primitive/enum/CLR-value-type) [neo-bare-nie]");
         }
 #endif
 

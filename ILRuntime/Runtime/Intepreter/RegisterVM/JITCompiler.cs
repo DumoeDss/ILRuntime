@@ -2912,7 +2912,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         op.OperandLong = method.GetTypeTokenHashCode(token);
                     }
                     else
-                        throw new NotImplementedException();
+                        throw new NotImplementedException(
+                            $"Neo Ldtoken: unhandled token shape {token?.GetType().Name} (expected FieldReference/TypeReference) [neo-bare-nie]");
                     break;
                 case Code.Ldftn:
                     {
@@ -3010,7 +3011,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     res = OpCodeREnum.Ldfld_U8;
                 }
                 else
-                    throw new NotImplementedException();
+                    throw new NotImplementedException(
+                        $"Neo GetLdfldCodeForType: IL field '{fieldType?.FullName}' has no typed Ldfld opcode [neo-bare-nie]");
             }
             else
             {
@@ -3095,7 +3097,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     res = OpCodeREnum.Stfld_U8;
                 }
                 else
-                    throw new NotImplementedException();
+                    throw new NotImplementedException(
+                        $"Neo GetStfldCodeForType: IL field '{fieldType?.FullName}' has no typed Stfld opcode [neo-bare-nie]");
             }
             else
             {
