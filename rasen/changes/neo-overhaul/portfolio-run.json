@@ -45,14 +45,22 @@
       "completedDate": "2026-07-11", "smoke": "NeoStep 311/0 (306 + 5 ldtoken probes); full-smoke Ldtoken NIE 254->0, GetStaticFieldOffset NRE 20->0; stash-toggle FAIL-on-HEAD Step-6 NIE -> PASS-after; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS after 1 review-loop round. MAJOR-1 (reviewer-found, fixer-fixed, re-reviewed): planner+implementer wrongly claimed Operand3 is a disjoint spare -- it ALIASES OperandLong high dword, clobbering the field path declaring type. Fix = carry dest ref slot in Operand4 (@20-23, the only disjoint int spare). Offset-verified independently twice; 2-line toggle reproduced. MINOR-A doc reconciliation done; TRIVIAL-A (dead op.Operand4==1 @1218) recorded out-of-scope.",
       "shipped": "commit+push 2026-07-11"
+    },
+    "neo-clr-static-fields": {
+      "pipeline": "small-feature", "wave": 1, "scope": "Stsfld/Ldsfld on a CLR static field (Step 25 S3-4 capstone was IL-only) + NeoClrVtStaticFieldIsUnsafe guard",
+      "prerequisites": ["neo-ldtoken"], "dependsOn": ["neo-ldtoken"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-11", "smoke": "NeoStep 314/0 (311 + 3); full smoke COMPLETES 848/249 (no crash); CLR-static NIE 88->0; stash-toggle FAIL-on-HEAD NIE -> PASS; bug-fix-1 wrong-slot empirically reproduced; Legacy-neutral",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Recovery implementer found+fixed 2 bugs in the dead worker's partial code (raw-DstOffset wrong-slot + VT-binder AV). F1 weak-probes accepted; F3 (IL-static raw DstOffset) + F4 (brtrue-on-reference null misclassify) -> paired follow-up child neo-brtrue-on-reference (masked, fix together); F5/F6 trivial.",
+      "shipped": "commit+push 2026-07-11"
     }
   },
-  "runnableFrontier": ["neo-bare-nie"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken"],
+  "runnableFrontier": ["neo-raw-stfld-ldfld"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RuntimeHelpers.InitializeArray has no RedirectionNeo -> its RuntimeFieldHandle param fails the Step-13b ValueTypeBinder marshal; C# array initializers cannot complete end-to-end in Neo. The 20 former ldtoken field-path NREs became 20 downstream NIEs after child 2 (red->red). Add a Neo redirect.", "source": "child 2 review" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
-    { "id": "neo-optimizer-dead-expr-operand4", "scope": "Optimizer.Neo.cs:1218 `op.Operand4 == 1;` is a dead no-assignment expression (likely intended `=`). Pre-existing latent bug. Trivial fix.", "source": "child 2 re-review TRIVIAL-A" }
+    { "id": "neo-optimizer-dead-expr-operand4", "scope": "Optimizer.Neo.cs:1218 `op.Operand4 == 1;` is a dead no-assignment expression (likely intended `=`). Pre-existing latent bug. Trivial fix.", "source": "child 2 re-review TRIVIAL-A" },
+    { "id": "neo-brtrue-on-reference", "scope": "PAIRED CORRECTNESS (child-3 F3+F4, latent, masked): brtrue/brfalse tests low-int32 !=0 but a null reference is a non-zero mStack index (IL-static) / -1 (CLR-static Ldsfld) -> the Roslyn delegate-cache `ldsfld cache; brtrue` pattern misclassifies null as truthy. F3 = the IL-static Stsfld/Ldsfld arms ALSO read raw DstOffset (same bug child-3 fixed for CLR). Masked by F3 + ceq lowering. Fix F3 (IL-static runtime offset) + F4 (brtrue null-sentinel) TOGETHER. Reviewer confirmed child-3's no-global-lowering scoping is correct (fixes target without unmasking).", "source": "child 3 review F3+F4" }
   ],
   "interruptedChildren": [],
   "escalatedChildren": [],

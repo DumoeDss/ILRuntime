@@ -12,6 +12,9 @@ namespace ILRuntimeTest.TestFramework
     public class TestClass3
     {
         public TestStruct Struct;
+        // neo-clr-static-fields: a writable CLR static int for the Stsfld+Ldsfld
+        // primitive round-trip probe (mscorlib's statics are mostly initonly).
+        public static int NeoClrStaticProbe;
         public static string getString(int startIndex = 0, int length = -1)
         {
             throw new Exception();
@@ -380,6 +383,11 @@ namespace ILRuntimeTest.TestFramework
         // into a 4-byte slot; no overflow). Different values to distinguish them.
         public static int MakeIntA() { return 600; }
         public static int MakeIntB() { return 3; }
+
+        // neo-clr-static-fields diagnostic: read the TestClass3.NeoClrStaticProbe
+        // CLR static from the HOST (a plain CLR call -- no stsfld/ldsfld), so the
+        // probe can tell a broken Stsfld WRITE from a broken Ldsfld READ.
+        public static int HostReadNeoClrStaticProbe() { return TestClass3.NeoClrStaticProbe; }
         // A method that touches the frame between two Make() calls (live-range
         // overlap probe): returns an int the caller must observe so the compiler
         // does not dead-code-eliminate the call.

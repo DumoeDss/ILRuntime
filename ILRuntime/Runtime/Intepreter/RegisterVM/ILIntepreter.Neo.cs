@@ -249,6 +249,51 @@ namespace ILRuntime.Runtime.Intepreter
             writer(dst, value);
         }
 
+        // neo-clr-static-fields: a CLR value-type STATIC field is UNSAFE to
+        // marshal through the flat frame slot, so the Stsfld/Ldsfld CLR-static
+        // VT branches must refuse it with a tagged NIE (NOT crash) when either
+        //   (a) it has reference fields -- a CLR static has no ValueTypeBinder
+        //       wiring the ref region (the Step-13b gap), so the per-type
+        //       writer/reader would store/load managed pointers as raw bytes
+        //       into the primitive region (garbage refs / later corruption); or
+        //   (b) its flat managed size overflows the register's eval-slot size
+        //       (the JIT sizes an eval temp to the method's MAX VT, which may
+        //       not include this CLR static struct -> an OOB write/reads and
+        //       AccessViolation-exits the process).
+        // Simple blittable structs that fit the slot (enums, IntPtr, etc.) pass.
+        // Recursive so a struct with a nested ref-fielded struct is also caught.
+        static bool NeoClrVtStaticFieldIsUnsafe(Type ft, int slotSize, bool hasBinder)
+        {
+            if (ft == null || !ft.IsValueType || ft.IsPrimitive)
+                return false;
+            // A registered ValueTypeBinder lays the struct out via the binder's
+            // primitive+ref mapping; this CLR-static arm writes only FLAT managed
+            // bytes (WriteNeoValueType/ReadNeoValueType), so a binder struct would
+            // be corrupted (and the per-type writer can AccessViolation-exit on the
+            // binder-shaped slot). Refuse it -- the binder-wired static-field path
+            // is the separate Step-13b concern.
+            if (hasBinder)
+                return true;
+            if (NeoClrStructHasRefFields(ft))
+                return true;
+            if (slotSize > 0 && Optimizer.GetNeoValueTypeManagedSize(ft) > slotSize)
+                return true;
+            return false;
+        }
+
+        static bool NeoClrStructHasRefFields(Type t)
+        {
+            if (t == null || !t.IsValueType || t.IsPrimitive)
+                return false;
+            foreach (var fi in t.GetFields(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance))
+            {
+                var fft = fi.FieldType;
+                if (!fft.IsValueType) return true;
+                if (!fft.IsPrimitive && NeoClrStructHasRefFields(fft)) return true;
+            }
+            return false;
+        }
+
         // Step 19: read the explicit args of an IL-delegate Invoke callvirt from
         // the callee param region (slot 0 = the adapter `this`, slots [1..] = the
         // Invoke params). Used by the Callvirt_IL delegate-invoke branch to feed
@@ -3864,7 +3909,57 @@ namespace ILRuntime.Runtime.Intepreter
                                             sinst.ManagedObjects[off.ReferenceOffset] = srcRefIdx >= 0 ? mStack[srcRefIdx] : null;
                                         }
                                     }
-                                    else throw new NotImplementedException("Neo Stsfld: CLR static field not implemented (Step 25 S3-4; the capstone is IL-only)");
+                                    else
+                                    {
+                                        // CLR static field: resolve via CLRType and write
+                                        // through the underlying System.Reflection.FieldInfo
+                                        // (mirrors Legacy ExecuteR Stsfld CLR branch,
+                                        // ILIntepreter.Register.cs:3301-3308). The operand
+                                        // encoding is shared IL/CLR (GetStaticFieldIndex:
+                                        // typeHash<<32 | fieldHash), so sIdx=(int)OperandLong
+                                        // is the field hash. NO JIT change.
+                                        var ct = declType as CLRType;
+                                        int sIdx = (int)ip->OperandLong;
+                                        var f = ct.GetField(sIdx);
+                                        if (f == null)
+                                            throw new NotImplementedException("Neo Stsfld: CLR static field hash " + sIdx + " not resolved for type " + declType.FullName);
+                                        var ft = f.FieldType;
+                                        // Stsfld/Ldsfld are NOT lowered by LowerNeoOffsets (they
+                                        // hit the no-op `default` + empty WarnUnhandledNeoLowering
+                                        // Opcode), so ip->DstOffset still holds the raw Register1
+                                        // INDEX, not a byte offset. Resolve the register's byte
+                                        // offset at runtime via the frame LocalInfos (in scope
+                                        // here as `localInfos`), exactly as LowerR1 does at
+                                        // compile time for every other single-register op. The
+                                        // IL-static arms above still read the raw index -- a
+                                        // pre-existing gap for the capstone's IL-static .cctor
+                                        // (tracked separately; lowering it globally exposes a
+                                        // raw-brtrue-on-reference gap in the delegate-cache
+                                        // pattern), so this fix is deliberately CLR-static only.
+                                        int stRegIdx = ip->DstOffset;
+                                        int stOff = (localInfos != null && stRegIdx < localInfos.Length) ? localInfos[stRegIdx].Offset : stRegIdx;
+                                        byte* srcSlot = frameBase + stOff;
+                                        object value;
+                                        if (ft.IsPrimitive)
+                                            value = NeoBoxPrimitiveByType(ft, srcSlot);
+                                        else if (ft.IsValueType)
+                                        {
+                                            int stSlotSize = (localInfos != null && stRegIdx < localInfos.Length) ? localInfos[stRegIdx].Size : 0;
+                                            bool stHasBinder = AppDomain.ValueTypeBinders != null && AppDomain.ValueTypeBinders.ContainsKey(ft);
+                                            if (NeoClrVtStaticFieldIsUnsafe(ft, stSlotSize, stHasBinder))
+                                                throw new NotImplementedException("Neo Stsfld: CLR static value-type field " + f.Name + " of type " + ft.FullName + " not supported under Neo (Step-13b ref-field/binder gap or slot-size overflow)");
+                                            int vtOff = stOff;
+                                            value = ReadNeoValueType(ft, frameBase, ref vtOff, Optimizer.GetNeoValueTypeManagedSize(ft));
+                                        }
+                                        else
+                                        {
+                                            // Reference static field: the source register is a
+                                            // ref-slot mStack index.
+                                            int srcRefIdx = *(int*)srcSlot;
+                                            value = srcRefIdx >= 0 ? mStack[srcRefIdx] : null;
+                                        }
+                                        ct.SetStaticFieldValue(sIdx, value);
+                                    }
                                 }
                                 break;
                             case OpCodeREnum.Ldsfld:
@@ -3907,7 +4002,53 @@ namespace ILRuntime.Runtime.Intepreter
                                             *(int*)dstSlot = mStack.Count - 1;
                                         }
                                     }
-                                    else throw new NotImplementedException("Neo Ldsfld: CLR static field not implemented (Step 25 S3-4; the capstone is IL-only)");
+                                    else
+                                    {
+                                        // CLR static field: resolve via CLRType and read
+                                        // through the underlying System.Reflection.FieldInfo
+                                        // (mirrors Legacy ExecuteR Ldsfld CLR branch,
+                                        // ILIntepreter.Register.cs:3328-3336). target=null for
+                                        // a static -> FieldInfo.GetValue(null). Unwrap a
+                                        // CrossBindingAdaptorType to its ILInstance on read
+                                        // (Legacy parity). The dest is pushed by the field's
+                                        // CLR System.Type category; the reference branch uses
+                                        // the mStack.Add temp-ref convention (Stsfld/Ldsfld
+                                        // carry ONLY Register1 = DstOffset; there is NO
+                                        // dstRefOffset operand, unlike Box/Unbox).
+                                        var ct = declType as CLRType;
+                                        int sIdx = (int)ip->OperandLong;
+                                        var f = ct.GetField(sIdx);
+                                        if (f == null)
+                                            throw new NotImplementedException("Neo Ldsfld: CLR static field hash " + sIdx + " not resolved for type " + declType.FullName);
+                                        object fldVal = ct.GetFieldValue(sIdx, null);
+                                        if (fldVal is CrossBindingAdaptorType cba) fldVal = cba.ILInstance;
+                                        var ft = f.FieldType;
+                                        // See the Stsfld CLR arm: Stsfld/Ldsfld are NOT lowered,
+                                        // so ip->DstOffset is the raw Register1 INDEX. Resolve
+                                        // the dest register's byte offset via `localInfos`.
+                                        int ldRegIdx = ip->DstOffset;
+                                        int ldOff = (localInfos != null && ldRegIdx < localInfos.Length) ? localInfos[ldRegIdx].Offset : ldRegIdx;
+                                        byte* dstSlot = frameBase + ldOff;
+                                        if (ft.IsPrimitive)
+                                            NeoWritePrimitiveToFrame(fldVal, dstSlot);
+                                        else if (ft.IsValueType)
+                                        {
+                                            int ldSlotSize = (localInfos != null && ldRegIdx < localInfos.Length) ? localInfos[ldRegIdx].Size : 0;
+                                            bool ldHasBinder = AppDomain.ValueTypeBinders != null && AppDomain.ValueTypeBinders.ContainsKey(ft);
+                                            if (NeoClrVtStaticFieldIsUnsafe(ft, ldSlotSize, ldHasBinder))
+                                                throw new NotImplementedException("Neo Ldsfld: CLR static value-type field " + f.Name + " of type " + ft.FullName + " not supported under Neo (Step-13b ref-field/binder gap or slot-size overflow)");
+                                            WriteNeoValueType(fldVal, dstSlot, Optimizer.GetNeoValueTypeManagedSize(ft));
+                                        }
+                                        else
+                                        {
+                                            // Reference static field: materialize a ref-slot
+                                            // mStack index into the dest register (the SAME
+                                            // mStack.Add temp-ref convention the IL-static
+                                            // Ldsfld ref branch uses).
+                                            mStack.Add(fldVal);
+                                            *(int*)dstSlot = fldVal != null ? mStack.Count - 1 : -1;
+                                        }
+                                    }
                                 }
                                 break;
                             // ---- Step 12: in-frame value-type inline field access ----
