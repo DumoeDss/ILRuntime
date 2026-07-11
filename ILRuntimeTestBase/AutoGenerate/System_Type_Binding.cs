@@ -171,13 +171,25 @@ namespace ILRuntime.Runtime.Generated
 #if ENABLE_NEO_MODE
         static void GetTypeFromHandle_0_Neo(ILIntepreter __intp, byte* __frameBase, AutoList __mStack, CLRMethod __method, bool isNewObj, byte* __retDst, int __retRefBase)
         {
-            ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
-            int __curPrim = 0;
-            System.RuntimeTypeHandle @handle = default(System.RuntimeTypeHandle);
-            // TODO: ByRef or unsupported ValueType parameters in Neo
-            var result_of_this_method = System.Type.GetTypeFromHandle(@handle);
+            // neo-ldtoken: `ldtoken T` pushes type.ReflectionType (a System.Type
+            // object reference) into the single RuntimeTypeHandle-typed argument
+            // slot; the slot's primitive bytes hold the mStack ref index. Type.
+            // GetTypeFromHandle is a NO-OP in ILRuntime -- the Legacy redirect
+            // CLRRedirections.GetTypeFromHandle returns esp unchanged because the
+            // System.Type is already on the eval stack (no RuntimeTypeHandle
+            // struct is ever materialised; ldtoken pushes the Type directly, a
+            // Legacy quirk shared by Neo). The Neo mirror therefore reads the
+            // argument reference and writes it STRAIGHT THROUGH as the result, so
+            // `typeof(T)` yields the resolved System.Type (NOT null).
+            // The original autogen stub used `default(RuntimeTypeHandle)` and
+            // called the real Type.GetTypeFromHandle -- which returns null -- so
+            // typeof() yielded null under Neo. That path is unreachable now: the
+            // ldtoken+GetTypeFromHandle producer/consumer pair must agree on the
+            // Type-as-ref representation (no real handle is ever produced).
             if (__retDst != null)
             {
+                int __curPrim = 0;
+                object result_of_this_method = ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
                 if (__retRefBase >= __mStack.Count)
                     __mStack.Add(result_of_this_method);
                 else

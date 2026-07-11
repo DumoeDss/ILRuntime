@@ -1486,6 +1486,93 @@ namespace ILRuntime.Runtime.Intepreter
                                 mStack[dstIdx] = AppDomain.GetString(ip->OperandLong);
                                 *(int*)(frameBase + ip->DstOffset) = dstIdx;
                                 break;
+                            // neo-ldtoken: loads a metadata-token handle. The JIT
+                            // encodes the token kind in Operand (1 = TypeReference,
+                            // 0 = FieldReference) and the packed token in OperandLong.
+                            // There is NO MethodReference branch -- the JIT throws at
+                            // emission for `ldtoken <method>`, so RuntimeMethodHandle
+                            // is out of scope by construction.
+                            //   Type path (Operand==1, the dominant typeof(T) case):
+                            //    resolve IType via AppDomain.GetType and push
+                            //    type.ReflectionType as a Neo object reference (mirrors
+                            //    Legacy ExecuteR AssignToRegister(..., type.
+                            //    ReflectionType)). The dest ref slot index lives in
+                            //    Operand4 (@20-23) -- NOT Operand3 (@16-19), which
+                            //    aliases the high dword of OperandLong and would
+                            //    clobber the field path's declaring-type token.
+                            //    Type.GetTypeFromHandle is a no-op pass-through in
+                            //    ILRuntime (the Neo GetTypeFromHandle_0_Neo stub reads
+                            //    this argument reference and writes it straight back),
+                            //    so the System.Type flows to the consumer -- NO real
+                            //    RuntimeTypeHandle struct is ever materialised, exactly
+                            //    as in Legacy.
+                            //   Field path (Operand==0): mirror the Ldsfld arm -- the
+                            //    OperandLong encoding is IDENTICAL to Ldsfld (decl-type
+                            //    token in the high 32 bits, static-field index in the
+                            //    low 32 bits). Read the IL static field value per
+                            //    category (primitive / inline-VT / reference). A CLR
+                            //    declaring type throws a tagged NIE (Legacy itself
+                            //    throws NIE there). NOTE: like Legacy this reads the
+                            //    field VALUE, not a RuntimeFieldHandle -- a Legacy quirk
+                            //    (there is no GetFieldFromHandle consumer of a real
+                            //    handle); mirroring it is the mandate.
+                            case OpCodeREnum.Ldtoken:
+                                {
+                                    if (ip->Operand == 1) // type path: push ReflectionType
+                                    {
+                                        var type = AppDomain.GetType((int)ip->OperandLong);
+                                        if (type == null)
+                                            throw new TypeLoadException("Neo Ldtoken: type not resolved for token 0x" + ip->OperandLong.ToString("X"));
+                                        dstIdx = frameRefBase + ip->Operand4;
+                                        mStack[dstIdx] = type.ReflectionType;
+                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                    }
+                                    else // field path (Operand == 0) -- mirrors the Ldsfld arm
+                                    {
+                                        var declType = AppDomain.GetType((int)(ip->OperandLong >> 32));
+                                        if (declType == null)
+                                            throw new TypeLoadException("Neo Ldtoken: declaring type not resolved for token 0x" + ip->OperandLong.ToString("X"));
+                                        if (declType is ILType ilt)
+                                        {
+                                            int sIdx = (int)ip->OperandLong;
+                                            var sinst = ilt.StaticInstance;
+                                            var off = ilt.GetStaticFieldOffset(sIdx);
+                                            var ft = ilt.StaticFieldTypes.Length > sIdx ? ilt.StaticFieldTypes[sIdx] : null;
+                                            byte* dstSlot = frameBase + ip->DstOffset;
+                                            if (ft != null && ft.IsPrimitive)
+                                            {
+                                                int psz = AppDomain.GetPrimitiveSize(ft);
+                                                if (psz == 1) *(int*)dstSlot = (sbyte)sinst.Primitives[off.PrimitiveOffset];
+                                                else if (psz == 2) *(int*)dstSlot = Unsafe.ReadUnaligned<short>(ref sinst.Primitives[off.PrimitiveOffset]);
+                                                else if (psz == 4) *(int*)dstSlot = Unsafe.ReadUnaligned<int>(ref sinst.Primitives[off.PrimitiveOffset]);
+                                                else if (psz == 8) *(long*)dstSlot = Unsafe.ReadUnaligned<long>(ref sinst.Primitives[off.PrimitiveOffset]);
+                                            }
+                                            else if (ft != null && ft.IsValueType && ft is ILType vtil)
+                                            {
+                                                Unsafe.CopyBlockUnaligned(ref Unsafe.AsRef<byte>(dstSlot), ref sinst.Primitives[off.PrimitiveOffset], (uint)vtil.TotalPrimitiveSize);
+                                                for (int ri = 0; ri < vtil.TotalReferenceCount; ri++)
+                                                {
+                                                    object rv = sinst.ManagedObjects[off.ReferenceOffset + ri];
+                                                    // Allocate a ref slot + store its index in the
+                                                    // dest's ref region (mirrors how a VT load
+                                                    // materialises refs -- see the Ldsfld arm).
+                                                    mStack.Add(rv);
+                                                    *(int*)(dstSlot + vtil.TotalPrimitiveSize + ri * 4) = mStack.Count - 1;
+                                                }
+                                            }
+                                            else
+                                            {
+                                                // Reference static field: materialise a ref-slot
+                                                // mStack index into the dest register (mirrors Ldsfld).
+                                                object rv = sinst.ManagedObjects[off.ReferenceOffset];
+                                                mStack.Add(rv);
+                                                *(int*)dstSlot = mStack.Count - 1;
+                                            }
+                                        }
+                                        else throw new NotImplementedException("Neo Ldtoken: CLR field handle not implemented (mirrors Legacy NIE; this reads the field VALUE, not a RuntimeFieldHandle)");
+                                    }
+                                }
+                                break;
                             case OpCodeREnum.Move:
                                 Unsafe.CopyBlock(frameBase + ip->DstOffset, frameBase + ip->SrcOffset, (uint)ip->Operand2);
                                 if (ip->Operand == 1)

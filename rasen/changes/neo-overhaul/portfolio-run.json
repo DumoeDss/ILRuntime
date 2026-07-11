@@ -38,10 +38,22 @@
       "completedDate": "2026-07-11", "smoke": "NeoStep 306/0 (301 baseline + 5 probes); stash-toggle FAIL-on-HEAD overrun-throw -> PASS-after; Legacy-neutral (#if ENABLE_NEO_MODE)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker; 1 Major PRE-EXISTING/deferred -> neo-overhaul-eh-table-remap; 2 Minor fixed inline F-2/F-3; 1 Trivial accepted-known). Root cause H1 confirmed via instrumented dump: FixBranchTargetsAfterRemove missed Leave/Leave_S Operand remap after Push-deletion.",
       "shipped": "commit+push 2026-07-11"
+    },
+    "neo-ldtoken": {
+      "pipeline": "small-feature", "wave": 1, "scope": "Implement ldtoken in ExecuteNeo (type + field paths) + LowerNeoOffsets lowering case + fix the broken autogen GetTypeFromHandle_0_Neo stub",
+      "prerequisites": ["neo-jit-bogus-opcode"], "dependsOn": ["neo-jit-bogus-opcode"], "status": "done", "capability": "neo-type-checks",
+      "completedDate": "2026-07-11", "smoke": "NeoStep 311/0 (306 + 5 ldtoken probes); full-smoke Ldtoken NIE 254->0, GetStaticFieldOffset NRE 20->0; stash-toggle FAIL-on-HEAD Step-6 NIE -> PASS-after; Legacy-neutral",
+      "review": "APPROVE-WITH-FINDINGS after 1 review-loop round. MAJOR-1 (reviewer-found, fixer-fixed, re-reviewed): planner+implementer wrongly claimed Operand3 is a disjoint spare -- it ALIASES OperandLong high dword, clobbering the field path declaring type. Fix = carry dest ref slot in Operand4 (@20-23, the only disjoint int spare). Offset-verified independently twice; 2-line toggle reproduced. MINOR-A doc reconciliation done; TRIVIAL-A (dead op.Operand4==1 @1218) recorded out-of-scope.",
+      "shipped": "commit+push 2026-07-11"
     }
   },
-  "runnableFrontier": ["neo-ldtoken"],
-  "completedChildren": ["neo-jit-bogus-opcode"],
+  "runnableFrontier": ["neo-bare-nie"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken"],
+  "surfacedFollowups": [
+    { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RuntimeHelpers.InitializeArray has no RedirectionNeo -> its RuntimeFieldHandle param fails the Step-13b ValueTypeBinder marshal; C# array initializers cannot complete end-to-end in Neo. The 20 former ldtoken field-path NREs became 20 downstream NIEs after child 2 (red->red). Add a Neo redirect.", "source": "child 2 review" },
+    { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
+    { "id": "neo-optimizer-dead-expr-operand4", "scope": "Optimizer.Neo.cs:1218 `op.Operand4 == 1;` is a dead no-assignment expression (likely intended `=`). Pre-existing latent bug. Trivial fix.", "source": "child 2 re-review TRIVIAL-A" }
+  ],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "housekeeping": {

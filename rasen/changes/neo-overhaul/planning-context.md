@@ -99,3 +99,48 @@ NO source modifications (stash is NOT applied) -- verify before starting.
 - CJK in Write can corrupt ~0.5% chars to U+FFFD; verify/fix with pure-ASCII codepoints.
 - Conditional compilation: Neo code is `#if ENABLE_NEO_MODE`. Legacy-neutral required (a change
   gated under ENABLE_NEO_MODE is Legacy-neutral by construction).
+
+## Child 1 DONE (neo-jit-bogus-opcode, shipped 2e031b16 2026-07-11) — durable findings
+- **Root cause was `FixBranchTargetsAfterRemove` missing Leave/Leave_S.** When proposing/fixed
+  any future "wrong instruction executed / garbage opcode" Neo bug, the FIRST suspect is
+  `Optimizer.Neo.cs LowerNeoOffsets` — it is the ONLY Neo pass that changes instruction-body
+  LENGTH (deletes synthetic `Push` for Call/Newobj with >3 register params + re-maps targets).
+  `TypeSpecializeNeoOpcodes` only rewrites opcodes in place (no length change).
+- **A permanent `ExecuteNeo` dispatch guard now ships** (loop-head bounds check BEFORE the
+  `ip->Code` deref + a default-arm out-of-range-Code check that dumps fields). Named-but-
+  unimplemented opcodes (ldtoken etc.) still fall through to the Step-6 message. A NeoStep
+  regression probe must FAULT (the pass criterion is "ran without throwing"); a wrong-value
+  probe will NOT fail.
+- **`OpCodeR` is `[StructLayout(LayoutKind.Explicit)]`, a 24-byte union** (Code@0, Register/
+  offset aliases @4-11, wide-immediates @12-19). A RECURRING sharp edge (3rd+ instance after
+  F-8 / OPT-HARDEN-K1 / F-MAJ-1): any `LowerNeoOffsets`/rewrite case that stamps a field MUST
+  verify it does not alias a wide-immediate a runtime consumer reads.
+- **LATENT landmine -> child 7 (`neo-overhaul-eh-table-remap`):** `method.ExceptionHandlerRegister`
+  (TryStart/TryEnd/HandlerStart/HandlerEnd, body-indexed) is NOT remapped by `LowerNeoOffsets`.
+  Trigger: try/catch/finally + >3-arg call/newobj that THROWS. Pre-existing, not triggered by
+  the current 306 smoke. LowerNeoOffsets lacks an ILMethod handle, so the fix must plumb
+  `exceptionHandlerR` through it.
+- **After child 1, the full Neo smoke's only remaining default-arm entry is `ldtoken`** (named
+  opcode -> child 2). Zero garbage opcodes remain.
+
+## Child 2 DONE (neo-ldtoken, shipped 2026-07-11) — durable findings
+- **`OpCodeR` spare-field map (CRITICAL for any future opcode that needs a spare int slot):**
+  `Operand3` (@16-19) is the HIGH dword of `OperandLong` (@12-19) -- NEVER a safe scratch when
+  `OperandLong` is in use (this was MAJOR-1: stamping Operand3 clobbered the field path's
+  declaring type). `Operand4` (@20-23) is the ONLY genuinely-disjoint int spare. The compaction
+  pass at `Optimizer.Neo.cs:1711-1713` remaps Operand4 consistently. Field offsets (from
+  `OpCodes/OpCode.cs:35-71`, `[StructLayout(LayoutKind.Explicit)]`): Code@0, DstOffset@4,
+  Register1-4 aliases, Operand@8, Operand2@12(low)/OperandLong@12, Operand3@16(=OperandLong hi),
+  Operand4@20.
+- **Neo dispatch uses `RedirectMapNeo` exclusively** (separate from Legacy's `RedirectMap`). A
+  Legacy redirect does NOT run under Neo. Autogen Neo CLR bindings with value-type params are
+  often broken `default(...)` stubs (`// TODO: ByRef or unsupported ValueType parameters in Neo`);
+  any Neo opcode whose result feeds such a binding needs the binding fixed too (ldtoken ->
+  GetTypeFromHandle was the canonical case).
+- **A NeoStep regression probe must FAULT to fail** (the pass criterion is "ran without
+  throwing"). A probe that only produces a wrong value will NOT fail. Design probes whose result
+  is observably wrong OR that throw without the fix. An asymmetric `catch(NotImplementedException)`
+  guard is sound when the regression throws a different (uncaught) exception.
+- **ldtoken field path is reached by C# array initializers** (`RuntimeHelpers.InitializeArray` +
+  `ldtoken <PrivateImplementationDetails>`). Surfaced follow-up: `RuntimeHelpers.InitializeArray`
+  has no `RedirectionNeo` -> array initializers can't complete end-to-end in Neo (candidate child).

@@ -851,6 +851,31 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         if (op.Code == OpCodeREnum.Ldvirtftn)
                             op.SrcOffset = (ushort)localInfos[op.Register2].Offset;
                         break;
+                    // neo-ldtoken: ldtoken produces either a System.Type object
+                    // reference (type path, Operand==1, the dominant typeof(T)
+                    // case) or a static-field value (field path, Operand==0).
+                    // For the type path the dest is a Neo ref slot (like
+                    // Ldstr/Ldftn) -- but UNLIKE them, ldtoken's Operand is
+                    // ALREADY the 0/1 token-kind discriminator and cannot host
+                    // the ref slot. The dest ref-slot index MUST go into
+                    // Operand4 (@20-23). Do NOT use Operand3: in the
+                    // [StructLayout(LayoutKind.Explicit)] 24-byte OpCodeR union,
+                    // Operand3 (@16-19) ALIASES THE HIGH DWORD of OperandLong
+                    // (@12-19). The field path reads the declaring-type token via
+                    // (int)(ip->OperandLong >> 32), so stamping Operand3 would
+                    // clobber it and mis-resolve the declaring type (NRE at
+                    // GetStaticFieldOffset; reached by C# array initializers via
+                    // RuntimeHelpers.InitializeArray + ldtoken <field>). Operand4
+                    // (@20-23) is genuinely disjoint from OperandLong (12-19),
+                    // Operand (8-11), DstOffset (4-5), and is unused by the
+                    // Ldtoken opcode (every other Operand4 write in the
+                    // JIT/optimizer is gated to branches/calls/ldfld/array ops).
+                    // LowerR1 then sets DstOffset from Register1; it touches ONLY
+                    // DstOffset and does not clobber Operand4.
+                    case OpCodeREnum.Ldtoken:
+                        op.Operand4 = localInfos[op.Register1].RefOffset;
+                        LowerR1(ref op, localInfos);
+                        break;
                     case OpCodeREnum.Ret:
                         if (op.Register1 >= 0)
                         {
