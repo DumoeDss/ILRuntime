@@ -3306,13 +3306,47 @@ namespace ILRuntime.Runtime.Intepreter
                                         continue;
                                     }
 
-                                    // IL reference-type newobj (Step 8b, unchanged).
+                                    // IL reference-type newobj (Step 8b).
                                     ins = ilNewobjType.Instantiate(false);
+                                    // Re-base an aliased reference arg BEFORE storing the new
+                                    // instance. When the newobj dest register aliases a reference
+                                    // argument register (the canonical eval-stack lowering of
+                                    // `ldstr/ldloc arg; newobj(arg)` reuses the arg's register as
+                                    // the dest), the dest ref slot (newobjDstIdx = frameRefBase +
+                                    // dstRefOffset) coincides with that arg's own ref slot, so the
+                                    // arg's mStack index EQUALS newobjDstIdx. Storing the instance
+                                    // at mStack[newobjDstIdx] would then overwrite the arg object
+                                    // before CopyNeoCallArguments copies it to the ctor, so the
+                                    // ctor would receive the new instance as the aliased argument
+                                    // (e.g. TestStaticFieldInstance: `new TestA("testerror")` ctor
+                                    // saw `this` as the `name` arg -> InvalidCastException). Detect
+                                    // the alias via the ref map (the dest register's ref offset
+                                    // dstRefOffset appears as a reference-arg source) -- a
+                                    // primitive int arg whose VALUE coincidentally equals
+                                    // newobjDstIdx is NOT re-based (its register has no ref slot).
+                                    // Re-base the colliding arg object to a fresh mStack slot and
+                                    // rewrite the source so the copy hands the ctor the arg, not
+                                    // the instance.
+                                    if (map.RefSrc != null && map.PrimitiveSrc != null)
+                                    {
+                                        bool destAliasesRefArg = false;
+                                        for (int ri = 0; ri < map.RefSrc.Length; ri++)
+                                            if (map.RefSrc[ri] == dstRefOffset) { destAliasesRefArg = true; break; }
+                                        if (destAliasesRefArg)
+                                        {
+                                            int aIdx = *(int*)(frameBase + ip->DstOffset);
+                                            if (aIdx >= 0 && aIdx == newobjDstIdx)
+                                            {
+                                                mStack.Add(mStack[aIdx]);
+                                                *(int*)(frameBase + ip->DstOffset) = mStack.Count - 1;
+                                            }
+                                        }
+                                    }
                                     mStack[newobjDstIdx] = ins;
-                                    *(int*)retDstPtr = newobjDstIdx;
 
                                     *(int*)targetBase = newobjDstIdx;
                                     CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    *(int*)retDstPtr = newobjDstIdx;
 
                                     int targetRetRefBase = frameRefBase + dstRefOffset;
                                     mStack.Add(mStack[newobjDstIdx]); // push 'this'
