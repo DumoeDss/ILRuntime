@@ -2220,6 +2220,24 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     if (align > maxAlignment)
                         maxAlignment = align;
                 }
+                else if (i is CLR.TypeSystem.CLRType ct)
+                {
+                    // Neo (neo-clr-static-vt-slot-overflow): a gathered CLR value type can flow
+                    // through an eval TEMP (e.g. the dest of ldsfld on a CLR-VT static field
+                    // such as TestVector3.One). The temp file is sized to maxSize (default 8),
+                    // which previously grew only for ILType -- a CLR struct > 8 bytes got an
+                    // undersized temp and the slot-overflow guard (NeoClrVtStaticFieldIsUnsafe)
+                    // rejected the write as an OOB. Grow maxSize (and maxAlignment, mirroring
+                    // the CLR-VT LOCAL declaration). maxRefCount is left alone: the reachable
+                    // set is blittable (a ref-field CLR struct is refused upstream by
+                    // NeoClrStructHasRefFields), so its ref count is 0.
+                    int size = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
+                    if (size > maxSize)
+                        maxSize = size;
+                    int align = size >= 8 ? 4 : size;
+                    if (align > maxAlignment)
+                        maxAlignment = align;
+                }
             }
             for (int i = 0; i < frame.StackRegisterCount; i++)
             {

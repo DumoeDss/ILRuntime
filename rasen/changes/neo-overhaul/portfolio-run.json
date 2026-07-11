@@ -143,10 +143,17 @@
       "completedDate": "2026-07-12", "smoke": "NeoStep 346/0 (343 + 3); NeoStep16 27/0 + OrChain 10/0 + Float/Double green (type-specializer regression check); stash-toggle 3/3 FAIL (DivByZero) -> PASS (addi.r4 now fires); Legacy-neutral (346 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Seeding-correct (I4 provable no-op) + regression-surface-confirmed + stash-toggle-airtight all confirmed. Root cause shared with child-11/12/13 (untyped-frame + InferPrimTag I4-fallback). 1 Minor doc-imprecision (JIT dump prints pre-specialization addi).",
       "shipped": "commit+push 2026-07-12"
+    },
+    "neo-clr-static-vt-slot-overflow": {
+      "pipeline": "small-feature", "wave": 1, "scope": "#1 active gap (14 hits): AllocateLocalStackSpaces maxSize loop grew eval-temp size only for ILType -> a CLRType VT (TestVector3, 12 bytes) was skipped -> temp stayed 8 -> genuine 12-into-8 OOB the NeoClrVtStaticFieldIsUnsafe guard refused. Fix = add a CLRType arm to the maxSize loop (sizing matches write+guard); guard unchanged",
+      "prerequisites": ["neo-addi-on-float"], "dependsOn": ["neo-addi-on-float"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-12", "smoke": "NeoStep 348/0 (346 + 2); layout-regression check clean (broad NeoStep all categories green: EH/byref/VT/box/arithmetic); full-smoke TestVector3.One NIE 14->0; stash-toggle FAIL (slot-overflow NIE) -> PASS; Legacy-neutral (348 ran/17 failed == baseline)",
+      "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major). CLRType-arm-correct (additive, sizing matches write+guard -> no OOB) + layout-regression-confirmed (broad NeoStep 348/0) both confirmed. F-1 minor probe-coverage (Ldsfeld-into-temp only; other shapes rely on structural fix + 14->0); F-2 trivial maxAlignment-inert.",
+      "shipped": "commit+push 2026-07-12"
     }
   },
-  "runnableFrontier": ["neo-raw-ldfld-stfld-clr-struct-seeding"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct", "neo-addi-on-float"],
+  "runnableFrontier": ["neo-il-enum-system-type"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct", "neo-addi-on-float", "neo-clr-static-vt-slot-overflow"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
