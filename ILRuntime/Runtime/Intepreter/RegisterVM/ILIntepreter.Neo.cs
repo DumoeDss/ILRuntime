@@ -6072,18 +6072,36 @@ namespace ILRuntime.Runtime.Intepreter
         {
             if (objIndex < 0)
                 throw new NullReferenceException();
-            ILTypeInstance ins = mStack[objIndex] as ILTypeInstance;
-            if (ins == null)
-                // A CLR object reached an IL-instance field/address path (ldfld/
-                // stfld heap arm, or stind/ldind/stobj/ldobj on an mStack target).
-                // 4d now closes the CLR-object-field case via the field-hash
-                // accessor (NeoReadClrObjectField/NeoWriteClrObjectField), so a
-                // genuine CLR object routes there BEFORE this throw. Reaching here
-                // means a shape the field-hash path does not cover -- keep the
-                // Step-tagged NIE as the defensive guard.
-                throw new NotImplementedException(
-                    "Step 17/13b: field/element access on a CLR object via the IL-instance path is deferred (CLR field-hash plumbing lands in Step 13b)");
-            return ins;
+            object o = mStack[objIndex];
+            if (o == null)
+                // A null heap owner at a typed IL-instance field arm is a plain
+                // NullReferenceException (ldfld/stfld/ldobj/stobj on null) -- NOT a
+                // deferred feature. Throwing NRE here is CLR-faithful and avoids
+                // masking an upstream materialization gap as a "Step 17/13b deferred"
+                // NIE (the previous behaviour).
+                throw new NullReferenceException();
+            if (o is ILTypeInstance ins)
+                return ins;
+            // A CLR object reached a typed IL-instance field arm. The field was
+            // JIT-classified as IL-declared (else the JIT emits the raw Ldfld/Stfld
+            // opcode handled by the CLR field-hash path), so it lives on the
+            // underlying ILTypeInstance. The common shape is a CrossBindingAdaptor
+            // wrapper (an IL type that inherits a CLR base, flowed through CLR code
+            // / reflection / a generic collection, comes back as its CLR adaptor) --
+            // unwrap it (mirrors the raw Ldfld/Stfld handler, child 9).
+            if (o is CrossBindingAdaptorType cba)
+            {
+                var il = cba.ILInstance;
+                if (il == null)
+                    throw new NullReferenceException();
+                return il;
+            }
+            // Any other CLR shape is genuinely unexpected at a typed IL-field arm
+            // (the byref consumers + the raw Stfld/Ldfld handlers route CLR objects
+            // to the field-hash accessor BEFORE reaching here). Keep the defensive
+            // Step-tagged NIE as the guard.
+            throw new NotImplementedException(
+                "Step 17/13b: field/element access on a CLR object via the IL-instance path is deferred (CLR field-hash plumbing lands in Step 13b). Owner type: " + o.GetType().FullName);
         }
 
         // ---- Step 13 Area 4d: CLR-object field access via field identity (the
