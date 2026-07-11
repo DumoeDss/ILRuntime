@@ -182,6 +182,28 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         //  flag bit and causing intermittent mis-dispatch on the 4d CLR-object
         //  path. Content-based dispatch avoids the collision entirely.)
         public const int NeoLdfldaHeapIlRefFieldMarker = 0x4;
+        // neo-ldind-stind-byref-clr-struct (child 15): a CLR value-type LOCAL
+        // (inline flat managed bytes in the frame, e.g. `TestVector3 a;`) whose
+        // field is addressed by `ldflda`. The body's `case Code.Ldflda` stamps
+        // `op.Operand2 = offset.PrimitiveOffset`; for a CLR (non-IL) declaring
+        // type, `AppDomain.GetFieldOffset` returns `PrimitiveOffset =
+        // type.GetFieldIndex(token)` which is `FieldInfo.GetHashCode()` (a large
+        // arbitrary 32-bit hash) -- NOT a byte offset. The runtime `ldflda`
+        // frame-native branch (`objectIndex == -1`, from `ldloca <CLR-struct
+        // local>`) would then produce `(-1, vtBase + <huge hash>)`, so the
+        // following `ldind_*`/`stind_*` deref `frameBase + <huge hash>` -> AV.
+        // This marker (bit 0x8, the last free bit in standalone Operand4) tells
+        // the runtime arm to resolve the field's REAL managed byte offset (cached
+        // `Marshal.OffsetOf`) and use it instead of the hash. Mutually exclusive
+        // with F-6 (0x1) / F-10 (0x2) / heap-IL-ref (0x4): those require the
+        // declaring `type is ILType`, whereas this requires `type is CLRType`. The
+        // F-6 type-spec gate (`TypeSpecializeNeoOpcodes` `case Ldflda`) fires only
+        // for an IL value-type source and clears only bits 0x2/0x4, so it never
+        // touches bit 0x8 and never fires for a CLR-struct source. Sound because
+        // only blittable CLR structs reach the flat-byte local path (a CLR VT
+        // with reference fields throws the Step-13b NIE inside
+        // ReadNeoValueType/WriteNeoValueType first).
+        public const int NeoLdfldaClrStructLocalFieldMarker = 0x8;
         // The runtime byref offset-half flag for an F-10 byref (set by the
         // Ldflda arm): the offset half carries (ReferenceOffset | this flag) so
         // the consumer arms can distinguish "this offset is a ManagedObjects
@@ -2968,6 +2990,19 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         // an in-frame VT nor a CLR value type).
                         else if (type is ILType && !fieldType.IsValueType && !fieldType.IsPrimitive)
                             op.Operand4 |= NeoLdfldaHeapIlRefFieldMarker;
+                        // neo-ldind-stind-byref-clr-struct (child 15): the declaring
+                        // type is a CLRType -> `offset.PrimitiveOffset` stamped into
+                        // Operand2 above is `FieldInfo.GetHashCode()`, NOT a byte
+                        // offset. Stamp bit 0x8 so the runtime Ldflda frame-native
+                        // branch (`objectIndex == -1`, from `ldloca <CLR-struct
+                        // local>`) resolves the field's REAL managed byte offset via
+                        // a cached `Marshal.OffsetOf` instead of dereferencing the
+                        // hash (which would AV). Mutually exclusive with F-6/F-10/
+                        // heap-IL-ref (all require `type is ILType`); this branch
+                        // requires `type is CLRType`. (A CLR struct field ON an IL
+                        // heap instance is F-10 above, handled first.)
+                        else if (type is CLRType)
+                            op.Operand4 |= NeoLdfldaClrStructLocalFieldMarker;
                     }
 #else
                     op.OperandLong = appdomain.GetStaticFieldIndex(token, declaringType, method);

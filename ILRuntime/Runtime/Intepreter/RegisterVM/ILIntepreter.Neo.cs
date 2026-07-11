@@ -158,6 +158,21 @@ namespace ILRuntime.Runtime.Intepreter
         static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtWriterDelegate> s_neoVtWriters
             = new System.Collections.Concurrent.ConcurrentDictionary<Type, NeoVtWriterDelegate>();
 
+        // neo-ldind-stind-byref-clr-struct (child 15): cache of the REAL managed
+        // byte offset of a CLR-struct instance field, keyed by
+        // ((long)declaringTypeHash << 32) | (uint)fieldHash. For a CLR (non-IL)
+        // declaring type, AppDomain.GetFieldOffset returns PrimitiveOffset =
+        // type.GetFieldIndex(token) = FieldInfo.GetHashCode() -- a hash, NOT a byte
+        // offset -- so the ldflda frame-native branch must resolve the field's real
+        // offset via Marshal.OffsetOf and use it instead (else ldind/stind deref
+        // frameBase + <huge hash> -> AV). First access pays one Marshal.OffsetOf +
+        // one CLRType.GetField; subsequent accesses are an O(1) dict hit. The byte
+        // offset is a property of the CLR struct's managed layout, identical across
+        // AppDomains for a given (typeHash, fieldHash), so a process-static cache is
+        // sound. Concurrent (Prewarm / multiple interpreter threads) -> GetOrAdd.
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<long, int> s_neoClrStructFieldByteOffsets
+            = new System.Collections.Concurrent.ConcurrentDictionary<long, int>();
+
         // rasen neo-jit-bogus-opcode: the named OpCodeREnum range is implicit
         // 0..<count> (zero explicit-value members). Cached once so the ExecuteNeo
         // dispatch guard can detect a garbage/out-of-range Code with a single int
@@ -1766,6 +1781,13 @@ namespace ILRuntime.Runtime.Intepreter
                                     bool inlineMarker = (ip->Operand4 & JITCompiler.NeoLdfldaInlineMarker) != 0;
                                     bool clrStructFieldMarker = (ip->Operand4 & JITCompiler.NeoLdfldaClrStructFieldMarker) != 0;
                                     bool heapIlRefFieldMarker = (ip->Operand4 & JITCompiler.NeoLdfldaHeapIlRefFieldMarker) != 0;
+                                    // neo-ldind-stind-byref-clr-struct (child 15): the
+                                    // field's declaring type is a CLRType -> fieldPrimOff
+                                    // (ip->Operand2) is the FieldInfo hash, NOT a byte
+                                    // offset. Resolve the real managed byte offset in the
+                                    // frame-native branch below. ip->Operand is the
+                                    // declaring type hash.
+                                    bool clrStructLocalFieldMarker = (ip->Operand4 & JITCompiler.NeoLdfldaClrStructLocalFieldMarker) != 0;
                                     int objIdx = *(int*)(frameBase + operandSlotOff + 0);
                                     if (heapIlRefFieldMarker && objIdx >= 0)
                                     {
@@ -1809,8 +1831,26 @@ namespace ILRuntime.Runtime.Intepreter
                                         // a real ldloca/ldarga or a byref-`this` --
                                         // resolve through its offset half.
                                         int vtBase = *(int*)(frameBase + operandSlotOff + 4);
+                                        int fieldOff = fieldPrimOff;
+                                        // neo-ldind-stind-byref-clr-struct (child 15):
+                                        // for a CLR-struct-local field the declaring
+                                        // type is a CLRType, so fieldPrimOff is the
+                                        // FieldInfo hash (NOT a byte offset). Resolve
+                                        // the field's REAL managed byte offset within
+                                        // the struct's flat bytes (cached
+                                        // Marshal.OffsetOf) and use it instead, so the
+                                        // produced byref `(-1, vtBase + realOff)` is a
+                                        // valid frame address consumable unchanged by
+                                        // ldind_*/stind_*/stobj/ldobj/initobj. ip->
+                                        // Operand is the declaring type hash;
+                                        // fieldPrimOff (ip->Operand2) is the field
+                                        // hash. (IL-struct-local fields: marker clear,
+                                        // fieldPrimOff is already the real Primitives
+                                        // byte offset -> unchanged.)
+                                        if (clrStructLocalFieldMarker)
+                                            fieldOff = ResolveClrStructFieldByteOffset(AppDomain, ip->Operand, fieldPrimOff);
                                         *(int*)(frameBase + dst + 0) = -1;
-                                        *(int*)(frameBase + dst + 4) = vtBase + fieldPrimOff;
+                                        *(int*)(frameBase + dst + 4) = vtBase + fieldOff;
                                     }
                                     else if (inlineMarker)
                                     {
@@ -6266,6 +6306,41 @@ namespace ILRuntime.Runtime.Intepreter
                 throw new NotImplementedException("Step 13 Area 4d: CLR-object field read on a non-CLR-resolvable target. Type: " + target.GetType().FullName);
             object tmp = target;
             return ct.GetFieldValue(fieldHash, tmp);
+        }
+
+        // neo-ldind-stind-byref-clr-struct (child 15): resolve the REAL managed
+        // byte offset of a CLR-struct instance field, cached per
+        // (declaringTypeHash, fieldHash). For a CLR declaring type the ldflda
+        // PrimitiveOffset operand is the FieldInfo hash (NOT a byte offset); this
+        // returns the true managed offset (Marshal.OffsetOf) so the frame-native
+        // ldflda byref `(-1, vtBase + offset)` is a valid frame address. Sound
+        // because only blittable CLR structs reach the flat-byte local path (a CLR
+        // VT with reference fields NIEs inside ReadNeoValueType/WriteNeoValueType
+        // first); for a blittable value type (default LayoutKind.Sequential) the
+        // managed layout Unsafe.WriteUnaligned writes == the Marshal.OffsetOf
+        // offset. An auto-layout struct (unreachable here) makes Marshal.OffsetOf
+        // throw -> tagged NIE (fail-loud, no silent corruption).
+        static int ResolveClrStructFieldByteOffset(ILRuntime.Runtime.Enviorment.AppDomain appdomain, int typeHash, int fieldHash)
+        {
+            long key = ((long)typeHash << 32) | (uint)fieldHash;
+            return s_neoClrStructFieldByteOffsets.GetOrAdd(key, k =>
+            {
+                var declType = appdomain.GetType(typeHash);
+                var ct = declType as CLRType;
+                if (ct == null)
+                    throw new NotImplementedException("Neo ldflda: CLR-struct-local marker set but declaring type " + (declType == null ? "<null>" : declType.FullName) + " is not a CLRType (child 15).");
+                var f = ct.GetField(fieldHash);
+                if (f == null)
+                    throw new NotImplementedException("Neo ldflda: CLR field hash " + fieldHash + " not resolved on CLR struct " + ct.FullName + " (child 15).");
+                try
+                {
+                    return Marshal.OffsetOf(ct.TypeForCLR, f.Name).ToInt32();
+                }
+                catch (Exception ex)
+                {
+                    throw new NotImplementedException("Neo ldflda: cannot resolve managed byte offset of field " + f.Name + " on CLR struct " + ct.FullName + " (auto-layout or non-blittable struct; the flat-byte local path supports only blittable Sequential structs). Inner: " + ex.Message);
+                }
+            });
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

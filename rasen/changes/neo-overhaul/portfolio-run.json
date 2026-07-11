@@ -129,10 +129,17 @@
       "completedDate": "2026-07-12", "smoke": "NeoStep 341/0 (339 + 2); NeoStep14 (EH) 26/26 UNREGRESSED (the build-order change load-bearing for all protected-region Neo methods); stash-toggle FAIL (throw escapes catch) -> PASS; Legacy-neutral (341 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major). Build-order-correct + remap-correct (ExceptionHandler class mutation works) + NeoStep14-gate 26/26 + probe-reliable all confirmed. 1 Minor (no dedicated generic-instance EH probe, CloneAndPatch structurally identical + stash-proven, low risk).",
       "shipped": "commit+push 2026-07-12"
+    },
+    "neo-ldind-stind-byref-clr-struct": {
+      "pipeline": "small-feature", "wave": 1, "scope": "LATENT AV (child-8 unmasked): ldflda on a CLR-struct-local field used FieldInfo.GetHashCode() (a huge hash, not a byte offset) -> out-of-frame AV in ldind/stind. Fix = JIT marker 0x8 + cached Marshal.OffsetOf resolution",
+      "prerequisites": ["neo-overhaul-eh-table-remap"], "dependsOn": ["neo-overhaul-eh-table-remap"], "status": "done", "capability": "neo-byref",
+      "completedDate": "2026-07-12", "smoke": "NeoStep 343/0 (341 + 2); TestValueTypeBinding.Test00 PASSES (was segfault); stash-toggle FAIL-on-HEAD (AV exit 139) -> PASS; Legacy-neutral (343 ran/17 failed == baseline)",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Marker-0x8-unambiguous + Marshal.OffsetOf-correct (blittable-sound) + addi-on-float-confirmed-pre-existing all confirmed. M1 TC2 probe-strength nit; M2 the surfaced addi/conv.i4 float bugs (pre-existing).",
+      "shipped": "commit+push 2026-07-12"
     }
   },
-  "runnableFrontier": ["neo-ldind-stind-byref-clr-struct"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap"],
+  "runnableFrontier": ["neo-addi-on-float"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
