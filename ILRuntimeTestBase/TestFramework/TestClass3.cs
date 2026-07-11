@@ -15,6 +15,11 @@ namespace ILRuntimeTest.TestFramework
         // neo-clr-static-fields: a writable CLR static int for the Stsfld+Ldsfld
         // primitive round-trip probe (mscorlib's statics are mostly initonly).
         public static int NeoClrStaticProbe;
+        // neo-clr-static-vt-field: a writable CLR value-type static whose type
+        // has a registered ValueTypeBinder (TestVector3), for the Stsfld+Ldsfld
+        // blittable-binder round-trip probe. Initialized to default (do NOT
+        // stomp TestVector3.One).
+        public static TestVector3 NeoClrVtStaticProbe;
         // neo-raw-stfld-ldfld: a writable CLR INSTANCE int for the raw Stfld+Ldfld
         // primitive round-trip probe (the field's declaring type is this CLR class,
         // so the Neo typed-splitter leaves the raw opcode; ExecuteNeo handles it).
@@ -392,6 +397,11 @@ namespace ILRuntimeTest.TestFramework
         // CLR static from the HOST (a plain CLR call -- no stsfld/ldsfld), so the
         // probe can tell a broken Stsfld WRITE from a broken Ldsfld READ.
         public static int HostReadNeoClrStaticProbe() { return TestClass3.NeoClrStaticProbe; }
+        // neo-clr-static-vt-field: read the TestClass3.NeoClrVtStaticProbe CLR
+        // value-type static from the HOST (a plain CLR call -- no stsfld/ldsfld),
+        // so the probe can tell a broken Stsfld WRITE from a broken Ldsfld READ
+        // (the child-3 TC1 pattern). Returns the int sum X+Y+Z.
+        public static int HostReadNeoClrVtStaticProbe() { return (int)(TestClass3.NeoClrVtStaticProbe.X + TestClass3.NeoClrVtStaticProbe.Y + TestClass3.NeoClrVtStaticProbe.Z); }
         // A method that touches the frame between two Make() calls (live-range
         // overlap probe): returns an int the caller must observe so the compiler
         // does not dead-code-eliminate the call.

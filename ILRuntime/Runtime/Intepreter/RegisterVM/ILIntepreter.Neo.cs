@@ -249,31 +249,30 @@ namespace ILRuntime.Runtime.Intepreter
             writer(dst, value);
         }
 
-        // neo-clr-static-fields: a CLR value-type STATIC field is UNSAFE to
-        // marshal through the flat frame slot, so the Stsfld/Ldsfld CLR-static
-        // VT branches must refuse it with a tagged NIE (NOT crash) when either
-        //   (a) it has reference fields -- a CLR static has no ValueTypeBinder
-        //       wiring the ref region (the Step-13b gap), so the per-type
-        //       writer/reader would store/load managed pointers as raw bytes
-        //       into the primitive region (garbage refs / later corruption); or
+        // neo-clr-static-fields / neo-clr-static-vt-field: a CLR value-type STATIC
+        // field is marshaled through the flat frame slot via the box-roundtrip
+        // (ReadNeoValueType/WriteNeoValueType), which are PURE FLAT-BYTE copies
+        // (Unsafe.ReadUnaligned/WriteUnaligned) that do NOT consult the registered
+        // ValueTypeBinder -- there is no Neo byte* binder API (the binder only
+        // exposes Legacy StackObject* marshalling). So a registered binder on the
+        // field's type is IRRELEVANT to this path. The Stsfld/Ldsfld CLR-static VT
+        // branches must refuse the field with a tagged NIE (NOT crash) ONLY when
+        //   (a) it has reference fields -- a Neo frame VT slot stores GC refs as
+        //       mStack indices, but FieldInfo.GetValue returns real GC pointers,
+        //       so the per-type writer/reader would store/load managed pointers as
+        //       raw bytes into the primitive region (a missed GC root / later
+        //       corruption); or
         //   (b) its flat managed size overflows the register's eval-slot size
         //       (the JIT sizes an eval temp to the method's MAX VT, which may
-        //       not include this CLR static struct -> an OOB write/reads and
-        //       AccessViolation-exits the process).
-        // Simple blittable structs that fit the slot (enums, IntPtr, etc.) pass.
-        // Recursive so a struct with a nested ref-fielded struct is also caught.
-        static bool NeoClrVtStaticFieldIsUnsafe(Type ft, int slotSize, bool hasBinder)
+        //       not include this CLR static struct -> an OOB write/read and
+        //       AccessViolation-exits the process) -- this is the REAL AV guard.
+        // A blittable binder struct that fits the slot (e.g. TestVector3.One --
+        // 3 floats, 12 bytes, with a registered binder) passes. Recursive so a
+        // struct with a nested ref-fielded struct is also caught.
+        static bool NeoClrVtStaticFieldIsUnsafe(Type ft, int slotSize)
         {
             if (ft == null || !ft.IsValueType || ft.IsPrimitive)
                 return false;
-            // A registered ValueTypeBinder lays the struct out via the binder's
-            // primitive+ref mapping; this CLR-static arm writes only FLAT managed
-            // bytes (WriteNeoValueType/ReadNeoValueType), so a binder struct would
-            // be corrupted (and the per-type writer can AccessViolation-exit on the
-            // binder-shaped slot). Refuse it -- the binder-wired static-field path
-            // is the separate Step-13b concern.
-            if (hasBinder)
-                return true;
             if (NeoClrStructHasRefFields(ft))
                 return true;
             if (slotSize > 0 && Optimizer.GetNeoValueTypeManagedSize(ft) > slotSize)
@@ -4177,8 +4176,7 @@ namespace ILRuntime.Runtime.Intepreter
                                         else if (ft.IsValueType)
                                         {
                                             int stSlotSize = (localInfos != null && stRegIdx < localInfos.Length) ? localInfos[stRegIdx].Size : 0;
-                                            bool stHasBinder = AppDomain.ValueTypeBinders != null && AppDomain.ValueTypeBinders.ContainsKey(ft);
-                                            if (NeoClrVtStaticFieldIsUnsafe(ft, stSlotSize, stHasBinder))
+                                            if (NeoClrVtStaticFieldIsUnsafe(ft, stSlotSize))
                                                 throw new NotImplementedException("Neo Stsfld: CLR static value-type field " + f.Name + " of type " + ft.FullName + " not supported under Neo (Step-13b ref-field/binder gap or slot-size overflow)");
                                             int vtOff = stOff;
                                             value = ReadNeoValueType(ft, frameBase, ref vtOff, Optimizer.GetNeoValueTypeManagedSize(ft));
@@ -4316,8 +4314,7 @@ namespace ILRuntime.Runtime.Intepreter
                                         else if (ft.IsValueType)
                                         {
                                             int ldSlotSize = (localInfos != null && ldRegIdx < localInfos.Length) ? localInfos[ldRegIdx].Size : 0;
-                                            bool ldHasBinder = AppDomain.ValueTypeBinders != null && AppDomain.ValueTypeBinders.ContainsKey(ft);
-                                            if (NeoClrVtStaticFieldIsUnsafe(ft, ldSlotSize, ldHasBinder))
+                                            if (NeoClrVtStaticFieldIsUnsafe(ft, ldSlotSize))
                                                 throw new NotImplementedException("Neo Ldsfld: CLR static value-type field " + f.Name + " of type " + ft.FullName + " not supported under Neo (Step-13b ref-field/binder gap or slot-size overflow)");
                                             WriteNeoValueType(fldVal, dstSlot, Optimizer.GetNeoValueTypeManagedSize(ft));
                                         }

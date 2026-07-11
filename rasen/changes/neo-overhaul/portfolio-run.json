@@ -80,17 +80,25 @@
       "completedDate": "2026-07-11", "smoke": "NeoStep 324/0 (320 + 4); full-smoke per-opcode NIE all ->0 (Conv_R_Un 4, Switch 2, Ldsflda 5, Unbox-enum 2); stash-toggle 4/4 FAIL-on-HEAD -> PASS; Legacy-neutral (324 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). All 4 correct; Ldsflda zero-consumer-change confirmed. F1 (Conv_R_Un exact-double vs Legacy float32-round, Neo more accurate, accepted-known); F2 (Ldsflda ref-typed probe coverage) optional follow-up.",
       "shipped": "commit+push 2026-07-11"
+    },
+    "neo-clr-static-vt-field": {
+      "pipeline": "small-feature", "wave": 1, "scope": "CLR VT static field (TestVector3.One, 11 hits) hit child-3's over-cautious hasBinder guard -> delete the false-correlation clause (keep ref-field + slot-overflow)",
+      "prerequisites": ["neo-misc-opcodes"], "dependsOn": ["neo-misc-opcodes"], "status": "done", "capability": "neo-optimizer",
+      "completedDate": "2026-07-11", "smoke": "NeoStep 326/0 (324 + 2); full-smoke CLR-static-VT NIE ~11->1 (the 1 = correct slot-overflow guard on ArrayTest05); stash-toggle FAIL-on-HEAD -> PASS; net crashes unchanged; Legacy-neutral (326 ran/17 failed == baseline)",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Deletion-safe + AV-guarded + unmasked-AV-not-regression confirmed. Root cause: hasBinder was a false correlation (flat-byte path never consults binder). Surfaced unmasked ldind/stind-byref-CLR-struct AV (pre-existing) -> follow-up.",
+      "shipped": "commit+push 2026-07-11"
     }
   },
-  "runnableFrontier": ["neo-brtrue-on-reference"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes"],
+  "runnableFrontier": ["neo-il-instance-clr-base-field"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
     { "id": "neo-optimizer-dead-expr-operand4", "scope": "Optimizer.Neo.cs:1218 `op.Operand4 == 1;` is a dead no-assignment expression (likely intended `=`). Pre-existing latent bug. Trivial fix.", "source": "child 2 re-review TRIVIAL-A" },
     { "id": "neo-brtrue-on-reference", "scope": "PAIRED CORRECTNESS (child-3 F3+F4, latent, masked): brtrue/brfalse tests low-int32 !=0 but a null reference is a non-zero mStack index (IL-static) / -1 (CLR-static Ldsfld) -> the Roslyn delegate-cache `ldsfld cache; brtrue` pattern misclassifies null as truthy. F3 = the IL-static Stsfld/Ldsfld arms ALSO read raw DstOffset (same bug child-3 fixed for CLR). Masked by F3 + ceq lowering. Fix F3 (IL-static runtime offset) + F4 (brtrue null-sentinel) TOGETHER. Reviewer confirmed child-3's no-global-lowering scoping is correct (fixes target without unmasking).", "source": "child 3 review F3+F4" },
     { "id": "neo-il-instance-clr-base-field", "scope": "An IL instance accessing a field declared on a CLR base type (TestCls..ctor, 10 full-smoke hits). Legacy handles it (Register.cs:3113); Neo raw-Stfld/Ldfld handler defers via tagged NIE. Real parity gap. Follow-up to child 4.", "source": "child 4 review M2" },
-    { "id": "neo-clr-vt-refcount-stobjldobj", "scope": "Child-5 F1: the Stobj/Ldobj arm computes refCount=0 for CLR structs (doesn't consult ValueTypeBinder, unlike AllocateNeoCallParamSlot:1592). Post-child-5 the size is correct so the copy proceeds -> a CLR struct WITH managed ref fields copied via stobj/ldobj has untracked refs (latent missed-GC-root). Wire the binder's managedCount or guard ref-field CLR structs. Related to neo-clr-vt-reffields-binder.", "source": "child 5 review F1" }
+    { "id": "neo-clr-vt-refcount-stobjldobj", "scope": "Child-5 F1: the Stobj/Ldobj arm computes refCount=0 for CLR structs (doesn't consult ValueTypeBinder, unlike AllocateNeoCallParamSlot:1592). Post-child-5 the size is correct so the copy proceeds -> a CLR struct WITH managed ref fields copied via stobj/ldobj has untracked refs (latent missed-GC-root). Wire the binder's managedCount or guard ref-field CLR structs. Related to neo-clr-vt-reffields-binder.", "source": "child 5 review F1" },
+    { "id": "neo-ldind-stind-byref-clr-struct", "scope": "UNMASKED by child 8 (pre-existing): now that ldsfld TestVector3.One succeeds, TestValueTypeBinding.Test00 reaches ldloca+ldflda+ldind.r4/stind.r4 on a CLR struct local and AV-crashes in ExecuteNeo -- a pre-existing latent bug in the ldind/stind-byref-into-CLR-struct site (Test00 was NIE-failing on HEAD, red->red, not a regression). Candidate follow-up child.", "source": "child 8 review F1" }
   ],
   "interruptedChildren": [],
   "escalatedChildren": [],
