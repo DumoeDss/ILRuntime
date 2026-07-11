@@ -1,0 +1,24 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner13b" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer13b" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer13b", "verdict": "SHIP — 0 Blocker; 1 Major F-MAJ-1 PRE-EXISTING (AllocateLocalStackSpaces slot-reuse, stash-proven not-13b) + 1 Minor + 3 Info. ReadNeoValueType/WriteNeoValueType byte-consistent+safe; masked-NIE fix correct; Finding V pre-existing." } },
+    "review-loop": { "status": "done", "rounds": 0, "result": "clean — no fix needed; F-MAJ-1 pre-existing/out-of-scope, recorded as accepted-known follow-up (next optimizer-hardening / AllocateLocalStackSpaces)." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "deliveredScope": "Step 13b Area 5 core: removed caller-temp-slot fallback + GetNeoValueTypeManagedSize (unmasked sizing NIE) + ReadNeoValueType/WriteNeoValueType (byte-consistent) + CLRMethod.Invoke/return/autogen NIE fills. Closes K2. K2-FAM (boxed-ref bridge) DEFERRED (Phase 3 safety valve).",
+  "acceptedKnown": [
+    { "id": "F-MAJ-1", "severity": "Major-pre-existing", "summary": "2+ simultaneous CLR struct locals -> AllocateLocalStackSpaces slot-reuse/liveness bug -> silent wrong result. Pre-existing (stash-proven, struct-specific). 13b made it reachable (was NIE). Target: next optimizer-hardening / AllocateLocalStackSpaces." },
+    { "id": "D3-K2FAM", "severity": "deferred", "summary": "K2-FAM boxed-ref-local -> flat-bytes-param bridge deferred (return-sourced CLR struct = flat bytes works without bridge; boxed-ref shape needs IL-side CLR-struct ldfld/stfld)." },
+    { "id": "Area4/CLR-refout/CLR-stindldind", "severity": "deferred", "summary": "Area 4 value-type-this direct-call; CLR-method ref/out (typed-ref bridge); CLR-object stind/ldind field-hash. -> future." }
+  ],
+  "rounds": 0,
+  "openFindings": []
+}

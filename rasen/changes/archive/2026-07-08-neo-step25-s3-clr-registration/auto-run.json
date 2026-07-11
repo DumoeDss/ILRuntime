@@ -1,0 +1,10 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-step25-s3-clr-registration",
+  "stages": {
+    "propose": { "status": "done", "verdict": "COMPILE-side fatal only (AppDomain.cs:1409; GetType(string):1068 host-AppDomain scan can't see host CLR assembly). Naive LoadAssembly fix WRONG (shadows CLR as ILType -> NRE). FIX = Assembly.LoadFrom(ref) (mirrors in-process model). Load-side already works. CLI-side only, no .neo format change.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-s3clr" } },
+    "apply": { "status": "in_progress" },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 219/0/0 @ HEAD d3092cb7; NeoStep25LoadExec 28/28"
+}

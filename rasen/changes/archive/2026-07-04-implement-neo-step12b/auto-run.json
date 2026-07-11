@@ -1,0 +1,22 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner12b" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer12b" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer12b", "verdict": "CLEAN — 0 Blocker/0 Major/0 Minor/2 Trivial(non-blocking)" } },
+    "review-loop": { "status": "done", "rounds": 0, "result": "clean — no fix round needed (no Blocker/Major/Minor). 2 Trivial non-blocking." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized: LEAD commits + pushes after ship+archive" }
+  },
+  "acceptedKnownFollowups": [
+    { "id": "K1", "severity": "pre-existing-Major-elsewhere", "summary": "FCP mis-propagates value-type Moves: after `b=a`, FCP rewrites `b.field` reads to `a.field` even after `a.field` is mutated (kill condition in Optimizer.FCP.cs only checks whole-register write, not stfld via ldloca). Real `b=a; mutate(a); read(b)` silently wrong. PRE-EXISTING (reproduced with/without 12b), out of 12b scope (roadmap: 'ensure BCP/FCP unaffected'). Defer — file against optimizer. Move_Vt mechanism itself is correct." },
+    { "id": "K2", "severity": "pre-existing-Major-elsewhere", "summary": "Step 8 VT-by-value param copy emits a plain Move that reads a primitive-field value as an mStack index → ArgumentOutOfRangeException. PRE-EXISTING Step-8 call-lowering bug (uses NeoCallParamMap/CopyNeoCallArguments, not Move_Vt). Defer against Step 8." }
+  ],
+  "rounds": 0,
+  "openFindings": []
+}

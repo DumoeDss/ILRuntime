@@ -1,0 +1,10 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-f7b-sib-direct-call",
+  "stages": {
+    "propose": { "status": "done", "verdict": "REACHED (3 non-inlinable probes defeat the inliner: try/catch body, >20 instructions). BROADER than F-7B-SIB: the entire IL-direct-Call byref ABI is un-rebased+un-flagged (clrParams==null for IL callees -> byref param is 'plain'; primitive ref int fails too). Fix D1 (JIT: flag IL-callee byref params, mirror CLR-callee Step-13-Area-4c) + D2 (runtime Call case: F-7 rebase for primitive + F-7B promotion for reference). MEDIUM, HIGH regression risk (inlined Step-17 byref cases MUST stay byte-identical). 3 probes already added (FAIL-on-HEAD).", "worker": { "role": "planner", "runtime": "claude", "name": "plan-f7bsib" } },
+    "apply": { "status": "in_progress" },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 235/0/0 @ HEAD 243c8a73; NeoStep19 16/0/0"
+}

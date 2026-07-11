@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "parent": "neo-completion-portfolio",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner" } },
+    "apply": { "status": "done", "worker": { "role": "implementer" }, "note": "S1 (non-generic load+execute). ILMethod isNeoAotBody dual-path + NeoAssemblyLoader.Attach + V2 8/8 (A==B==expected). Step-6 Run-shim paramless limitation recorded for S2/S3." },
+    "verify": { "status": "in_progress", "worker": { "role": "reviewer" } },
+    "review-loop": { "status": "pending" },
+    "ship": { "status": "pending" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "summary": "Step 25 S1 SHIPPED V2-proven. NeoStep 208/208, NeoStep22SelfCheck 55/55, NeoStep23Roundtrip 15/15, NeoStep24CliRoundtrip 5/5, NeoStep25LoadExec 8/8 (A==B==expected), Legacy-neutral. First deserialize+ExecuteNeo==JIT proof."
+}

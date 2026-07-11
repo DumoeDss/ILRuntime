@@ -1,0 +1,25 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner17" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer17" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer17", "verdict": "BLOCKER B1 (addrAlias under-gate) + 4 Minor" } },
+    "review-loop": { "status": "done", "rounds": 1, "result": "clean — B1 fixed (liveAliasMap per-instruction snapshot + branch/Initobj split; root cause deeper than reviewer's direction), TC8 regression FAIL-on-HEAD/PASS-after, non-author confirmed no new hole (3 adversarial probes pass). M1/M2 fixed, M3/M4 spec-reconciled." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "deliveredScope": "Step 17 = 8-byte Ref Slot + ldloca/ldloca_s/ldarga/ldarga_s + ldflda + stind/ldind/stobj/ldobj (frame-native + ILTypeInstance) + IL ref/out call-ABI + ldelema (IL VT array) + addrAlias COEXIST gate. K1 ldloca-kill extended to ldflda/ldarga/ldelema. D-LDELEMA RESOLVED.",
+  "acceptedKnown": [
+    { "id": "D-CONSTRAINED", "severity": "partial", "summary": "constrained.-on-VT arm exists as loud tagged NIE; full VT dispatch deferred (callvirt needs byref this) -> Step 13b." },
+    { "id": "stobj-ldobj", "severity": "Minor", "summary": "Stobj/Ldobj copy primitives only (no VT ref-slot loop); spec narrowed. -> future." },
+    { "id": "clr-stind-ldind + clr-refout", "severity": "deferred", "summary": "CLR-object stind/ldind field-hash + CLR-method ref/out params -> Step 13b (closes K2/K2-FAM)." },
+    { "id": "generic-byref/fixed/interface-on-VT-constrained", "severity": "deferred", "summary": "-> future." }
+  ],
+  "rounds": 1,
+  "openFindings": []
+}

@@ -1,0 +1,23 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "child": "neo-step26-perf-validation",
+  "stages": {
+    "propose": { "status": "done", "scope": "SHIP A (benchmark suite, core) + C (single-threaded-contract doc). DEFER D (debugger -> neo-debugger-neo-frame) + B/E (F-4 stays OPEN). 3/5 sub-surfaces no-op/doc-only.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-step26" } },
+    "apply": {
+      "status": "done",
+      "outcome": "All files landed (a 502 dispatch completed the work; return path failed). LEAD re-verified: build 0 errors; NeoStep26Bench 5/5 PASS (FieldAccess/MethodCall/ValueType/VirtualDispatch/Array, 200000 iters each, correctness gate returned==expected); NeoStep 215/215 0 failed.",
+      "filesChanged": ["ILRuntime/Runtime/Intepreter/RegisterVM/NeoStep26BenchCheck.cs (NEW)", "TestCases/NeoStep26BenchProbe.cs (NEW)", "ILRuntimeTestCLI/Program.cs (NeoStep26Bench hook)", "scripts/run-neo-bench.{ps1,sh} (NEW)", "ILRuntime/Runtime/Intepreter/ILIntepreter.cs (single-threaded-contract comment)", ".trae/documents/neo-deferred-items.md (neo-debugger-neo-frame row; F-4 OPEN)"],
+      "note": "tasks.md checkboxes not auto-updated (worker interrupted pre-bookkeeping); code complete + green.",
+      "worker": { "role": "implementer", "runtime": "claude", "name": "impl-step26", "returnStatus": "502 (work landed anyway)" }
+    },
+    "verify": { "status": "in_progress" },
+    "review-loop": { "status": "pending" },
+    "ship": { "status": "pending" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "baseline": "NeoStep 215/215 @ HEAD f3be2788; NeoStep26Bench 5/5; NeoStep25LoadExec 21/21; NeoStep22SelfCheck 55/55"
+}

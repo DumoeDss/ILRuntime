@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "parent": "neo-completion-portfolio",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner", "note": "fresh planner (named planner not addressable post-return)" } },
+    "apply": { "status": "done", "worker": { "role": "implementer" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer" }, "verdict": "APPROVE-WITH-FINDINGS 0 Blocker/0 Major" },
+    "review-loop": { "status": "done", "rounds": 0, "note": "clean round 0; Minor F-1 doc-only forward-looking note added; Trivial F-2 fixed/Conv_U deferred" },
+    "ship": { "status": "done", "note": "ship-log.md authored by implementer; LEAD verified" },
+    "archive": { "status": "in_progress" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "summary": "Dump DISPROVED orientation: 3/4 sub-items are no-ops (generic-byref type-agnostic; interface-on-VT-constrained covered; fixed blocked by Conv_U out-of-scope). 1 real gap = F-10-R1 JIT-discriminator gate (clear F-10 marker when F-6 stamps, in TypeSpecializeNeoOpcodes case Ldflda). Planner dump-proved the fix. +5 TEST-ONLY guards + 1 FAIL-on-HEAD reproducer."
+}

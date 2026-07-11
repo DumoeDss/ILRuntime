@@ -1,0 +1,16 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-f4-reflection-on-neo",
+  "stages": {
+    "propose": { "status": "done", "verdict": "Path #1 ALREADY WORKS (doc stale). SHIP #2 (ObjectGetType_Neo redirect). SHIP #4 (ILTypeInstance Neo indexer). SEQUENCE #3 (appdomain.Invoke instance re-entry -> neo-f4-parametrized-run-entry + F-12).", "worker": { "role": "planner", "runtime": "claude", "name": "plan-f4" } },
+    "apply": {
+      "status": "in_progress",
+      "predecessorTranscript": "C:/Users/Sayo/.claude/projects/E--AI-ChatAI-Agents-VibeCodingProjects-ILRuntime/85ebea87-d31a-48d8-a369-ea30e8dd87ec/subagents/agent-a4dad11908e2c3c19.jsonl",
+      "partialState": "impl-f4 (interrupted by socket-close + machine shutdown) LANDED: the adversarial probes in TestCases/NeoStep14Test.cs + the bound CLR helper ILRuntimeTestBase/TestFramework/NeoF4ReflectionProbe.cs. It RESEARCHED the engine fixes deeply (ObjectGetType_Neo, TotalFieldCount indexer gate, RegisterCLRMethodRedirectionNeo; ran a dump + a stash-toggle) but did NOT finalize #2/#4 to disk -- the ILTypeInstance indexer still returns null (:399); ObjectGetType_Neo not in CLRBinding/. The successor reads the transcript for the iteration findings (what worked / what the stash-toggle revealed), then finalizes #2/#4.",
+      "worker": { "role": "implementer", "runtime": "claude", "name": "impl-f4", "returnStatus": "interrupted (socket-close + shutdown) mid-apply" }
+    },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "sequencedFollowon": "neo-f4-parametrized-run-entry (path #3 + F-12)",
+  "baseline": "NeoStep 219/0/0 @ HEAD b0041e74; NeoStep14 17/0/0"
+}

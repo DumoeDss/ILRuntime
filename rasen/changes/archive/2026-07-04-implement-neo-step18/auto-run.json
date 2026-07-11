@@ -1,0 +1,24 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner18" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer18" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer18", "verdict": "CLEAN SHIP — 0 Blocker/0 Major/2 Minor+2 Info. IL-VT-newobj deferral: blocker REAL (reproduced both forms; no simpler approach missed; NIE loud). CLR newobj correct; Q-NEWOBJ non-repro verified." } },
+    "review-loop": { "status": "done", "rounds": 0, "result": "clean — no fix needed; Minor-1 (local-form VT newobj opaque crash, pre-existing) -> [VT-THIS-ADDR]; Minor-2 cosmetic." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "deliveredScope": "Step 18 = CLR type newobj DONE (reflection + redirect; removed blanket NIE; dest storage; enables throw new ClrException). Q-NEWOBJ non-reproducible (closed).",
+  "acceptedKnown": [
+    { "id": "Q-VT-NEWOBJ", "severity": "deferred", "summary": "IL value-type newobj blocked on VT field-access lowering consistency (ctor this = in-frame bytes; addrAlias only tracks ldloca -> caller/callee VT rep mismatch). Newobj-instruction path = loud Step-18 NIE. -> [VT-THIS-ADDR]." },
+    { "id": "Q-VT-NEWOBJ-local", "severity": "Minor-pre-existing", "summary": "IL-VT newobj LOCAL form (VT x = new VT()) compiles to ldloca;call ctor -> bypasses NIE -> opaque NullRef in ctor stfld. Pre-existing. -> [VT-THIS-ADDR]." },
+    { "id": "IsDelegate-NIE-dead", "severity": "Trivial", "summary": "IsDelegate NIE is dead code (CLR delegates fail upstream at Ldftn). Cosmetic." }
+  ],
+  "rounds": 0,
+  "openFindings": []
+}

@@ -1,0 +1,10 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-f7b-reftype-writeback",
+  "stages": {
+    "propose": { "status": "done", "verdict": "ISOLATED: dangling mStack index -- Ret arm promotes a ref-return (:2689-2694) before the pop, but the byref channel is missing the promotion. FIX D1a (SHIP SMALL): NeoRunDelegateTargetOnThis converts a ref-typed frame-native byref to an mStack-slot byref targeting a CALLER-OWNED slot (F-10 high-bit discriminator); Stind_Ref/Ldind_Ref mStack-object arms read/write through that caller-owned slot. Removes relativization for ref byrefs. Probe NeoStep19_ByRef_StringWriteBack added (FAIL-on-HEAD).", "worker": { "role": "planner", "runtime": "claude", "name": "plan-f7b" } },
+    "apply": { "status": "in_progress" },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 233/0/0 @ HEAD 12d9e809; NeoStep19 14/0/0"
+}

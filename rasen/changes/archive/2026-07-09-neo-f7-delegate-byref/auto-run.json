@@ -1,0 +1,15 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-f7-delegate-byref",
+  "stages": {
+    "propose": { "status": "done", "verdict": "SHIP (SMALL) -- same-frame delegate-Invoke fast path (do what Call_IL does). design.md authoritative.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-f7" } },
+    "apply": {
+      "status": "in_progress",
+      "predecessorTranscript": "C:/Users/Sayo/.claude/projects/E--AI-ChatAI-Agents-VibeCodingProjects-ILRuntime/85ebea87-d31a-48d8-a369-ea30e8dd87ec/subagents/agent-a09bff7729c0329bd.jsonl",
+      "partialState": "impl-f7 (socket-close-interrupted) LANDED the byref delegate probes in TestCases/NeoStep19Test.cs (+86 lines: NeoStep19RefIntDelegate/OutIntDelegate/RefStringDelegate + targets). Researched the fast-path (transcript: CopyNeoCallThisBack x19, IsDelegateInvoke x15). Did NOT land the engine fix (the Callvirt_IL IsDelegateInvoke branch change in ILIntepreter.Neo.cs -- still unmodified). Successor reads the transcript + design.md + finishes the ~15-line Callvirt_IL branch change.",
+      "worker": { "role": "implementer", "runtime": "claude", "name": "impl-f7", "returnStatus": "socket-close-interrupted mid-apply (probes landed; engine fix not)" }
+    },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 229/0/0 @ HEAD 462e635d; NeoStep19 8/8"
+}

@@ -1,0 +1,10 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-debugger-neo-frame",
+  "stages": {
+    "propose": { "status": "done", "verdict": "Var inspection TRACTABLE (SMALL). Frame-local dispatch mirrors F-4 indexer: LocalVarPointer aliases byte* frameBase; LocalInfos[ParamCnt+i] = StackSlotInfo; per-shape read (primitive/reference[mStack absolute]/CLR-struct ReadNeoValueType; IL-VT-local placeholder SEQUENCE). GetThisInfo reuses F-4 indexer for IL fields. Capstone: host-side self-check via the unhandled-exception path (ILRuntimeException ctor -> GetThisInfo/GetLocalVariableInfo). SHIP primitive+ref+CLR-struct+this/field; SEQUENCE IL-VT-local + AOT-body.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-debug" } },
+    "apply": { "status": "in_progress" },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 226/0/0 @ HEAD 50d0e7e2"
+}

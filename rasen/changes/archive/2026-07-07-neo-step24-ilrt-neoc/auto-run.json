@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "parent": "neo-completion-portfolio",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner" } },
+    "apply": { "status": "done", "worker": { "role": "implementer" }, "note": "public NeoCompiler seam + ILRuntimeNeoCompiler tool project + V1-A 5/5 + V1-B exit-code; AppDomain.Dispose hang-fix; 3 comparator visibility widenings. Deviation: V1-A is explicit-types overload (module filter can't scope). Full-TestCases.dll V1-B deferred (Step 19 gap)." },
+    "verify": { "status": "in_progress", "worker": { "role": "reviewer" } },
+    "review-loop": { "status": "pending" },
+    "ship": { "status": "pending" },
+    "archive": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "summary": "Step 24 SHIPPED green. NeoStep 205/205, NeoStep23Roundtrip 15/15, NeoStep22SelfCheck 55/55, V1-A 5/5, V1-B exit-code, Legacy-neutral."
+}

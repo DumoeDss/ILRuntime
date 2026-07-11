@@ -1,0 +1,17 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "parent": "neo-completion-portfolio",
+  "stages": {
+    "propose": { "status": "done", "worker": { "role": "planner" } },
+    "apply": { "status": "done", "worker": { "role": "implementer" }, "note": "PARTIAL: Phase 1 reachability unblockers shipped (B3 Nop case, B2 void-GetResult guard, Task.Delay redirect). Phase 2 STOPPED: 2 stacked blockers (control-flow brtrue/IsCompleted mismatch masks B1; B1 2-arg redirect broad). Caught a false-positive probe (green via blocking GetResult, not suspend)." },
+    "verify": { "status": "done", "worker": { "role": "reviewer" }, "verdict": "APPROVE-WITH-FINDINGS 0 Blocker/0 Major" },
+    "review-loop": { "status": "done", "rounds": 0, "note": "clean; 1 Minor (ship-log absent + deferred-items entry) closed by LEAD" },
+    "ship": { "status": "done", "note": "ship-log.md authored by LEAD; neo-deferred-items.md updated" },
+    "archive": { "status": "in_progress" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "summary": "PARTIAL ship. Phase 1 (B2/B3/Task.Delay) delivered, Neo 204/204, NeoStep20 sync 9/9, Legacy-neutral. Phase 2 (suspend machinery) deferred to 2 split children: neo-async-controlflow-iscompleted (brtrue/IsCompleted register mismatch, masks B1) + neo-generic-redirect-resolution (B1)."
+}

@@ -1,0 +1,25 @@
+{
+  "pipeline": "auto-decompose",
+  "classification": "small-feature",
+  "tier": "A",
+  "decomposeDecision": "skipped",
+  "stages": {
+    "decompose": { "status": "skipped" },
+    "propose": { "status": "done", "worker": { "role": "planner", "agentId": "planner16" } },
+    "apply": { "status": "done", "worker": { "role": "implementer", "agentId": "implementer16" } },
+    "verify": { "status": "done", "worker": { "role": "reviewer", "agentId": "reviewer16", "verdict": "CLEAN — 0 Blocker/0 Major/0 Minor/3 Info. Operand non-clobbering safe; Newarr VT pre-instantiation complete; 3 quirks genuinely pre-existing." } },
+    "review-loop": { "status": "done", "rounds": 0, "result": "clean — no fix needed." },
+    "ship": { "status": "in_progress" },
+    "archive": { "status": "pending" },
+    "commit-push": { "status": "pending", "note": "user pre-authorized" }
+  },
+  "acceptedKnown": [
+    { "id": "quirk-newobj-alias", "severity": "pre-existing", "summary": "Newobj dest/arg register aliasing after an array alloc (new T(intArg)). Step 10/11 concern. Worked around in TC4." },
+    { "id": "quirk-struct-renumber", "severity": "pre-existing", "summary": "Struct-local + field-mutation + element-read optimizer temp-renumber. Worked around in TC5." },
+    { "id": "quirk-long-compare", "severity": "pre-existing", "summary": "long default-zero compare (conv.i8) quirk. Worked around in TC2." },
+    { "id": "stelem-i-nie", "severity": "Info", "summary": "Stelem_I lowered for encoding but interpreter arm NIE (native-int/IntPtr[] store is rare; out of scope)." }
+  ],
+  "deferredScope": "ldelema -> Step 17 (consumers stind/ldind/fixed/ref-out); generic-token Ldelem/Stelem + native Ldelem_I/U8 -> JIT-time NIE (rare); multi-dim arrays (rank-1 only).",
+  "rounds": 0,
+  "openFindings": []
+}

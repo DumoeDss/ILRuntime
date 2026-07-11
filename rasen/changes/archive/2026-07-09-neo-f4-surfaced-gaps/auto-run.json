@@ -1,0 +1,14 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-f4-surfaced-gaps",
+  "stages": {
+    "propose": {
+      "status": "in_progress",
+      "predecessorTranscript": "C:/Users/Sayo/.claude/projects/E--AI-ChatAI-Agents-VibeCodingProjects-ILRuntime/85ebea87-d31a-48d8-a369-ea30e8dd87ec/subagents/agent-a1976246af1325528.jsonl",
+      "partialState": "planner (522-interrupted) LANDED the 2 dump-gate probes in TestCases/NeoStep14Test.cs (NeoStep14_ILEx_GapA_TypeOpEqualityNull + NeoStep14_ILEx_GapB_NewobjStringArg, 85 lines) + researched both root causes deeply (transcript: op_Equality x42, newobj x129). Did NOT write artifacts or implement fixes. Findings RECOVERED from the probe comments: Gap A root cause = autogen op_Equality_1_Neo reads operands via ReadNeoReference; null sentinel (-1) -> mStack[-1] AoRE; fix = ReadNeoReference null-sentinel check. Gap B root cause = new MyEx(string) ctor stfld Msg stores this not the arg; fix = newobj-arg-marshal/stfld-source. Successor reads the transcript for the precise fix sites (the op_Equality emitter + the newobj stfld trace).",
+      "worker": { "role": "planner", "runtime": "claude", "name": "plan-f4gaps", "returnStatus": "522-interrupted mid-propose (probes + research landed)" }
+    },
+    "apply": { "status": "pending" }, "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 224/0/0 @ HEAD bc9f1020; NeoStep14 19/0/0"
+}

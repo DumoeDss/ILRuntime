@@ -1,0 +1,10 @@
+{
+  "pipeline": "small-feature", "classification": "small-feature", "tier": "A",
+  "child": "neo-f4-parametrized-run-entry",
+  "stages": {
+    "propose": { "status": "done", "verdict": "Run's Neo arm (ILIntepreter.cs:111-137) is a stale Step-6 parameterless shim (ignores instance+p; only return-ref region). NeoInvokeSub IS the parametrized-Run impl (Step-19). FIX = TRANSPLANT NeoInvokeSub into Run's Neo arm (reserve TotalRefSize, zero locals, push instance slot-0 this, marshal p via WriteNeoCallSlot, return type-discriminated) MINUS Request/FreeILIntepreter (caller pools). Closes F-4 #3 AND F-12 in one. SMALL, Neo-gated.", "worker": { "role": "planner", "runtime": "claude", "name": "plan-prun" } },
+    "apply": { "status": "in_progress" },
+    "verify": { "status": "pending" }, "review-loop": { "status": "pending" }, "ship": { "status": "pending" }, "archive": { "status": "pending" }
+  },
+  "baseline": "NeoStep 221/0/0 @ HEAD cb07444d; NeoStep14 19/0/0"
+}
