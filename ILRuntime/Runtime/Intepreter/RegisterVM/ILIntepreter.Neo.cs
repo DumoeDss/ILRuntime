@@ -2075,6 +2075,32 @@ namespace ILRuntime.Runtime.Intepreter
                                     continue;
                                 }
                                 break;
+                            case OpCodeREnum.Switch:
+                                {
+                                    // CIL switch: jump-table dispatch. The index value
+                                    // lives in Register1's slot. Switch is NOT in the
+                                    // LowerNeoOffsets case-list (only its jump-table
+                                    // TARGETS are remapped by FixBranchTargetsAfterRemove
+                                    // at Optimizer.Neo.cs:1728), so ip->DstOffset still
+                                    // holds the raw Register1 INDEX -- resolve its byte
+                                    // offset at runtime via localInfos (the SAME defensive
+                                    // `(idx < localInfos.Length) ? .Offset : idx` pattern
+                                    // the un-lowered Stsfld/Ldsfld arms use). The jump
+                                    // table is method.JumpTablesRegister[ip->Operand];
+                                    // in-range -> ip = ptr + table[idx]; continue; out-of-
+                                    // range -> fall through (no jump). Byte-for-byte Legacy
+                                    // (Register.cs:2754-2764).
+                                    int swIdxReg = ip->DstOffset;
+                                    int swIdxOff = (localInfos != null && swIdxReg < localInfos.Length) ? localInfos[swIdxReg].Offset : swIdxReg;
+                                    int swVal = *(int*)(frameBase + swIdxOff);
+                                    var swTable = method.JumpTablesRegister[ip->Operand];
+                                    if (swVal >= 0 && swVal < swTable.Length)
+                                    {
+                                        ip = ptr + swTable[swVal];
+                                        continue;
+                                    }
+                                }
+                                break;
                             case OpCodeREnum.Beq:
                                 if (*(int*)(frameBase + ip->DstOffset) == *(int*)(frameBase + ip->SrcOffset))
                                 {
@@ -2728,6 +2754,32 @@ namespace ILRuntime.Runtime.Intepreter
                                 break;
                             case OpCodeREnum.Conv_R8:
                                 *(double*)(frameBase + ip->DstOffset) = ReadConvR8(frameBase, ip->SrcOffset, (NeoPrimitiveTypeTag)ip->Operand2);
+                                break;
+                            case OpCodeREnum.Conv_R_Un:
+                                {
+                                    // conv.r.un: convert an UNSIGNED integer (or widen a
+                                    // float) to F. The dest slot is DoubleType (8 bytes, per
+                                    // GetConvResultType), so the arm ALWAYS writes a double --
+                                    // a 4-byte float write would leave the high dword stale.
+                                    // Integers are interpreted UNSIGNED (the `.un` suffix):
+                                    // ReadConvU4/ReadConvU8 cast via uint/ulong, so e.g. a
+                                    // source 0xFFFFFFFF yields 4294967295.0, not -1.0. The
+                                    // source-type tag is ip->Operand2 (stamped at
+                                    // JITCompiler.cs:975, grouped with Conv_R4/R8); dispatch
+                                    // on the width so a 64-bit source is NOT truncated by
+                                    // ReadConvU4 (Legacy mirror Register.cs:1258-1294).
+                                    var cuTag = (NeoPrimitiveTypeTag)ip->Operand2;
+                                    double cuResult;
+                                    if (cuTag == NeoPrimitiveTypeTag.I8 || cuTag == NeoPrimitiveTypeTag.U8)
+                                        cuResult = (double)ReadConvU8(frameBase, ip->SrcOffset, cuTag);
+                                    else if (cuTag == NeoPrimitiveTypeTag.R4)
+                                        cuResult = (double)*(float*)(frameBase + ip->SrcOffset);
+                                    else if (cuTag == NeoPrimitiveTypeTag.R8)
+                                        cuResult = *(double*)(frameBase + ip->SrcOffset);
+                                    else // I4 / U4
+                                        cuResult = (double)ReadConvU4(frameBase, ip->SrcOffset, cuTag);
+                                    *(double*)(frameBase + ip->DstOffset) = cuResult;
+                                }
                                 break;
                             case OpCodeREnum.Ldftn:
                                 {
@@ -4142,6 +4194,56 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                 }
                                 break;
+                            case OpCodeREnum.Ldsflda:
+                                {
+                                    // ldsflda: load the address of a static field as a Neo
+                                    // byref (objIdx, off). For an IL static field, materialize
+                                    // the declaring type's StaticInstance (an
+                                    // ILTypeStaticInstance, which derives from ILTypeInstance)
+                                    // into mStack and emit (mStackIdx, fieldOffset), where
+                                    // fieldOffset is the field's PrimitiveOffset (primitive
+                                    // field) or ReferenceOffset (reference field) -- the SAME
+                                    // offset resolution the Neo Ldsfld IL-static path uses. A
+                                    // following stind/ldind OR a ref/out method arg
+                                    // (CopyNeoCallArguments -> NeoMarshalByrefFieldToSlot, +
+                                    // CopyNeoCallWriteBack) then writes/reads the static
+                                    // field's storage via ins.Primitives[off] /
+                                    // ins.ManagedObjects[off] with ZERO consumer change --
+                                    // both consumers already dispatch `mStack[objIdx] is
+                                    // ILTypeInstance`. Encoding is identical to Ldsfld
+                                    // (Register1 = dest, OperandLong = (typeHash<<32)|
+                                    // fieldHash); Ldsflda is NOT in the LowerNeoOffsets case-
+                                    // list, so ip->DstOffset is the raw Register1 INDEX --
+                                    // resolve its byte offset via localInfos (mirrors Stsfld/
+                                    // Ldsfld). Do NOT stamp Operand3 (it aliases OperandLong's
+                                    // high dword).
+                                    var ldaDeclType = AppDomain.GetType((int)((ulong)ip->OperandLong >> 32));
+                                    if (ldaDeclType == null) throw new TypeLoadException("Neo Ldsflda: declaring type not resolved for token 0x" + ip->OperandLong.ToString("X"));
+                                    int ldaDstReg = ip->DstOffset;
+                                    int ldaDstOff = (localInfos != null && ldaDstReg < localInfos.Length) ? localInfos[ldaDstReg].Offset : ldaDstReg;
+                                    if (ldaDeclType is ILType ldaIlt)
+                                    {
+                                        int ldaSIdx = (int)ip->OperandLong;
+                                        var ldaOff = ldaIlt.GetStaticFieldOffset(ldaSIdx);
+                                        var ldaFt = ldaIlt.StaticFieldTypes.Length > ldaSIdx ? ldaIlt.StaticFieldTypes[ldaSIdx] : null;
+                                        mStack.Add(ldaIlt.StaticInstance);
+                                        int ldaSidx = mStack.Count - 1;
+                                        int ldaFieldOff = (ldaFt != null && ldaFt.IsPrimitive) ? ldaOff.PrimitiveOffset : ldaOff.ReferenceOffset;
+                                        *(int*)(frameBase + ldaDstOff + 0) = ldaSidx;
+                                        *(int*)(frameBase + ldaDstOff + 4) = ldaFieldOff;
+                                    }
+                                    else
+                                    {
+                                        // CLR static field: no heap object to address
+                                        // (FieldInfo.GetValue/SetValue null), so the existing
+                                        // (objIdx, off) object-field consumers cannot resolve
+                                        // it. Defer with a tagged NIE (distinct from the Step-
+                                        // 6 default) unless a future follow-up adds a
+                                        // dedicated static-field byref sentinel + consumer arm.
+                                        throw new NotImplementedException("Neo Ldsflda: CLR static field address deferred (follow-up)");
+                                    }
+                                }
+                                break;
                             case OpCodeREnum.Ldsfld:
                                 {
                                     var declType = AppDomain.GetType((int)(ip->OperandLong >> 32));
@@ -4389,9 +4491,36 @@ namespace ILRuntime.Runtime.Intepreter
                                     // already turned into NullReferenceException.
                                     if (clrUnboxType.IsPrimitive)
                                     {
-                                        // CLR primitives unbox into the dest flat-bytes slot
-                                        // by value.
-                                        NeoWritePrimitiveToFrame(obj, frameBase + ip->DstOffset);
+                                        if (obj is ILEnumTypeInstance enumUnboxObj)
+                                        {
+                                            // Unbox a boxed IL enum to its underlying CLR
+                                            // primitive (e.g. `(int)(object)E.B`). The enum's
+                                            // value lives in enumUnboxObj.Primitives (the
+                                            // ILEnumTypeInstance ctor under Neo allocates
+                                            // fields = new byte[underlyingSize] and the
+                                            // Primitives getter returns that byte[]). Copy the
+                                            // underlying-primitive bytes into the dest slot --
+                                            // mirrors the ILType-enum Unbox arm above (4357)
+                                            // and Legacy Register.cs:4129
+                                            // (res.CopyToRegister(0, ...)). Without this guard
+                                            // NeoWritePrimitiveToFrame throws
+                                            // "unsupported CLR primitive for Unbox:
+                                            // ILEnumTypeInstance" (obj.GetType() is the enum
+                                            // type, not a CLR primitive).
+                                            ILType enumIlType = enumUnboxObj.Type;
+                                            int enumSz = AppDomain.GetPrimitiveSize(enumIlType.FieldTypes[0]);
+                                            if (enumSz > 0 && enumUnboxObj.Primitives != null)
+                                            {
+                                                ref byte enumSrc = ref MemoryMarshal.GetReference(enumUnboxObj.Primitives.AsSpan());
+                                                Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref enumSrc, (uint)enumSz);
+                                            }
+                                        }
+                                        else
+                                        {
+                                            // CLR primitives unbox into the dest flat-bytes slot
+                                            // by value.
+                                            NeoWritePrimitiveToFrame(obj, frameBase + ip->DstOffset);
+                                        }
                                     }
                                     else
                                     {
