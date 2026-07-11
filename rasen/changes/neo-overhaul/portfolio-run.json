@@ -87,10 +87,17 @@
       "completedDate": "2026-07-11", "smoke": "NeoStep 326/0 (324 + 2); full-smoke CLR-static-VT NIE ~11->1 (the 1 = correct slot-overflow guard on ArrayTest05); stash-toggle FAIL-on-HEAD -> PASS; net crashes unchanged; Legacy-neutral (326 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Deletion-safe + AV-guarded + unmasked-AV-not-regression confirmed. Root cause: hasBinder was a false correlation (flat-byte path never consults binder). Surfaced unmasked ldind/stind-byref-CLR-struct AV (pre-existing) -> follow-up.",
       "shipped": "commit+push 2026-07-11"
+    },
+    "neo-il-instance-clr-base-field": {
+      "pipeline": "small-feature", "wave": 1, "scope": "IL instance accessing a CLR-base-declared field (5 hits; child-4 M2) -> route via ILTypeInstance.CLRInstance + existing NeoReadClrObjectField/NeoWriteClrObjectField (Legacy parity)",
+      "prerequisites": ["neo-clr-static-vt-field"], "dependsOn": ["neo-clr-static-vt-field"], "status": "done", "capability": "neo-value-types",
+      "completedDate": "2026-07-11", "smoke": "NeoStep 328/0 (326 + 2); full-smoke 'IL-instance CLR-base field deferred' ~5->0; stash-toggle FAIL-on-HEAD (tagged Stfld/Ldfld NIE) -> PASS; Legacy-neutral (328 ran/17 failed == baseline)",
+      "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major/Minor). Unwrap+helper-reuse confirmed at source; Array-deferral untouched. 1 Trivial (helper re-resolves CLRType each call, deliberate minimal-diff) accepted.",
+      "shipped": "commit+push 2026-07-11"
     }
   },
-  "runnableFrontier": ["neo-il-instance-clr-base-field"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field"],
+  "runnableFrontier": ["neo-clr-object-field-il-path"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },

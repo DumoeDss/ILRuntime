@@ -3747,10 +3747,21 @@ namespace ILRuntime.Runtime.Intepreter
                                         if (target == null)
                                             throw new NullReferenceException();
                                         if (target is ILTypeInstance || target is CrossBindingAdaptorType)
-                                            throw new NotImplementedException("Neo raw Ldfld: IL-instance owner with a CLR-base field is deferred (CLR-base field on an IL type; follow-up). Field " + f.Name + " on " + ct.FullName);
-                                        if (target is Array)
+                                        {
+                                            // IL type inheriting a CLR base: the CLR-base field lives
+                                            // on the IL instance's CLRInstance (the wrapped Adaptor
+                                            // object created by CrossBindingAdaptor.CreateCLRInstance,
+                                            // IS-A the CLR base), NOT in its Primitives/ManagedObjects
+                                            // IL-field layout. Route the read through the field-hash
+                                            // accessor on CLRInstance (byte-identical to Legacy's
+                                            // ILTypeInstance read-indexer CLR-inherited else branch).
+                                            ILTypeInstance il = target as ILTypeInstance ?? ((CrossBindingAdaptorType)target).ILInstance;
+                                            fldVal = NeoReadClrObjectField(AppDomain, il.CLRInstance, fieldHash);
+                                        }
+                                        else if (target is Array)
                                             throw new NotImplementedException("Neo raw Ldfld: array-element field read is deferred (ldfld on a CLR array element; follow-up). Field " + f.Name + " on " + ct.FullName);
-                                        fldVal = NeoReadClrObjectField(AppDomain, target, fieldHash);
+                                        else
+                                            fldVal = NeoReadClrObjectField(AppDomain, target, fieldHash);
                                         if (fldVal is CrossBindingAdaptorType cba) fldVal = cba.ILInstance;
                                     }
                                     // Marshal the boxed field value into the dest register by the
@@ -3910,10 +3921,21 @@ namespace ILRuntime.Runtime.Intepreter
                                         if (target == null)
                                             throw new NullReferenceException();
                                         if (target is ILTypeInstance || target is CrossBindingAdaptorType)
-                                            throw new NotImplementedException("Neo raw Stfld: IL-instance owner with a CLR-base field is deferred (CLR-base field on an IL type; follow-up). Field " + f.Name + " on " + ct.FullName);
-                                        if (target is Array)
+                                        {
+                                            // IL type inheriting a CLR base: the CLR-base field lives
+                                            // on the IL instance's CLRInstance (the wrapped Adaptor
+                                            // object, IS-A the CLR base). Route the write through the
+                                            // field-hash accessor on CLRInstance (byte-identical to
+                                            // Legacy's ILTypeInstance.AssignFromStack CLR-inherited
+                                            // else branch). No writeback: CLRInstance is a class, so
+                                            // SetFieldValue's defensive ref does not replace it.
+                                            ILTypeInstance il = target as ILTypeInstance ?? ((CrossBindingAdaptorType)target).ILInstance;
+                                            NeoWriteClrObjectField(AppDomain, il.CLRInstance, fieldHash, value);
+                                        }
+                                        else if (target is Array)
                                             throw new NotImplementedException("Neo raw Stfld: array-element field write is deferred (stfld on a CLR array element; follow-up). Field " + f.Name + " on " + ct.FullName);
-                                        NeoWriteClrObjectField(AppDomain, target, fieldHash, value);
+                                        else
+                                            NeoWriteClrObjectField(AppDomain, target, fieldHash, value);
                                     }
                                 }
                                 break;
