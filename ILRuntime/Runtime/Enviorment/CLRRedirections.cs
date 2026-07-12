@@ -646,6 +646,109 @@ namespace ILRuntime.Runtime.Enviorment
             else mStack[retRefBase] = result;
             *(int*)retDst = retRefBase;
         }
+
+        // Store an object-typed redirect result (e.g. an Activator.CreateInstance
+        // return) into the caller's dest ref slot. Null-aware: a null result is
+        // encoded as the Neo null sentinel (-1), matching ReadNeoReference
+        // (idx >= 0 ? mStack[idx] : null) and InvokeNeoClrMethod's null-return
+        // convention (ILIntepreter.Neo.cs:1082-1084). WriteNeoDelegateResult is
+        // NOT null-aware (a Combine can yield a valid null-valued index), so
+        // this is a distinct helper for redirects whose null means "no object".
+        static unsafe void WriteNeoObjectResult(AutoList mStack, byte* retDst, int retRefBase, object result)
+        {
+            if (retDst == null) return;
+            if (result == null)
+            {
+                *(int*)retDst = -1;
+                return;
+            }
+            if (retRefBase >= mStack.Count) mStack.Add(result);
+            else mStack[retRefBase] = result;
+            *(int*)retDst = retRefBase;
+        }
+
+        // Neo redirect for the generic System.Activator.CreateInstance<T>().
+        // Mirrors the Legacy CLRRedirections.CreateInstance (CLRRedirections.cs:30):
+        // the type is the generic argument -- there is NO frame param. For an IL
+        // type -> ILType.Instantiate(); for a CLR type -> CLRType.CreateDefault-
+        // Instance(). Registered on RedirectMapNeo for the generic DEFINITION,
+        // so CLRMethod.TryGetRedirection (which tries GetGenericMethodDefinition
+        // first) serves this for every instantiation -- preempting the autogen
+        // per-instantiation CreateInstance_*_Neo stubs (the generic stub calls
+        // host Activator.CreateInstance<ILTypeInstance>() -> MissingMethodException).
+        // The Legacy VT AllocValueType branches are unreachable in the current
+        // smoke (no Activator.CreateInstance<VT> call sites); under Neo the
+        // produced box is written as a reference, matching the autogen reference-
+        // return convention.
+        public unsafe static void CreateInstanceNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            IType[] genericArguments = method.GenericArguments;
+            object result;
+            if (genericArguments != null && genericArguments.Length == 1)
+            {
+                var t = genericArguments[0];
+                if (t is ILType ilt)
+                    result = ilt.Instantiate();
+                else
+                    result = ((CLRType)t).CreateDefaultInstance();
+            }
+            else
+                throw new EntryPointNotFoundException();
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
+        // Neo redirect for System.Activator.CreateInstance(Type). Mirrors the
+        // Legacy CLRRedirections.CreateInstance2 (CLRRedirections.cs:76). Param 0
+        // is the Type. For an ILRuntimeType -> ILType.Instantiate(); else host
+        // Activator.CreateInstance(type); a null Type -> null (Neo sentinel).
+        public unsafe static void CreateInstance2Neo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            Type t = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result;
+            if (t != null)
+            {
+                if (t is ILRuntimeType ilrt)
+                    result = ilrt.ILType.Instantiate();
+                else
+                    result = Activator.CreateInstance(t);
+            }
+            else
+                result = null;
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
+        // Neo redirect for System.Activator.CreateInstance(Type, object[]).
+        // Mirrors the Legacy CLRRedirections.CreateInstance3 (CLRRedirections.cs:110).
+        // Param 0 = Type, param 1 = object[] (the params array, itself a reference
+        // recovered via ReadNeoReference). Each args element is null-checked
+        // (Legacy throws ArgumentNullException). For an ILRuntimeType ->
+        // ILType.Instantiate(object[]); else host Activator.CreateInstance(type, args).
+        public unsafe static void CreateInstance3Neo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            Type t = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object[] args = (object[])ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result;
+            if (t != null)
+            {
+                if (args != null)
+                {
+                    for (int i = 0; i < args.Length; i++)
+                    {
+                        if (args[i] == null)
+                            throw new ArgumentNullException();
+                    }
+                }
+                if (t is ILRuntimeType ilrt)
+                    result = ilrt.ILType.Instantiate(args);
+                else
+                    result = Activator.CreateInstance(t, args);
+            }
+            else
+                result = null;
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
 #endif
 
         public unsafe static StackObject* DelegateCombine(ILIntepreter intp, StackObject* esp, AutoList mStack, CLRMethod method, bool isNewObj)

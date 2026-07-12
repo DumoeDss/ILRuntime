@@ -734,3 +734,56 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   sites, 71 added / 0 removed), new `TestCases/NeoStepFloatSeedingProbe.cs`. Capability =
   `neo-optimizer`. Review: APPROVE-WITH-FINDINGS (0 Blocker/Major; M1 perf nit getMethod-not-hoisted,
   M2 CLR-callee-float probe coverage accepted-known worst-case-no-regression; 3 Trivial).
+
+## Child 22 DONE (neo-activator-createinstance-neo-redirect, shipped 2026-07-13) -- durable findings
+- **Triage batch-1 WINNOWED the latent list (12-for-12 lesson holds):** `neo-il-static-field-roundtrip`
+  DISPROVEN (child-13 closed it -- `SimpleTest.TestStaticFieldInstance` + fresh primitive/reference
+  round-trip probes all PASS); `neo-clr-vt-refcount-stobjldobj` UNREACHABLE (a ref-field CLR struct
+  NIEs at the ctor `CLRMethod.Invoke:393` Step-13 Area-4b BEFORE materializing; the only non-NIE path
+  [method return] copies the GC pointer inside the CopyBlock'd primitive bytes with them -- no root
+  lost). NEITHER needs a child.
+- **`neo-activator-createinstance-nre` was DISPROVEN-as-framed (the `ILType.GetStaticFieldOffset` NRE
+  does NOT reproduce) but REFRAMED to a real+tractable gap:** under Neo, `Activator.CreateInstance`
+  on an IL type fell through to the broken AUTOGEN stub `System_Activator_Binding.CreateInstance_*_Neo`
+  (a `default(...)`/TODO) -> `MissingMethodException: No parameterless constructor for ILTypeInstance`.
+  Root cause: `AppDomain.cs:162-176` registers the hand-written `CLRRedirections.CreateInstance/2/3`
+  (which correctly do `ILType.Instantiate()` for IL types) on Legacy's `RedirectMap` ONLY -- NOT on
+  `RedirectMapNeo`. Neo dispatch uses `RedirectMapNeo` exclusively (child-2). SAME defect class as
+  child-6 (`RuntimeHelpers.InitializeArray` -> `InitializeArrayNeo`). Neo-specific (Legacy 2/2 PASS).
+- **THE FIX (mirror child-6, Neo-only, ~123 lines engine):** Neo-signature equivalents
+  `CreateInstanceNeo`/`CreateInstance2Neo`/`CreateInstance3Neo` in `CLRRedirections.cs` (signature
+  mirrored from `InitializeArrayNeo`/`DelegateCombineNeo`: `void(ILIntepreter, byte* frameBase,
+  AutoList, CLRMethod, bool, byte* retDst, int retRefBase)`; params via `ReadNeoReference`; result
+  via a new `WriteNeoObjectResult` helper that emits the `-1` null sentinel on null -- DISTINCT from
+  `WriteNeoDelegateResult` which writes a valid index even for null [correct for Combine, wrong for
+  general object returns]). Three overloads reproduce the hand-written redirects: generic reads
+  `method.GenericArguments[0]`; Type overloads `ReadNeoReference` the Type (+ object[]); IL ->
+  `ILType.Instantiate()`/`Instantiate(args)`, CLR -> `CreateDefaultInstance()`/host Activator.
+  Registered on `RedirectMapNeo` in the AppDomain ctor's Activator `foreach` (mirror Delegate.Combine).
+- **THE GENERIC-DEFINITION-PRECEDENCE LEVER (child-6 lineage, durable):** `CLRMethod.TryGetRedirection`
+  (`CLRMethod.cs:111-131`) tries `GetGenericMethodDefinition()` FIRST. So registering ONE Neo redirect
+  for the generic `Activator.CreateInstance<T>()` definition preempts EVERY autogen per-instantiation
+  stub -- no need to patch each stub. For non-generic overloads, first-registered-wins (AppDomain ctor
+  before the test-harness autogen `Register`) does the same. This is the same lever the Step-20 async
+  builder redirects already rely on. USE THIS PATTERN for any future "autogen Neo stub is broken" gap.
+- **SURFACED FOLLOW-UP (P1, the real next candidate): an INSTANCE-field/local `== null` via ceq still
+  reads FALSE on HEAD.** `ActivatorCreateInstanceWithArgsTest` still fails -- but NOT on Activator (the
+  instance is created with correct field values; proven via a diagnostic `new DiagData()` + `field ==
+  null` ternary that fails IDENTICALLY without Activator). The residual is `ILValue == null` lowered to
+  `ceq` comparing a raw mStack index (a valid index pointing to null) against ldnull's `-1` -> FALSE ->
+  `ref.ToString()` on null -> `Neo callvirt this is null`. This is the INSTANCE-field form of the null-
+  comparison gap (child-11 fixed brtrue for static-ref; child-12 fixed `ldsfld;ldnull;ceq` for static-
+  ref via `Ceq_Ref`; THIS is `ldfld.ref <instance field>; ldnull; ceq` -- Ceq_Ref is NOT firing, meaning
+  the instance-field load (or its temp) is NOT seeding registerTypes as a reference). Fires for ANY IL
+  instance, not just Activator. Worth a focused re-audit child: WHY is Ceq_Ref not firing for an
+  instance ref field? (Hypotheses: the field load flows through a temp local not marked
+  `LocalIsReference`; or an unseeded producer class like child-21.)
+- **Verify:** NeoStep **361/0** (358 + 3 probes: generic + Type + Type+object[]); stash-toggle
+  CLRRedirections.cs+AppDomain.cs -> 3/3 FAULT (`MissingMethodException` via autogen `CreateInstance_1
+  _Neo`) -> pop -> 0/3 PASS (airtight); `ActivatorCreateInstanceWithArgsTestSimple` PASSES under Neo.
+  Legacy-neutral: plain Debug+useRegister=true+NeoStep = 361 ran/18 failed (18 = pre-existing Neo-
+  specific set; 3 probes PASS under Legacy; Legacy RedirectMap registrations untouched). Files:
+  `CLRRedirections.cs` (+103), `AppDomain.cs` (+20), new `TestCases/NeoStepActivatorCreateInstanceTest.cs`.
+  Capability = `neo-dispatch`. Review APPROVE-WITH-FINDINGS (0 Blocker/Major; M1 null-args-guard
+  divergence [more robust, unreachable], M2 AllocValueType branches deferred [unreachable, documented];
+  2 Trivial; P1 ceq-null instance-field + P2 moot autogen stub noted out-of-scope).

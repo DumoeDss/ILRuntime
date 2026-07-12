@@ -164,14 +164,34 @@ namespace ILRuntime.Runtime.Enviorment
                 if (i.Name == "CreateInstance" && i.IsGenericMethodDefinition)
                 {
                     RegisterCLRMethodRedirection(i, CLRRedirections.CreateInstance);
+#if ENABLE_NEO_MODE
+                    // child-22 (neo-activator): Neo dispatch consults RedirectMapNeo
+                    // exclusively (CLRMethod.RedirectionNeo). Without a Neo entry the
+                    // generic Activator.CreateInstance<T>() fell through to the autogen
+                    // CreateInstance_*_Neo stub, which calls host Activator.Create-
+                    // Instance<ILTypeInstance>() -> MissingMethodException on IL types.
+                    // Registered for the generic DEFINITION, so TryGetRedirection
+                    // (GetGenericMethodDefinition first) serves it for every
+                    // instantiation. Mirrors the InitializeArrayNeo registration.
+                    RegisterCLRMethodRedirectionNeo(i, CLRRedirections.CreateInstanceNeo);
+#endif
                 }
                 else if (i.Name == "CreateInstance" && i.GetParameters().Length == 1)
                 {
                     RegisterCLRMethodRedirection(i, CLRRedirections.CreateInstance2);
+#if ENABLE_NEO_MODE
+                    // First-registered-wins (this ctor runs before the test-harness
+                    // autogen binding initializer), so this preempts the autogen
+                    // CreateInstance_2_Neo stub.
+                    RegisterCLRMethodRedirectionNeo(i, CLRRedirections.CreateInstance2Neo);
+#endif
                 }
                 else if (i.Name == "CreateInstance" && i.GetParameters().Length == 2)
                 {
                     RegisterCLRMethodRedirection(i, CLRRedirections.CreateInstance3);
+#if ENABLE_NEO_MODE
+                    RegisterCLRMethodRedirectionNeo(i, CLRRedirections.CreateInstance3Neo);
+#endif
                 }
             }
             foreach (var i in typeof(System.Type).GetMethods())
