@@ -5678,6 +5678,21 @@ namespace ILRuntime.Runtime.Intepreter
                                         object boxed = ILIntepreter.ReadNeoValueType(t.TypeForCLR, frameBase, ref srcCur, primSize);
                                         NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, boxed);
                                     }
+                                    else if (mStack[objIdx] is Array stobjArr)
+                                    {
+                                        // neo-ldobj-array-element: stobj of a CLR value-type ARRAY
+                                        // ELEMENT (the WRITE counterpart of the ldobj READ). The byref
+                                        // DEST (ip->DstOffset) is the ldelema-produced (arrIdx,
+                                        // elementIdx); `off` IS the element index. Read the src flat
+                                        // bytes into a boxed struct via ReadNeoValueType and store via
+                                        // Array.SetValue. WRITE counterpart of child-19's raw-Stfld
+                                        // array-element arm and child-25's write-back arm. Same runtime-
+                                        // detection soundness as ldobj (stobj's dest is ALWAYS a byref;
+                                        // the objIdx == -1 branch above handles the frame-native case).
+                                        int stobjSrcCur = ip->SrcOffset;
+                                        object stobjBoxed = ILIntepreter.ReadNeoValueType(t.TypeForCLR, frameBase, ref stobjSrcCur, primSize);
+                                        stobjArr.SetValue(stobjBoxed, off);
+                                    }
                                     else
                                     {
                                         ins = GetNeoILInstance(mStack, objIdx);
@@ -5775,6 +5790,29 @@ namespace ILRuntime.Runtime.Intepreter
                                         object val = NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
                                         int dstOff = ip->DstOffset;
                                         ILIntepreter.WriteNeoValueType(val, frameBase + dstOff, primSize);
+                                    }
+                                    else if (mStack[objIdx] is Array ldobjArr)
+                                    {
+                                        // neo-ldobj-array-element: ldobj of a CLR value-type ARRAY
+                                        // ELEMENT. The byref source (ip->SrcOffset) is the ldelema-
+                                        // produced (arrIdx, elementIdx); `off` IS the element index
+                                        // (NOT a byte offset, NOT a field hash) -- the convention at
+                                        // ILIntepreter.Neo.cs:5874-5875, the same one stind/ldind, the
+                                        // raw Stfld/Ldfld array-element arms (children 19/24), and the
+                                        // byref-param marshal (child-25) consume. Array.GetValue boxes
+                                        // the VT element; WriteNeoValueType flattens it into dest. READ
+                                        // counterpart of child-19's raw-Stfld array-element WRITE,
+                                        // sibling of child-25's forward-deref arm. Runtime detection
+                                        // is SAFE here (unlike child-24's raw-Ldfld, which needed a
+                                        // JIT marker): ldobj's source is ALWAYS a byref, so the
+                                        // objIdx == -1 branch above guarantees mStack[objIdx] is the
+                                        // referent and `is Array` is unambiguous (no flat-bytes-as-
+                                        // index ambiguity).
+                                        object elemVal = ldobjArr.GetValue(off);
+                                        if (elemVal != null)
+                                            ILIntepreter.WriteNeoValueType(elemVal, frameBase + ip->DstOffset, primSize);
+                                        else
+                                            Unsafe.InitBlock(frameBase + ip->DstOffset, 0, (uint)primSize);
                                     }
                                     else
                                     {

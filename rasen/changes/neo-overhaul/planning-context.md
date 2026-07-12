@@ -971,3 +971,40 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   TC3 narrative lags the implemented 7777/6777), 2 Trivial (a :5797 comment-ref should be :5874; redundant
   IsPrimitive/IsEnum arms mirror the sibling branch). R1-Shape-B (ldobj-array-element read :5704) still NIEs --
   TC3's twice-call pattern correctly isolates from it; that is the NEXT child (triage batch-2 R1-B).
+
+## Child 26 DONE (neo-ldobj-array-element, shipped 2026-07-13) -- durable findings
+- **ldobj/stobj on a CLR-struct array element: RUNTIME `mStack[objIdx] is Array` detection is SAFE -- NO JIT
+  marker needed** (decisive contrast with child-24's raw-Ldfld). CIL `ldobj`/`stobj` operands are ALWAYS managed
+  pointers (ECMA-335 III.4.26/4.29 -- no by-value form exists); the `objIdx == -1` frame-native case is dispatched
+  by the FIRST branch in each arm BEFORE the Array check; `NeoIsClrObject` returns false for `Array`. So there is
+  NO flat-bytes-vs-byref ambiguity (child-24's raw-Ldfld needed the `NeoRawLdfldArrayElementByRefMarker` because
+  its owner REGISTER held the value directly -- flat bytes for ldloc/ldsfld-by-value, where the first int could
+  false-positive as an Array index). `Ldelema` rejects non-value-type elements (`:5909`) -> no ref-type-element
+  collision. No silent-corruption window. Matches child-25 (`NeoMarshalByrefFieldToSlot`) + child-19 (raw-Stfld).
+- **A read-modify-write `+=` on a CLR-struct array element requires fixing BOTH the ldobj READ and the stobj
+  WRITE-back** (symmetric gaps in sibling arms, same `(arrIdx, elementIdx)` decode). The lowering is
+  `ldelema; ldobj; op_Addition; stobj`; fixing only ldobj would just progress to the stobj NIE. THE FIX: a Stobj
+  Array branch (~:5681) + a Ldobj Array branch (~:5794) in `ILIntepreter.Neo.cs`, each decoding the byref and
+  using `Array.GetValue`/`SetValue` + `ReadNeoValueType`/`WriteNeoValueType`. ~38 lines, Neo-gated.
+- **PLAIN `a = arr[i]` on a CLR-struct array lowers to `ldelem.any` (NOT ldobj) and is SEPARATELY broken**
+  (returns garbage). `ldobj` is emitted ONLY by the address-taking read-modify-write (`+=`). So an ldobj probe
+  MUST force the `+=` shape; a plain load probe hits a different (ldelem.any) gap. (Candidate follow-up: the
+  ldelem.any/stelem.any CLR-struct-array path.)
+- **PRE-EXISTING FLOAT BUG SURFACED (out of scope, candidate sibling):** `new TestVector3(float,float,float)`
+  yields a ZERO struct AND `TestVector3.op_Addition`'s float VT-return doesn't write back -- blocks a float-field
+  `+=` probe from passing. The int-struct probe (`NeoArrElemIntProbe` + an int `operator +`) sidesteps it and
+  proves ldobj/stobj correct. (This may be the SAME float-corruption/VT-return class as child-21, or a distinct
+  float-ctor gap -- re-audit if tackled.)
+- **Verify:** NeoStep **373/0** (371 + 2 probes: TC1 `arr[0]+=One` round-trip + TC2 element-index decode);
+  `UnitTest_10047` PROGRESSES (was ldobj NIE -> now reaches its own value assertion; residual = the pre-existing
+  float op_Addition bug, out of scope, proven unrelated by the int probe); stash-toggle ILIntepreter.Neo.cs ->
+  2/2 FAULT (`Owner type: NeoArrElemIntProbe[]` NIE) -> pop -> 373/0; sibling families (child-19/24/25) green;
+  read-back CORRECT (302/307 exact int sums via host `NeoArrElemFieldSum`). Legacy-neutral (373/18 pre-existing;
+  both probes PASS under Legacy). Files: `ILIntepreter.Neo.cs` (+38, both arms), `TestVector3.cs` (+8, int One +
+  operator+ on NeoArrElemIntProbe), new `TestCases/NeoStepLdobjArrayElementTest.cs`. Capability = `neo-value-types`.
+  Review: APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Runtime-detection-safe (verified
+  objIdx==-1-first + NeoIsClrObject-false-for-Array + ECMA-335 always-pointer + ldelema-rejects-reftype) +
+  both-arms-correct + decode-offsets-correct (SrcOffset ldobj / DstOffset stobj) + regression-clean all confirmed.
+  M1 TC2 combined-sum assertion is invariant to element targeting under uniform +=One (code correct, TC1 proves
+  index-0, optional per-element-sum hardening); T1 InitBlock-on-null else unreachable (matches F-10); T2 cosmetic
+  local-name prefix.

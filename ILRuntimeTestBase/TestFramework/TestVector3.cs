@@ -410,5 +410,13 @@ namespace ILRuntimeTest.TestFramework
     {
         public int A;
         public int B;
+        // neo-ldobj-array-element: an int-field operator+ so the probe can drive a
+        // struct-array read-modify-write (ldelema; ldobj; op_Addition; stobj) with
+        // PURE int arithmetic -- avoiding the pre-existing float-constructor /
+        // float-arithmetic contamination that makes TestVector3 unsuitable for an
+        // isolated ldobj/stobj probe.
+        public static NeoArrElemIntProbe One => new NeoArrElemIntProbe { A = 1, B = 1 };
+        public static NeoArrElemIntProbe operator +(NeoArrElemIntProbe a, NeoArrElemIntProbe b)
+            => new NeoArrElemIntProbe { A = a.A + b.A, B = a.B + b.B };
     }
 }
