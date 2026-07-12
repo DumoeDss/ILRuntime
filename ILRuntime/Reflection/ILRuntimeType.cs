@@ -634,6 +634,81 @@ namespace ILRuntime.Reflection
             return false;
         }
 
+        public override bool IsEnum => type.IsEnum;
+
+        public override Type GetEnumUnderlyingType()
+        {
+            if (!type.IsEnum)
+                throw new ArgumentException("Type must be an enum.", "enumType");
+            // For an IL enum, ILType.TypeForCLR returns enumType.TypeForCLR -- the
+            // underlying CLR primitive (the type of the value__ field).
+            return type.TypeForCLR;
+        }
+
+        public override Array GetEnumValues()
+        {
+            var pairs = GetSortedEnumMembers();
+            Array ret = Array.CreateInstance(GetEnumUnderlyingType(), pairs.Count);
+            for (int i = 0; i < pairs.Count; i++)
+                ret.SetValue(pairs[i].Value, i);
+            return ret;
+        }
+
+        public override string[] GetEnumNames()
+        {
+            var pairs = GetSortedEnumMembers();
+            string[] names = new string[pairs.Count];
+            for (int i = 0; i < pairs.Count; i++)
+                names[i] = pairs[i].Key;
+            return names;
+        }
+
+        // Enum members = the Cecil IsLiteral/HasConstant fields of the enum (the named
+        // constants; the instance value__ field is a non-literal and is excluded). Each
+        // member's value is FieldDefinition.Constant (the boxed underlying value -- the
+        // same accessor ILRuntimeFieldInfo.GetRawConstantValue uses). Sorted by the
+        // underlying value to mirror System.Enum.GetValues/GetNames, which return members
+        // ordered by their binary value (the framework delegates to these virtuals and does
+        // not re-sort). Values share one underlying type, so the non-generic IComparable is
+        // mutually comparable.
+        List<KeyValuePair<string, object>> GetSortedEnumMembers()
+        {
+            if (!type.IsEnum)
+                throw new ArgumentException("Type must be an enum.", "enumType");
+            var fields = type.TypeDefinition.Fields;
+            var pairs = new List<KeyValuePair<string, object>>(fields.Count);
+            foreach (var f in fields)
+            {
+                if (f.IsLiteral && f.HasConstant)
+                    pairs.Add(new KeyValuePair<string, object>(f.Name, f.Constant));
+            }
+            // Sort by UNSIGNED binary value (System.Enum.GetValues/GetNames contract --
+            // a signed compare would diverge from the framework for enums with a
+            // negative member, e.g. {A=-1,B=0,C=1} -> framework [B,C,A], not [A,B,C]).
+            // Convert.ToUInt64 OVERFLOW-CHECKS (throws on a negative member), so reinterp
+            // the raw bits per the underlying integer type instead.
+            pairs.Sort((a, b) => EnumValueAsUnsignedBits(a.Value).CompareTo(EnumValueAsUnsignedBits(b.Value)));
+            return pairs;
+        }
+
+        // The boxed enum value (one of the 8 integer underlying types) -> its UNSIGNED
+        // binary bit pattern, for the framework-parity unsigned sort. Unchecked casts
+        // (a signed value reinterprets to its unsigned bit pattern, e.g. -1 -> 0xFF..FF).
+        static ulong EnumValueAsUnsignedBits(object value)
+        {
+            switch (System.Convert.GetTypeCode(value))
+            {
+                case TypeCode.SByte: return (ulong)(sbyte)value;
+                case TypeCode.Int16: return (ulong)(short)value;
+                case TypeCode.Int32: return (ulong)(int)value;
+                case TypeCode.Int64: return (ulong)(long)value;
+                case TypeCode.Byte: return (byte)value;
+                case TypeCode.UInt16: return (ushort)value;
+                case TypeCode.UInt32: return (uint)value;
+                default: return (ulong)value; // UInt64
+            }
+        }
+
         public override string ToString()
         {
             return type.FullName;
