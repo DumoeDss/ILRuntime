@@ -195,6 +195,6 @@
     "note": "archive these 3 after the first overhaul child ships (or in parallel); they are cosmetic, non-blocking."
   },
   "planner": null,
-  "sessionHandoff": null,
+  "sessionHandoff": { "path": "handoff/lead-12.md", "n": 12, "pct": 0.62, "afterStage": "neo-overhaul COMPLETE (20/20 children done, runnableFrontier empty)", "at": "2026-07-12", "head": "4f618a74", "baseline": "NeoStep 354/0 (301 + 53 probes); full-smoke active surface CLEARED; 6 correctness landmines FIXED; reflection gap + valuetask CLOSED. Remaining = small LATENT follow-ups only (none active). See lead-12.md.", "note": "A completion checkpoint (NOT a context-relay). Real context ~62% of 1M. The 20-child neo-overhaul portfolio is COMPLETE; the broader Neo overhaul (active opcode surface + JIT correctness landmines) is functionally done. Remaining latent items are pick-by-interest. KEY LESSON (5-for-5): every framed/deepest/cluster task was DISPROVEN on re-audit -- re-audit before accepting any foundational framing." },
   "notes": "Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push. Serial-by-shared-interpreter/JIT-files. Build/test: dotnet build ILRuntimeTestCLI -c Debug_Neo --no-incremental + dotnet build TestCases -c Debug; run: dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- TestCases/bin/Debug/netstandard2.1/TestCases.dll HotfixAOT/Patched/HotfixAOT.patch true [filter]. NeoStep smoke must stay green (301/0/0 baseline at lead-11)."
 }
