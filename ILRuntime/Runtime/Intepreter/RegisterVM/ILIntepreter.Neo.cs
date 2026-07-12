@@ -505,15 +505,92 @@ namespace ILRuntime.Runtime.Intepreter
                     Unsafe.CopyBlock(ref *slot, ref ili.Primitives[off], (uint)sz);
                 return;
             }
-            if (target is Array)
+            if (target is Array arr)
             {
-                // An array-element byref reaches here only via ldelema + a byref-
-                // param call -- the ldelema path encodes (arrIdx, elemByteOff) and
-                // the element bytes are in the CLR array backing store. Reading/
-                // writing a CLR-array element through this field-marshal is not
-                // supported (the array case is owned by the stind/ldind consumer).
-                throw new NotImplementedException(
-                    "Step 13 Area 4c: a CLR-array-element byref param is not handled (route via the array stind/ldind path, not the field accessor)");
+                // neo-byref-array-element-marshal: a byref produced by `ldelema`
+                // on a CLR value-type-element array, passed as a `ref`/`out` param
+                // to a CLR method. ldelema encodes the 8-byte byref as
+                // (arrIdx, elementIdx) where `off` IS the ELEMENT INDEX (NOT a byte
+                // offset, NOT a field hash) -- the convention at
+                // ILIntepreter.Neo.cs:5797-5798, the same one stind/ldind, the raw
+                // Stfld/Ldfld array-element arms (children 19/24), and Legacy's
+                // ObjectTypes.ArrayReference writeback consume. This helper is
+                // invoked for BOTH the forward call-arg deref (CopyNeoCallArguments,
+                // isWrite=false, :424) AND the post-call write-back
+                // (CopyNeoCallThisBack, isWrite=true, :653) -- ONE branch covers
+                // both. A reference-type-element byref is UNREACHABLE here (ldelema
+                // rejects a non-value-type element at :5794), so `et` is a value
+                // type in practice; the reference arm is kept for symmetry with the
+                // CLR-object-field branch below. Mirror child-19's raw-Stfld
+                // array-element WRITE box/mutate/unbox via Array.GetValue/SetValue.
+                Type et = elemType;
+                if (et == null)
+                {
+                    // Recover the element type from the array when the call
+                    // signature did not propagate it (defensive; the byref-param
+                    // path always carries PrimitiveByRefElemType).
+                    et = arr.GetType().GetElementType();
+                }
+                if (isWrite)
+                {
+                    // Write-back: box the callee slot's flat bytes by the element
+                    // type and store back to the array element (the inverse of the
+                    // forward read). Mirrors the CLR-object-field write arm.
+                    object value;
+                    if (et != null && (et.IsPrimitive || et.IsEnum))
+                    {
+                        int cur = 0;
+                        value = ILIntepreter.ReadNeoValueType(et, slot, ref cur, sz);
+                    }
+                    else if (et != null && et.IsValueType)
+                    {
+                        int cur = 0;
+                        value = ILIntepreter.ReadNeoValueType(et, slot, ref cur, sz);
+                    }
+                    else
+                    {
+                        // reference-type element: the slot holds an mStack index.
+                        int vIdx = *(int*)slot;
+                        value = vIdx >= 0 ? mStack[vIdx] : null;
+                    }
+                    arr.SetValue(value, off);
+                }
+                else
+                {
+                    // Forward deref: read the element (Array.GetValue boxes a VT
+                    // element) and flatten it into the callee slot. Mirrors the
+                    // CLR-object-field read arm.
+                    object elemVal = arr.GetValue(off);
+                    if (et != null && (et.IsPrimitive || et.IsEnum))
+                    {
+                        if (elemVal != null)
+                            ILIntepreter.WriteNeoValueType(elemVal, slot, sz);
+                        else
+                            Unsafe.InitBlock(slot, 0, (uint)sz);
+                    }
+                    else if (et != null && et.IsValueType)
+                    {
+                        if (elemVal != null)
+                            ILIntepreter.WriteNeoValueType(elemVal, slot, sz);
+                        else
+                            Unsafe.InitBlock(slot, 0, (uint)sz);
+                    }
+                    else
+                    {
+                        // reference-type element: store the object's mStack index.
+                        if (elemVal == null)
+                        {
+                            *(int*)slot = -1;
+                        }
+                        else
+                        {
+                            int newIdx = mStack.Count;
+                            mStack.Add(elemVal);
+                            *(int*)slot = newIdx;
+                        }
+                    }
+                }
+                return;
             }
             // CLR object field: route via the field-hash accessor.
             if (isWrite)

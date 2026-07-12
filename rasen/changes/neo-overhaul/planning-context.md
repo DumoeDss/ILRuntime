@@ -895,3 +895,79 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   `ILRuntimeTestBase/TestFramework/TestClass3.cs` (BuildNeoArrElemProbeArray, child-19-added). Capability =
   `neo-value-types`.
   Review: APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Marker-stamp-reliable (ldelema==immediate-predecessor, dest-reg==owner-reg) + Operand4-survives-all-passes (exhaustive grep + empirical stash-toggle) + runtime-array-read-correct (decode + Array.GetValue + f.GetValue + marshal, no writeback) + regression-families-green(child-4/15/19/21/23/13 + NeoStep12/13/17) + TC3-7777-arithmetically-reachable all confirmed. M1 probes use int fields only (float/VT/ref not directly exercised; low risk -- reuses shared marshalling child-21 green-covered); M2 array-read handles ref-field CLR structs w/o NIE (more permissive than flat-bytes, not a regression); T1 unaligned.-prefix theoretical gap (HEAD-faithful), T2 doc-attribution nit, T3 pre-existing unrelated `op.Operand4==1` no-op @Optimizer.Neo.cs:1234 (out of scope).
+
+## Child 25 DONE (neo-byref-array-element-marshal, 2026-07-13) -- durable findings
+- **Re-audit CONFIRMED (highest-value of triage batch-2):** a `ref arr[i]` byref
+  passed to a CLR method (canary `CLRBindingTest01`: `TestClass3.setBit(ref
+  byteArr[idx], ...)`) threw the tagged "Step 13 Area 4c: a CLR-array-element
+  byref param is not handled" NIE at `NeoMarshalByrefFieldToSlot:515`, reached
+  via the FORWARD call-arg deref (`CopyNeoCallArguments` -> helper `isWrite:
+  false`). The call routes through the REFLECTION FALLBACK (`OpCodeREnum.Call` ->
+  `CopyNeoCallArguments` -> `CLRMethod.Invoke`), NOT the autogen `setBit_0_Neo`
+  redirect -- so the helper is the correct general fix point (covers EVERY CLR
+  method with a `ref arr[i]` arg, not just the autogen subset).
+- **ONE branch covers BOTH directions.** `NeoMarshalByrefFieldToSlot` is invoked
+  for BOTH the forward deref (`CopyNeoCallArguments:424`, `isWrite:false`) AND
+  the post-call write-back (`CopyNeoCallThisBack:653`, `isWrite:true`) -- they
+  share this single helper, differing only in `isWrite`. Adding the `target is
+  Array` body makes BOTH work. The byref encoding is `(arrIdx, elementIdx)`
+  where `elementIdx` (the helper's `off` param) IS THE ELEMENT INDEX (NOT a byte
+  offset, NOT a field hash) -- the ldelema convention at `ILIntepreter.Neo.cs:
+  5797-5798` (same as stind/ldind, raw Stfld/Ldfld array-element arms, Legacy
+  ObjectTypes.ArrayReference). A reference-type-element byref is UNREACHABLE
+  (ldelema NIEs on a non-value-type element at `:5794`).
+- **THE FIX (Neo-gated, ~80 lines, mirrors the sibling CLR-object-field branch):
+  forward read = `Array.GetValue(off)` + `WriteNeoValueType` by category;
+  write-back = `ReadNeoValueType`/mStack-index + `Array.SetValue(value, off)`.
+  Recover `elemType` from `array.GetType().GetElementType()` when null. NO JIT /
+  optimizer / object-model / binding change -- the call map's
+  `PrimitiveByRefElemType`/`PrimitiveSize`/`PrimitiveByRefWriteBack` plumbing
+  (Step-13 Area-4c) already exists and is correct for a value-type element. The
+  reflection fallback (`CLRMethod.Invoke`) de-byrefs the param at `:447` and
+  reads/mutates/re-flattens it (`:599-631`), so the helper's slot marshalling is
+  the ONLY gap.
+- **WRITE-BACK END-TO-END (not just non-throwing):** TC1 (`ref byteArr[1]` 20->
+  25, read back via ldelem = 25), TC2 (`ref arr[0]`+`ref arr[3]` both persist,
+  101+104=205), TC3 (VT `ref vectorArr[0]` twice-call: ret2=6777 = the call-1
+  mutated sum, proving the struct mutation persisted -- the twice-call pattern
+  isolates the byref marshal from the STILL-BROKEN `ldobj`-array-element read,
+  R1-Shape-B from triage batch-2). All 3 FAULT on HEAD (Area-4c NIE on the
+  forward deref); PASS after.
+- **Verify:** NeoStep **371/0** (368 baseline + 3 probes); `CLRBindingTest01`
+  PASSES (was NIE). Stash-toggle `ILIntepreter.Neo.cs` ONLY -> 3/3 FAULT (Area-
+  4c NIE) -> pop -> 371/0 (airtight). Legacy-neutral: plain Debug +
+  useRegister=true + NeoStep = 371/18 (documented pre-existing Legacy set; 3
+  probes PASS under Legacy). Files: `ILIntepreter.Neo.cs` (Array branch in
+  `NeoMarshalByrefFieldToSlot`), `TestClass3.cs` (4 host helpers in the
+  `TestCLRBinding` class -- NOT `TestClass3`; see gotcha), new
+  `TestCases/NeoStepByrefArrayElementTest.cs`. Capability = `neo-byref`.
+- **GOTCHA 1 (build-server cache -- cost ~1h):** the Roslyn VBCSCompiler shared
+  server caches a STALE compilation of `TestClass3.cs`. `rm -rf bin/obj` +
+  rebuild did NOT invalidate the server's in-memory cache -> the "rebuilt" DLL's
+  `TestClass3` TypeDef had only the original 4 methods, so TestCases CS0117'd on
+  the newer helpers (child-19/24's `NeoArrElemFieldSum`/`BuildNeoArrElemProbe
+  Array` AND the new ones). `strings` was MISLEADING (those method names lived
+  in the EMBEDDED PDB, not the MethodDef table -- use `System.Reflection.
+  Metadata` `TypeDefinition.GetMethods()` to check the real MethodDef table, or
+  Cecil). FIX: kill all `dotnet` build-server processes + pass
+  `-p:UseSharedCompilation=false` on every build after touching
+  `TestClass3.cs`/`ILRuntimeTestBase`. A 3s "rebuild" is the tell (a real clean
+  build of ILRuntimeTestBase is ~10s).
+- **GOTCHA 2 (TestClass3.cs is a multi-class file):** the FILE `TestClass3.cs`
+  contains MANY classes -- `TestClass3` spans ONLY lines 12-39 (closes after
+  `setBit`); `TestClass4` at :42; `TestCLRBinding` at :110; `TestHashMap` at :85;
+  nested `ECProbeAwaiter/Awaitable`; etc. child-19/24's array-element host
+  helpers (`NeoArrElemFieldSum`, `BuildNeoArrElemProbeArray`) and this child's
+  new helpers live in **`TestCLRBinding`**, NOT `TestClass3`. A probe must
+  reference `TestCLRBinding.X`. The trigger canary `setBit` IS in `TestClass3`.
+  Adding a host helper: append inside `TestCLRBinding` (line 110+), not after
+  `setBit`. LESSON: when adding CLR host helpers for a Neo probe, grep the class
+  boundary first -- do not assume the file name matches the class name.
+- Review: APPROVE (reviewer!=implementer; 0 Blocker/Major/Minor-functional). Both-directions-correct +
+  byref-decode-correct (off=element-index, ldelema producer at :5874-5875) + elemType-recovery-reliable +
+  branch-exclusive (only Array targets) + write-back-persistence-empirically-proven (TC1/TC2/TC3) +
+  regression-surface-clean (CLRBindingTest01 passes, no ref/out regressions) + build-server-cache-sane
+  (helpers genuinely in the live DLL metadata, confirmed 3 ways) all confirmed. 1 Minor doc-only (tasks.md
+  TC3 narrative lags the implemented 7777/6777), 2 Trivial (a :5797 comment-ref should be :5874; redundant
+  IsPrimitive/IsEnum arms mirror the sibling branch). R1-Shape-B (ldobj-array-element read :5704) still NIEs --
+  TC3's twice-call pattern correctly isolates from it; that is the NEXT child (triage batch-2 R1-B).

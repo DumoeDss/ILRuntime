@@ -213,6 +213,50 @@ namespace ILRuntimeTest.TestFramework
             };
         }
 
+        // ---- neo-byref-array-element-marshal host helpers. IL lowers
+        //      `M(ref arr[i])` to `ldelema <T>; call M` -- the byref routes through
+        //      CopyNeoCallArguments -> NeoMarshalByrefFieldToSlot (forward) and
+        //      CopyNeoCallThisBack -> NeoMarshalByrefFieldToSlot (write-back).
+        //      These CLR helpers are HOST methods (the trivial inliner cannot fold
+        //      them), so a REAL `call` marshals the array-element byref. The
+        //      mutations run host-side (native arithmetic -- sidesteps the
+        //      unrelated Neo addi/conv.i4 float bugs). ----
+
+        // TC1: mutate a primitive `byte` element by reference.
+        public static void NeoByrefArrElemIncrementByte(ref byte b)
+        {
+            b = (byte)(b + 5);
+        }
+
+        // TC2: mutate a primitive `int` element by reference.
+        public static void NeoByrefArrElemIncrementInt(ref int v)
+        {
+            v += 100;
+        }
+
+        // TC3: mutate a CLR struct (TestVector3) element by reference. Returns the
+        // INCOMING X+Y+Z sum BEFORE the mutation, so a probe that calls this TWICE
+        // on the same element can prove the write-back persisted: the second call
+        // observes the first call's mutation. (Reading a struct array element IL-
+        // side requires ldelema+ldobj, a separate unimplemented path -- the twice-
+        // call pattern isolates the byref marshal without that dependency.)
+        public static int NeoByrefArrElemMutateVectorAndReturnIncomingSum(ref TestVector3 v)
+        {
+            int sum = (int)(v.X + v.Y + v.Z);
+            v.X += 1000f;
+            v.Y += 2000f;
+            v.Z += 3000f;
+            return sum;
+        }
+
+        // TC3: build a 1-element TestVector3[] on the HOST side with a known
+        // initial value (7, 70, 700) so the twice-call probe does not depend on
+        // Neo newarr zero-init semantics for a struct array.
+        public static TestVector3[] BuildNeoByrefVectorArray()
+        {
+            return new TestVector3[] { new TestVector3(7f, 70f, 700f) };
+        }
+
         // ---- Step 20 async-void side-effect box: a host-side int cell the IL
         //      async-void method writes (avoids the IL-side `stsfld` Step-6 gap;
         //      the cell is held on the host so no IL static-field store is
