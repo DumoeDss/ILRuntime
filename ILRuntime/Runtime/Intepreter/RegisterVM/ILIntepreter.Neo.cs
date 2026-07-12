@@ -4189,6 +4189,40 @@ namespace ILRuntime.Runtime.Intepreter
                                             f.SetValue(boxedElem, value);
                                             cArr.SetValue(boxedElem, off);
                                         }
+                                        else if (objIdx >= 0)
+                                        {
+                                            // neo-raw-stfld-clr-object-vt-field: CLR-OBJECT-FIELD
+                                            // owner. The byref is (objIdx, structFieldHash) where
+                                            // mStack[objIdx] is the containing CLR REFERENCE object
+                                            // and structFieldHash (`off`, the byref's +4 half) is the
+                                            // hash of the STRUCT field on that object (NOT a byte
+                                            // offset, NOT an element index). This byref is produced by
+                                            // the ldflda heap-CLR-object else branch
+                                            // (ILIntepreter.Neo.cs:~1955) where, for a CLR object,
+                                            // fieldPrimOff IS the FieldInfo hash. Box/mutate/unbox ONE
+                                            // LEVEL UP: read the struct field via the containing
+                                            // object's CLRType (NeoReadClrObjectField resolves the hash
+                                            // -> the struct FieldInfo via the Fields/fieldInfoCache
+                                            // dict keyed by FieldInfo.GetHashCode()), reflection-write
+                                            // the leaf field on the boxed struct, write the mutated
+                                            // struct back. FieldInfo.SetValue on a boxed value type
+                                            // mutates it in place (child-19 precedent at :4188-4190).
+                                            // `value` is already boxed by field category above. The
+                                            // box/mutate/unbox READS the current struct before
+                                            // mutating, so other fields are preserved. Runtime content
+                                            // detection is safe here (NOT a JIT marker): a value-type-
+                                            // owner Stfld's owner is ALWAYS a byref, never flat bytes
+                                            // (a VT field write always goes through the struct's
+                                            // address) -- mirror child-19, contrast child-24 (read).
+                                            object target = mStack[objIdx];
+                                            if (target == null)
+                                                throw new NullReferenceException();
+                                            if (target is ILTypeInstance || target is CrossBindingAdaptorType)
+                                                throw new NotImplementedException("Neo raw Stfld: CLR value-type owner is an IL instance whose CLR-struct field uses F-10 ManagedObjects storage (deferred; sibling of the heap-CLR-object-field fix). Field " + f.Name + " on " + ct.FullName);
+                                            object boxedStruct = NeoReadClrObjectField(AppDomain, target, off);
+                                            f.SetValue(boxedStruct, value);
+                                            NeoWriteClrObjectField(AppDomain, target, off, boxedStruct);
+                                        }
                                         else
                                             throw new NotImplementedException("Neo raw Stfld: unrecognized CLR value-type owner byref shape (objIdx=" + objIdx + "). Field " + f.Name + " on " + ct.FullName);
                                     }

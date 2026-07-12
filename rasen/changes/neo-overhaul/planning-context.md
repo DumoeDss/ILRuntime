@@ -1008,3 +1008,45 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   M1 TC2 combined-sum assertion is invariant to element targeting under uniform +=One (code correct, TC1 proves
   index-0, optional per-element-sum hardening); T1 InitBlock-on-null else unreachable (matches F-10); T2 cosmetic
   local-name prefix.
+
+## Child 27 DONE (neo-raw-stfld-clr-object-vt-field, shipped 2026-07-13) -- durable findings
+- **COMPLETES the triage batch-2 sweep (R1-B=child 26, R2=child 25, R3=this).** A raw `Stfld` on a CLR-struct
+  field of a CLR REFERENCE object -- `obj.Struct.value = 111` (CIL `ldflda Struct(on obj); stfld value`) -- hit
+  the raw-Stfld VT-owner `else` NIE ("unrecognized CLR value-type owner byref shape") at `ILIntepreter.Neo.cs:~4193`.
+  Trigger `UnitTest_Struct2`.
+- **THE DIAGNOSIS (the crux, pinned by JIT dump):** the `ldflda Struct(on a CLR object)` runtime `else` branch
+  (`:1941-1956`, fires because `objIdx >= 0`) produces a byref `(objIdx_of_containing_CLR_object, structFieldHash)`
+  where the offset half is the **Struct field's `FieldInfo.GetHashCode()`** (NOT a byte offset, NOT an element
+  index). The Area-4d accessors `NeoReadClrObjectField`/`NeoWriteClrObjectField` resolve that hash to the struct
+  FieldInfo via the containing CLRType's `Fields`/`fieldInfoCache` dict (keyed by the SAME `FieldInfo.GetHashCode()`
+  -- generate-side `AppDomain.GetFieldOffset:2277`->`CLRType.GetFieldIndex:661`->`fieldMapping:614` and resolve-side
+  `CLRType.InitializeFields:615` use the identical key on the identical FieldInfo). So the hash-vs-offset distinction
+  is MOOT for a CLR-object-field owner -- resolve the hash to a FieldInfo.
+- **THE FIX (runtime-only, ~15 lines, NO JIT marker):** a third `else if (objIdx >= 0)` branch in the raw-Stfld
+  CLR-VT-owner arm: null->NRE, IL-instance->tagged deferred NIE (the F-10 ManagedObjects-storage sibling, NOT
+  silently missed), else box/mutate/unbox ONE LEVEL UP -- `NeoReadClrObjectField(target, off=structFieldHash)`
+  reads the WHOLE struct field -> box it -> `f.SetValue(boxedStruct, value)` mutates the inner field on the box
+  -> `NeoWriteClrObjectField(target, off, boxedStruct)` writes the whole mutated struct back. The SAME boxedStruct
+  reference flows read->mutate->write-back (child-19 boxed-VT-mutation precedent). Runtime detection is SAFE: a
+  VT-owner **Stfld** is ALWAYS a byref (the write/read asymmetry child-24/26 identified -- only the raw-Ldfld READ
+  side needs a marker). No JIT/optimizer/object-model/binding change.
+- **FIELD-PRESERVATION PROVEN:** TC2 does 3 separate writes (111/222/333 to 3 different fields of the struct) and
+  the host read-back sum = 666 (a zeroing/recreate bug would yield 333, not 666 -- proves each write preserves the
+  others).
+- **SURFACED SIBLINGS (out of scope, documented):** (1) raw `Ldfld` READ sibling (`x = obj.Struct.value`) -- silent
+  flat-bytes-reinterpret corruption, needs a JIT marker (child-24 lineage); (2) `+=` nested-ldflda path
+  (`obj.Struct.value += 111` -> `ldflda Struct; ldflda value; ldind.i4; add; stind.i4`) -- the inner ldflda-on-byref
+  gap, this is where `UnitTest_Struct2` now fails (line 104); (3) IL-instance CLR-struct-field owner (F-10
+  ManagedObjects storage) -- deferred tagged NIE.
+- **Verify:** NeoStep **375/0** (373 + 2 probes: TC1 single-write 111 + TC2 three-write-preservation 666);
+  `UnitTest_Struct2` PROGRESSES (was NIE at line 103 `obj.Struct.value=111`; now passes 103, fails at 104
+  `obj.Struct.value+=111` = the nested-ldflda `+=` gap, out of scope); stash-toggle ILIntepreter.Neo.cs -> 2/2
+  FAULT (exact R3 NIE "unrecognized CLR value-type owner byref shape (objIdx=3). Field a on NeoClrObjVtFieldProbe")
+  -> pop -> 375/0; sibling families (child-4/9/19/24/25/26) green; Legacy-neutral (375/18 pre-existing; both probes
+  PASS under Legacy). Files: `ILIntepreter.Neo.cs` (+34, the new branch), `TestVector3.cs` (+25, probe structs),
+  `TestClass3.cs` (+11, host helper in TestCLRBinding), new `TestCases/NeoStepRawStfldClrObjVtFieldTest.cs`.
+  Capability = `neo-value-types`. Review: APPROVE (reviewer!=implementer; 0 Blocker/Major). Diagnosis-correct (hash
+  genuinely resolvable; box/mutate/unbox sound; same boxedStruct flows through; TC2=666 field-preservation) +
+  runtime-detection-safe (VT-owner Stfld always byref) + regression-clean all confirmed. M1 pre-existing
+  fieldInfoCache hash-collision theoretical (shared Area-4d foundation, handle-derived unique in practice);
+  M2 forward-looking for the F-10 IL-instance sibling (the guard protects it today).

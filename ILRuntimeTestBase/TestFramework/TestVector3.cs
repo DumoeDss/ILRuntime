@@ -419,4 +419,29 @@ namespace ILRuntimeTest.TestFramework
         public static NeoArrElemIntProbe operator +(NeoArrElemIntProbe a, NeoArrElemIntProbe b)
             => new NeoArrElemIntProbe { A = a.A + b.A, B = a.B + b.B };
     }
+
+    // ---- neo-raw-stfld-clr-object-vt-field host probe types. A blittable CLR
+    //      struct (default LayoutKind.Sequential) with THREE int fields, hosted
+    //      as a FIELD on a CLR REFERENCE class. The probe `owner.S.a = x`
+    //      lowers to `ldflda S(on owner); stfld a` and exercises the raw Stfld
+    //      CLR-object-field owner branch (the byref's objIdx parks the
+    //      containing CLR object; its +4 half is the S field's FieldInfo hash).
+    //      Three int fields let the probe prove field preservation (the box/
+    //      mutate/unbox reads the current struct before mutating). INT fields
+    //      are deliberate: they sidestep the pre-existing unrelated Neo float
+    //      bugs (addi-on-float / conv.i4-float-bit-reinterpret). ----
+    public struct NeoClrObjVtFieldProbe
+    {
+        public int a;
+        public int b;
+        public int c;
+    }
+
+    // The CLR REFERENCE owner class carrying the struct field. `new owner()`
+    // leaves S = default (a=0, b=0, c=0); the probe's raw Stfld writes
+    // populate it via box/mutate/unbox on this object.
+    public class NeoClrObjVtFieldOwner
+    {
+        public NeoClrObjVtFieldProbe S;
+    }
 }

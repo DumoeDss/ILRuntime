@@ -213,6 +213,17 @@ namespace ILRuntimeTest.TestFramework
             };
         }
 
+        // ---- neo-raw-stfld-clr-object-vt-field host read-back helper. The
+        //      READ-BACK happens on the CLR (host) side (o.S.a + o.S.b + o.S.c),
+        //      so the probe verifies the Neo `owner.S.field = x` raw Stfld WRITE
+        //      persisted to the containing CLR object's struct field WITHOUT
+        //      depending on Neo Ldfld (the read sibling, deferred) or Neo float
+        //      arithmetic. ----
+        public static int NeoClrObjVtFieldProbeSum(NeoClrObjVtFieldOwner o)
+        {
+            return o.S.a + o.S.b + o.S.c;
+        }
+
         // ---- neo-byref-array-element-marshal host helpers. IL lowers
         //      `M(ref arr[i])` to `ldelema <T>; call M` -- the byref routes through
         //      CopyNeoCallArguments -> NeoMarshalByrefFieldToSlot (forward) and
