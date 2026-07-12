@@ -3889,16 +3889,39 @@ namespace ILRuntime.Runtime.Intepreter
                                     object fldVal;
                                     if (ct.TypeForCLR.IsValueType)
                                     {
-                                        // CLR value-type owner loaded by value: the owner slot
-                                        // holds the struct's FLAT MANAGED BYTES (not a byref, not
-                                        // an mStack index). Box the whole struct and reflection-
-                                        // read the field (handles primitive / nested-struct / ref
-                                        // fields uniformly; a struct with unmappable ref fields
-                                        // NIEs inside ReadNeoValueType -- the Step-13b sibling).
-                                        int ownerSz = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
-                                        int cur = ownerOff;
-                                        object boxedOwner = ILIntepreter.ReadNeoValueType(ct.TypeForCLR, frameBase, ref cur, ownerSz);
-                                        fldVal = f.GetValue(boxedOwner);
+                                        if ((ip->Operand4 & JITCompiler.NeoRawLdfldArrayElementByRefMarker) != 0)
+                                        {
+                                            // neo-raw-ldfld-array-element: CLR-struct ARRAY ELEMENT
+                                            // owner. The owner slot holds the ldelema-produced 8-byte
+                                            // byref (arrIdx, elementIdx) -- NOT flat managed bytes.
+                                            // ReadNeoValueType would reinterpret the two byref ints as
+                                            // the struct's first two fields -> silent wrong value (the
+                                            // deferred corruption this change fixes). Mirror child-19's
+                                            // raw Stfld array-element WRITE (the ldelema encoding at
+                                            // ILIntepreter.Neo.cs:5774-5775; the Stfld box/mutate/unbox
+                                            // at :4078-4091) for the READ direction: box the element
+                                            // (Array.GetValue gives a boxed copy of the struct),
+                                            // reflection-read the field. The existing dest marshalling
+                                            // below handles fldVal by field category unchanged.
+                                            int arrIdx = *(int*)(frameBase + ownerOff);
+                                            int elementIdx = *(int*)(frameBase + ownerOff + 4);
+                                            Array cArr = (Array)mStack[arrIdx];
+                                            object boxedElem = cArr.GetValue(elementIdx);
+                                            fldVal = f.GetValue(boxedElem);
+                                        }
+                                        else
+                                        {
+                                            // CLR value-type owner loaded by value: the owner slot
+                                            // holds the struct's FLAT MANAGED BYTES (not a byref, not
+                                            // an mStack index). Box the whole struct and reflection-
+                                            // read the field (handles primitive / nested-struct / ref
+                                            // fields uniformly; a struct with unmappable ref fields
+                                            // NIEs inside ReadNeoValueType -- the Step-13b sibling).
+                                            int ownerSz = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
+                                            int cur = ownerOff;
+                                            object boxedOwner = ILIntepreter.ReadNeoValueType(ct.TypeForCLR, frameBase, ref cur, ownerSz);
+                                            fldVal = f.GetValue(boxedOwner);
+                                        }
                                     }
                                     else
                                     {

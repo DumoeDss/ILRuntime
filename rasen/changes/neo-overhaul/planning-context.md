@@ -828,3 +828,70 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   Capability = `neo-optimizer`. Review APPROVE-WITH-FINDINGS (0 Blocker/Major; Trivial doc-accuracy nit
   [null = -1 sentinel, not "valid index N"; fix still correct], Minor test-gap [no TC5 two-ref-field ceq.ref
   identity probe; mechanically sound], O2 Ldfld_Ref_Inline F-10 edge latent out-of-scope).
+
+## Child 24 DONE (neo-raw-ldfld-array-element, 2026-07-13) -- durable findings
+- **RE-AUDIT CONFIRMED (silent corruption, not disproven):** `x = clrStructArray[i].field;` (CIL
+  `ldelema; ldfld`) silently corrupts under Neo. The raw-Ldfld value-type-owner branch (child-4,
+  `ILIntepreter.Neo.cs:3890`) read the owner slot as FLAT MANAGED BYTES via `ReadNeoValueType`, but for
+  an array element that slot holds the ldelema-produced 8-byte byref `(arrIdx, elementIdx)`
+  (`:5744/5774-5775`) -> the two byref ints are reinterpreted as the struct's first two fields. Stash-toggle
+  TC1 dump on HEAD: `a = 3 (arrIdx), b = 1 (elementIdx), s = 4` instead of 4259 -> DivideByZero. No crash,
+  no NIE (the deferred "array-element field read" NIE lives in the REF-type branch at `:3928`, UNREACHABLE
+  for a struct-array element -> that is why frequency scans missed it).
+- **THE ASYMMETRY WITH STFLD IS REAL (the crux, vindicating the marker over runtime detection):** child-19's
+  raw-Stfld array fix used a RUNTIME `mStack[objIdx] is Array` check (NO marker) -- safe because a
+  value-type-owner Stfld is ALWAYS a byref. A value-type-owner Ldfld is EITHER flat bytes (ldloc/ldsfld of a
+  CLR struct by value) OR a byref (ldelema of an array element). For the flat-bytes shape, `objIdx =
+  *(int*)(ownerOff)` is the struct's FIRST FIELD VALUE; for a small-non-negative int field it lands IN
+  mStack range, and `mStack[objIdx] is Array` false-positives -> a CONSTRUCTIBLE new silent-corruption vector
+  (default-initialized struct + same-typed array). So a JIT-time marker is the provably-correct fix (the
+  owner representation is a JIT-time dataflow fact; the Neo untyped frame requires such facts resolved at
+  JIT time -- same recurring pattern as child-11 Brtrue_Ref, child-15 ldflda 0x8 offset marker, child-16/21/23
+  producer seeding). DO NOT use a plain runtime `mStack[objIdx] is Array` check for Ldfld.
+- **THE FIX (JIT marker + runtime branch, Neo-gated, Legacy-neutral):** new const
+  `NeoRawLdfldArrayElementByRefMarker = 0x1` in `JITCompiler.cs` (Operand4 of the raw `Ldfld` -- a DISJOINT
+  opcode namespace from the four Ldflda markers 0x1/0x2/0x4/0x8, so 0x1 is collision-free; raw Ldfld's CLRType
+  branch sets only OperandLong -> Operand4 == 0). Stamped in the `case Code.Ldfld` CLRType else-branch when
+  `ins.Previous != null && ins.Previous.OpCode.Code == Code.Ldelema` (the ldelema's dest register
+  `baseRegIdx-2` then `baseRegIdx--` IS the ldfld's owner register `Register2 = baseRegIdx-1` after the
+  decrement). Runtime: in the value-type-owner branch, gate the existing flat-bytes `ReadNeoValueType` path
+  behind `else`, and when the marker is set decode `(arrIdx, elementIdx)`, `cArr.GetValue(elementIdx)`,
+  `f.GetValue(boxedElem)` -- symmetric READ of child-19's Stfld WRITE (`:4078-4091`); reuse the existing dest
+  marshalling unchanged. The ref-type-branch array NIE at `:3928` is left as fail-soft (unreachable via
+  ldelema on a ref-type-element array, which throws at the ldelema guard).
+- **PREVIOUS-INSTRUCTION SIGNAL IS RELIABLE + Operand4 SURVIVES THE PASSES (verified both ways):** (a) the
+  signal: the main `Translate(block, Instruction ins, ...)` loop passes the Mono.Cecil `Instruction`; for
+  `arr[i].field` the IL is `...; ldc i; ldelema T; ldfld` -- ldelema is the immediate CIL predecessor.
+  `readonly.`/`constrained.` are PREFIXES (precede ldelema, never sit between ldelema and ldfld). The CIL
+  Previous/Next links are stable IL order. JIT dump for TC1 confirms `16:ldelema r7; 17:ldfld r7` (raw ldfld,
+  owner reg == ldelema dest reg). (b) Operand4 survival: `LowerNeoOffsets` raw-Ldfld case
+  (`Optimizer.Neo.cs:945-971`) explicitly does NOT touch Operand4 (comment: "field identity lives in
+  OperandLong"); the Push-deletion remap (`:1727-1729`) only decrements if `Operand4 > removedIndex` (0x1
+  never is); `TypeSpecializeNeoOpcodes` raw-Ldfld seeding (`JITCompiler.cs:1089-1105`, child-21) reads only
+  OperandLong/Register1. Empirically airtight: the marker reaches runtime (TC1/TC2 PASS only because the
+  array-read branch fires; if Operand4 were clobbered they'd take the flat-bytes path and fault).
+- **PROBE-ARITHMETIC FIX (implementer correction):** the planner's TC3 asserted `s == 1477` but called
+  `BuildNeoArrElemProbeArray(7, 70, 700, 7000)` whose sum is **7777** (7+70+700+7000). 7777 != 1477 always ->
+  TC3 could NEVER pass (on HEAD or after the fix). The runtime dump proved the read is CORRECT (`s = 7777`),
+  so the constant was the typo. Fixed the assert to 7777 (preserves the 4-distinct-escalating-magnitudes
+  probe design -- better A/B + element-index discrimination than mutating the args to sum 1477). Updated
+  design.md's matching "1477" to 7777. LESSON: a planner-left probe that "FAULTS on HEAD" gives NO
+  information about whether its PASS constant is arithmetically reachable -- the implementer MUST hand-check
+  the expected constant against the inputs before trusting a FAIL->PASS toggle, else a typo'd constant hides
+  behind the HEAD corruption indefinitely.
+- **Verify:** NeoStep **368/0** (365 baseline + TC1 single-element + TC2 multi-index + TC3 host-built-array).
+  Stash-toggle of the TWO engine files (JITCompiler.cs + ILIntepreter.Neo.cs; probe + helper kept) ->
+  **3/3 FAULT** (DivideByZero; TC1 `a=3,b=1,s=4`) -> pop -> **368/0** (airtight). NO regressions: child-4
+  (`NeoStepRawFld_TC1/TC2` -- the flat-bytes path is now under the new `else`), child-9 (IlClrBase TC1/TC2),
+  child-19 (RawStfldArrElem TC1/TC2 -- the Stfld WRITE), child-21 (FloatSeeding TC1-4 incl. raw-Ldfld-CLR-
+  struct flat-bytes + primitive seeding), NeoStep12/13/17 (102 VT invocations) all PASS. Read-back CORRECT
+  (not just non-throwing): TC1 asserts 4259 (4242+17), TC2 asserts 100 (10+20+30+40), TC3 asserts 7777
+  (7+70+700+7000) -- the host-written values round-trip exactly. Legacy-neutral: structural (100%
+  `#if ENABLE_NEO_MODE`; ILIntepreter.Neo.cs is file-gated) + empirical (plain Debug+useRegister=true+NeoStep
+  = 368 ran/18 failed == pre-existing Legacy set; the 3 new probes PASS under Legacy; the 18 failures don't
+  touch this code). Files: `JITCompiler.cs` (+1 const, +the stamp in the CLRType else-branch),
+  `ILIntepreter.Neo.cs` (marker-gated array-element read in the raw-Ldfld VT-owner branch), permanent
+  `TestCases/NeoStepRawLdfldArrayElementTest.cs` (3 TCs; TC3 constant corrected 1477->7777),
+  `ILRuntimeTestBase/TestFramework/TestClass3.cs` (BuildNeoArrElemProbeArray, child-19-added). Capability =
+  `neo-value-types`.
+  Review: APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Marker-stamp-reliable (ldelema==immediate-predecessor, dest-reg==owner-reg) + Operand4-survives-all-passes (exhaustive grep + empirical stash-toggle) + runtime-array-read-correct (decode + Array.GetValue + f.GetValue + marshal, no writeback) + regression-families-green(child-4/15/19/21/23/13 + NeoStep12/13/17) + TC3-7777-arithmetically-reachable all confirmed. M1 probes use int fields only (float/VT/ref not directly exercised; low risk -- reuses shared marshalling child-21 green-covered); M2 array-read handles ref-field CLR structs w/o NIE (more permissive than flat-bytes, not a regression); T1 unaligned.-prefix theoretical gap (HEAD-faithful), T2 doc-attribution nit, T3 pre-existing unrelated `op.Operand4==1` no-op @Optimizer.Neo.cs:1234 (out of scope).

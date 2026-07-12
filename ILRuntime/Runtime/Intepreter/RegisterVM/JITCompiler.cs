@@ -204,6 +204,27 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // with reference fields throws the Step-13b NIE inside
         // ReadNeoValueType/WriteNeoValueType first).
         public const int NeoLdfldaClrStructLocalFieldMarker = 0x8;
+        // neo-raw-ldfld-array-element: marks a raw `Ldfld` (CLR-declaring-type
+        // field, the typed-splitter's CLRType `else` branch) whose owner is a
+        // CLR-struct ARRAY ELEMENT byref produced by `ldelema` (the CIL shape
+        // `x = clrStructArray[i].field;` -> `ldelema T; ldfld field`). This is
+        // on the raw `Ldfld` opcode's Operand4 -- a DIFFERENT opcode namespace
+        // from the four Ldflda markers above (0x1/0x2/0x4/0x8), so bit 0x1 is
+        // collision-free (raw Ldfld's CLRType branch sets only OperandLong,
+        // leaving Operand4 == 0; child-21's TypeSpecializeNeoOpcodes raw-Ldfld
+        // seeding case reads only OperandLong/Register1). Without this marker
+        // the runtime value-type-owner branch cannot distinguish a flat-bytes
+        // local-value owner (ldloc/ldsfld of a CLR struct by value) from an
+        // array-element byref owner: the untyped Neo frame holds both in the
+        // same SrcOffset slot, and ReadNeoValueType would reinterpret the
+        // (arrIdx, elementIdx) byref ints as the struct's first two fields ->
+        // silent wrong value. Stamped when `ins.Previous` is `Code.Ldelema`
+        // (the ldelema's dest register IS the ldfld's owner register). The
+        // marker survives LowerNeoOffsets (the raw-Ldfld case explicitly does
+        // NOT touch Operand4). Direct `arr[i].field` shape only -- ref-local
+        // indirection (`ref var p = ref arr[i]; p.field`) is a documented
+        // follow-up, not a regression (HEAD behavior).
+        public const int NeoRawLdfldArrayElementByRefMarker = 0x1;
         // The runtime byref offset-half flag for an F-10 byref (set by the
         // Ldflda arm): the offset half carries (ReferenceOffset | this flag) so
         // the consumer arms can distinguish "this offset is a ManagedObjects
@@ -3102,7 +3123,28 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 op.Operand4 = fieldType.GetHashCode();
                         }
                         else
+                        {
                             op.OperandLong = ((long)type.GetHashCode() << 32) | (uint)offset.PrimitiveOffset;
+                            // neo-raw-ldfld-array-element: the owner is a CLR-struct
+                            // ARRAY ELEMENT byref (ldelema-produced) rather than a
+                            // flat-bytes local value. The untyped Neo frame cannot
+                            // distinguish these at runtime (a flat-bytes struct's first
+                            // int field can coincidentally index an Array in mStack ->
+                            // a plain `mStack[objIdx] is Array` check has a constructible
+                            // collision, unlike raw Stfld whose value-type owner is ALWAYS
+                            // a byref), so mark the shape at JIT time. The `ldelema`
+                            // immediately precedes the `ldfld` in `arr[i].field` and its
+                            // dest register (baseRegIdx-2 then baseRegIdx--) IS the ldfld
+                            // owner register (Register2 = baseRegIdx-1 after the
+                            // decrement) -> the CIL Previous link is the reliable signal.
+                            // `readonly.`/`constrained.` are prefixes (precede ldelema,
+                            // never sit between ldelema and ldfld). The marker is a static
+                            // bit on the ldfld op -> survives LowerNeoOffsets (raw-Ldfld
+                            // case does not touch Operand4) and TypeSpecializeNeoOpcodes
+                            // (raw-Ldfld seeding case reads only OperandLong/Register1).
+                            if (ins.Previous != null && ins.Previous.OpCode.Code == Code.Ldelema)
+                                op.Operand4 |= NeoRawLdfldArrayElementByRefMarker;
+                        }
                     }
                     break;
 #endif

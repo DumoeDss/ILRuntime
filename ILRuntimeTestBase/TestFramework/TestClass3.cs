@@ -200,6 +200,19 @@ namespace ILRuntimeTest.TestFramework
             return arr[i].A + arr[i].B;
         }
 
+        // ---- neo-raw-ldfld-array-element host-built-array helper (TEMP probe).
+        //      Builds and populates a 2-element array on the HOST side so the IL
+        //      probe depends ONLY on the raw Ldfld array-element READ (no IL Stfld
+        //      write). arr[0]={a0,b0}, arr[1]={a1,b1}. ----
+        public static NeoArrElemIntProbe[] BuildNeoArrElemProbeArray(int a0, int b0, int a1, int b1)
+        {
+            return new NeoArrElemIntProbe[]
+            {
+                new NeoArrElemIntProbe { A = a0, B = b0 },
+                new NeoArrElemIntProbe { A = a1, B = b1 },
+            };
+        }
+
         // ---- Step 20 async-void side-effect box: a host-side int cell the IL
         //      async-void method writes (avoids the IL-side `stsfld` Step-6 gap;
         //      the cell is held on the host so no IL static-field store is
