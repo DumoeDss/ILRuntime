@@ -787,3 +787,44 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   Capability = `neo-dispatch`. Review APPROVE-WITH-FINDINGS (0 Blocker/Major; M1 null-args-guard
   divergence [more robust, unreachable], M2 AllocValueType branches deferred [unreachable, documented];
   2 Trivial; P1 ceq-null instance-field + P2 moot autogen stub noted out-of-scope).
+
+## Child 23 DONE (neo-ceq-null-instance-field, shipped 2026-07-13) -- durable findings
+- **RE-AUDIT PINNED the root cause but DISPROVED the framed mechanism (re-audit vindicated AGAIN).**
+  The framed question "why doesn't `Ceq_Ref` fire for an instance field?" was a FALSE PREMISE -- JIT dump
+  proved `Ceq_Ref` fires FINE for the `ceq` form (`bool b = field == null;` / `if(field==null)` both PASS on
+  HEAD via ldnull's `ObjectType` seed). The REAL gap: the TERNARY form `(field == null) ? a : b` lowers to a
+  DIRECT `brfalse.s` (no ceq), and `brfalse.s` stays PLAIN (not `brfalse.ref`) because `Ldfld_Ref` HAS NO
+  seeding case in `registerTypes` -> the `Brtrue`/`Brfalse` specialization (~:1423-1434, keys SOLELY on
+  `IsNeoReferenceSlot(registerTypes[op.Register1])`) leaves it plain -> a null instance field (the `-1`
+  sentinel, != 0) reads TRUTHY -> wrong branch -> wrong result. This is the INSTANCE-FIELD form of child-11's
+  gap; child-11 seeded `Ldsfeld` (static) but EXPLICITLY DEFERRED `Ldfld_Ref` (design D2 / Risk note).
+- **ROSLYN LOWERING VARIANCE (durable): `bool b = ref==null` and `if(ref==null)` lower to `ceq`; the ternary
+  `(ref==null)?a:b` lowers to a DIRECT `brfalse` (no ceq).** This is why the bug is shape-specific. A FAULT
+  probe for a null-comparison gap MUST use the ternary (or otherwise force the direct branch); an `if`-shaped
+  probe can PASS on HEAD and hide the bug. Check the JIT dump for plain `brfalse.s`/`brtrue.s` (direct form)
+  vs `ceq.ref` (ceq form) before assuming Ceq_Ref.
+- **THE FIX (Neo-only, +29 lines / 0 removed, single file `JITCompiler.cs`):** a `case OpCodeREnum.Ldfld_Ref:`
+  seeding case in `TypeSpecializeNeoOpcodes` (after child-21's raw-Ldfld case, ~:1105): `if (op.Operand4 == 0)
+  SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);`. Seed `ObjectType` (consumers key on
+  `IsNeoReferenceSlot` only). The `Operand4 == 0` guard excludes the F-10 boxed-CLR-struct case (the ONLY
+  `Operand4` stamp reachable on `Ldfld_Ref` is `IsClrStructFieldOfIL` at :3072-3073, which requires
+  `fieldType.IsValueType` -> genuine reference fields leave Operand4 == 0; the F-10 runtime arm flattens the
+  dest to flat bytes, so NOT seeding it as a reference is correct). `Ldfld_Ref` is emitted ONLY for non-
+  primitive, non-IL-VT fields -> a reference seed can never collide with an int-branch path.
+- **THE UNSEEDED-REFERENCE-PRODUCER DEFECT CLASS IS NOW FULLY CLOSED FOR THE HEAP INSTANCE-FIELD PATH**
+  (child-11 `Ldsfeld` static -> child-21 primitive floats -> child-23 `Ldfld_Ref` heap instance). Seeding
+  `Ldfld_Ref` fixes BOTH the direct `brtrue`/`brfalse` form AND the two-reference `ceq`/`beq`/`bne.un`
+  identity (`field1 == field2`) in one shot (consumers key on `IsNeoReferenceSlot` alone). O2 (`Ldfld_Ref_
+  Inline`) was ALREADY CLOSED (seeded unconditionally at :843-844 pre-rewrite); no sibling case needed.
+- **BONUS (causal, stash-toggle-confirmed): child-22's residual `ActivatorCreateInstanceWithArgsTest` P1 now
+  PASSES FOR FREE.** The `ILValue` auto-property getter is INLINED to `ldfld.ref` by the Neo JIT, so the
+  `ILValue == null` ternary in ToString now specializes to `brfalse.ref` -> reads correctly -> ToString
+  returns "null". Stash-toggle: 1 failed on HEAD -> 2/0 PASS with fix. Auto-property getters of reference
+  type inline to `ldfld.ref`, so this fix covers them implicitly.
+- **Verify:** NeoStep **365/0** (361 + 4 probes: TC1 ternary faulting + TC2/TC3 ceq controls + TC4 non-null
+  guard); stash-toggle JITCompiler.cs -> TC1 FAULT (plain `brfalse.s`, DivideByZero) -> pop -> PASS
+  (`brfalse.ref` fires); child-11 delegate-cache canaries Tr2/Tr5 clean; Legacy-neutral (method is
+  `#if ENABLE_NEO_MODE`-gated). Files: `JITCompiler.cs` (+29), new `TestCases/NeoStepCeqNullInstanceFieldTest.cs`.
+  Capability = `neo-optimizer`. Review APPROVE-WITH-FINDINGS (0 Blocker/Major; Trivial doc-accuracy nit
+  [null = -1 sentinel, not "valid index N"; fix still correct], Minor test-gap [no TC5 two-ref-field ceq.ref
+  identity probe; mechanically sound], O2 Ldfld_Ref_Inline F-10 edge latent out-of-scope).

@@ -1103,6 +1103,35 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             }
                         }
                         break;
+                    // neo-ceq-null-instance-field: seed a heap instance
+                    // REFERENCE-field load's dest as a reference so a direct
+                    // Brtrue/Brfalse on the instance field (the Roslyn lowering
+                    // of `(field == null) ? a : b` and bare-reference branch
+                    // conditions, which emit `ldfld.ref; brfalse/brtrue` with NO
+                    // ceq) -- and a two-reference Ceq/Beq/Bne_Un on two instance
+                    // fields -- specializes to the _Ref variant. Without this the
+                    // dest stays unseeded, IsNeoReferenceSlot is false at the
+                    // Brtrue/Brfalse case below, the branch stays the plain int
+                    // Brfalse_S/Brtrue_S, and a null reference field (a VALID
+                    // mStack index N != 0) reads TRUTHY -> the null guard /
+                    // ternary takes the wrong branch. Mirror child-11 Ldsfeld
+                    // seeding; ObjectType is the canonical reference (same as
+                    // Ldnull/Ldstr/Ldfld_Ref_Inline). EXCLUDE the F-10
+                    // boxed-CLR-struct-field case: when IsClrStructFieldOfIL is
+                    // true the body stamps Operand4 = fieldType.GetHashCode()
+                    // (non-zero), and the runtime Ldfld_Ref arm then flattens the
+                    // boxed struct into the dest flat-bytes region -- the dest is
+                    // NOT a reference encoding, so Brtrue_Ref must NOT fire;
+                    // genuine reference fields leave Operand4 == 0. Ldfld_Ref is
+                    // emitted ONLY for non-primitive, non-IL-VT fields
+                    // (GetLdfldCodeForType), so a reference seed can never collide
+                    // with an int-branch path. (Ldfld_Ref_Inline -- the in-frame-
+                    // VT-owner variant -- is already seeded at the pre-rewrite
+                    // step above.)
+                    case OpCodeREnum.Ldfld_Ref:
+                        if (op.Operand4 == 0)
+                            SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
+                        break;
                     // neo-addi-on-float: seed the indirect- and element-load
                     // producers so a float/double/long operand loaded via a
                     // byref/CLR-struct-field indirection (ldflda; ldind.r4) or an
