@@ -1072,6 +1072,37 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldfld_R8:
                         SetRegisterType(registerTypes, op.Register1, appdomain.DoubleType);
                         break;
+                    // neo-raw-ldfld-stfld-clr-struct-seeding (shape 2): a raw
+                    // Ldfld reaches here ONLY when the declaring type is a
+                    // CLRType (child 4: the Neo typed-splitter emits
+                    // Ldfld_R4/R8/I8 only for an ILType declaring type). The
+                    // field identity is encoded in OperandLong =
+                    // (typeHash<<32)|fieldHash -- identical to Legacy's raw
+                    // encoding and to the ExecuteNeo raw-Ldfld runtime handler.
+                    // Resolve the declaring CLRType + field and seed
+                    // registerTypes[dest] with the field's primitive type so a
+                    // subsequent typed arith (muli/addi/add keyed on
+                    // registerTypes[Register2]) fires. Non-primitive fields
+                    // (VT/ref) are left unseeded (they do not feed primitive
+                    // arithmetic; seeding a VT would perturb the field-access
+                    // discriminator). Same hash-lookup the runtime performs.
+                    case OpCodeREnum.Ldfld:
+                        {
+                            int typeHash = (int)((ulong)op.OperandLong >> 32);
+                            int fieldHash = (int)op.OperandLong;
+                            var declType = appdomain.GetType(typeHash);
+                            if (declType is CLRType ct)
+                            {
+                                var f = ct.GetField(fieldHash);
+                                if (f != null)
+                                {
+                                    IType ft = NeoClrPrimitiveTypeToIType(f.FieldType, appdomain);
+                                    if (ft != null)
+                                        SetRegisterType(registerTypes, op.Register1, ft);
+                                }
+                            }
+                        }
+                        break;
                     // neo-addi-on-float: seed the indirect- and element-load
                     // producers so a float/double/long operand loaded via a
                     // byref/CLR-struct-field indirection (ldflda; ldind.r4) or an
@@ -1277,6 +1308,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     if (!retIsRef)
                                         SetRegisterType(registerTypes, op.Register1, rt2 != null && rt2.IsPrimitive ? rt2 : null);
                                 }
+                                // neo-raw-ldfld-stfld-clr-struct-seeding (shape
+                                // 1): seed a primitive return type so typed arith
+                                // on the call result fires (Addi->Addi_R4 etc.
+                                // key on registerTypes[Register2]). The stale-VT/
+                                // stale-ref branches above only CLEAR a reused
+                                // dest; they never SEED a fresh-temp dest, so
+                                // `x = GetF() + 100f` left the dest null -> I4
+                                // -> plain integer op on float bits -> garbage.
+                                // Safe: a primitive return is excluded from the
+                                // keep-VT / keep-ref logic (a primitive is
+                                // neither a VT nor a reference), so re-seeding
+                                // after a clear is a harmless no-op; for a fresh
+                                // temp it is the missing seed. ByRef returns are
+                                // nulled so they do not overwrite.
+                                var cmr = appdomain.GetMethod(op.Operand2);
+                                IType rtr = cmr != null ? cmr.ReturnType : null;
+                                if (rtr is ILType rtrIl) rtr = rtrIl.IsByRef ? null : rtr;
+                                if (rtr != null && rtr.IsPrimitive)
+                                    SetRegisterType(registerTypes, op.Register1, rtr);
                             }
                         }
                         break;
@@ -1526,6 +1576,27 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 default:
                     return appdomain.IntType;
             }
+        }
+
+        // neo-raw-ldfld-stfld-clr-struct-seeding: map a CLR System.Type to the
+        // Neo primitive IType used to seed registerTypes[dest] for a raw Ldfld
+        // of a CLR-struct field. float->FloatType, double->DoubleType,
+        // long/ulong->LongType, any OTHER primitive->IntType (matches today's
+        // null->I4 fallback so non-float/double/long fields specialize
+        // identically to before -- only the float/double/long fix is live), a
+        // NON-primitive (VT/ref) -> null (left unseeded; does not feed primitive
+        // arith, and seeding a VT would perturb the field-access discriminator).
+        static IType NeoClrPrimitiveTypeToIType(Type clrType, Enviorment.AppDomain appdomain)
+        {
+            if (clrType == null || !clrType.IsPrimitive)
+                return null;
+            if (clrType == typeof(float))
+                return appdomain.FloatType;
+            if (clrType == typeof(double))
+                return appdomain.DoubleType;
+            if (clrType == typeof(long) || clrType == typeof(ulong))
+                return appdomain.LongType;
+            return appdomain.IntType;
         }
 
         IType[] BuildInitialRegisterTypes(short locVarRegStart, int totalRegCnt)

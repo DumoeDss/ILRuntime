@@ -683,3 +683,54 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   mismatch). Expected NeoStep 348 -> ~350-351/0. Artifacts at
   `rasen/changes/neo-il-enum-getenumvalues/` (proposal/design/specs(neo-type-checks
   ADDED)/tasks; isComplete=True).
+
+## Child 21 DONE (neo-raw-ldfld-stfld-clr-struct-seeding, shipped 2026-07-13) -- durable findings
+- **RE-AUDIT CONFIRMED (not disproven this time -- 17-for-17 streak broken honestly):** both
+  unseeded-producer shapes reproduce on HEAD fc2baa26. The float-corruption class (untyped Neo
+  frame + InferPrimTag I4-fallback + registerTypes-driven typed-arithmetic specialization) had
+  TWO remaining producers child-16 explicitly deferred: (a) a **Call returning primitive float/
+  double/long**, (b) **raw `Ldfld` of a CLR-struct primitive field** (the child-4 CLRType-owner
+  escaping shape). Both FAULT (DivideByZero) on HEAD; both PASS after seeding. Raw `Stfld` was
+  DISPROVEN-in-scope (it CONSUMES a value; it does not PRODUCE one feeding arithmetic -> no dest
+  seeding needed for this defect class).
+- **The `Call` case in `TypeSpecializeNeoOpcodes` (`JITCompiler.cs:1217-1329`) only CLEARS stale
+  in-frame-VT / reference dest types; it NEVER seeds a fresh dest with the resolved `ReturnType`
+  (resolved at `:1243`/`:1273`, then unused for seeding).** Fix = a trailing primitive-ReturnType
+  seed AFTER the existing stale-clear if/else-if chain (additive; a primitive return never
+  conflicts with the VT/ref-keep logic). ALL 5 call variants (`Call`/`Callvirt`/`Callvirt_IL`/
+  `Callvirt_CLR`/`Call_Redirect`) fall through to the SAME case-label block, so the single seed
+  covers CLR callees too (best-effort; a null-ReturnType CLR-redirect token -> dest stays
+  unseeded = byte-identical to HEAD, no regression). O1 VERDICT: no separate case needed.
+- **There is NO seeding case for the raw `OpCodeREnum.Ldfld` (only the typed `Ldfld_R4`/`R8`/`I8`
+  splitter arms are seeded).** The raw case is reached ONLY for a CLRType declaring owner (ILType
+  owners are already rewritten to typed arms by the splitter -- same as child-4's runtime handler).
+  Fix = a `case OpCodeREnum.Ldfld:` that decodes `(typeHash<<32)|fieldHash` from `OperandLong`
+  (IDENTICAL to child-4's runtime handler + the ExecuteNeo raw-Ldfld arm at `ILIntepreter.Neo.cs:
+  3878-3886`), resolves `CLRType.GetField(fieldHash)`, and seeds the primitive field type. The
+  field's primitive `System.Type` is recoverable at JIT time exactly as at runtime.
+- **THE FIX PATTERN GENERALIZES (child-16 + child-21): every primitive float/double/long PRODUCER
+  must seed `registerTypes[dest]`** so the typed-arithmetic specialization (`Addi->Addi_R4`,
+  `Mul->Mul_R4`, ...) fires instead of falling back to a plain INTEGER op on the raw IEEE bits.
+  Closed producers: `Ldc_*`, typed `Ldfld_*`, `Ldind_*`, `Ldelem_*` (child-16), `Call`-primitive-
+  return + raw-`Ldfld`-CLR-struct (child-21). The seeding is a JIT-time switch addition WHENEVER
+  the type is knowable at JIT time (it is, for both new cases); the child-15 `0x8`-in-`Operand4`
+  JIT marker is the right tool ONLY when the type is UNknowable at JIT time (the ldflda offset
+  bug) -- do NOT reach for a marker when a seeding case suffices.
+- **A shared helper `NeoClrPrimitiveTypeToIType` (`JITCompiler.cs:1581-1599`)** maps a CLR
+  `System.Type` -> IType: float->FloatType, double->DoubleType, long/ulong->LongType,
+  other-primitive->IntType (PRESERVES today's null->I4 fallback so uint stays I4, not U4 -- the
+  fix is scoped strictly to float/double/long and perturbs no other type's specialization),
+  non-primitive->null (the non-seed sentinel). Reusable by any future CLR-primitive-type seeding.
+- **registerTypes single-pass-no-phi-merge risk (child-11/16 gotcha, reaffirmed):** a reused
+  register could in theory be mis-seeded, but the Call/Ldfld dest is a straight-line fresh temp
+  (top-of-stack produced immediately before the consumer, same block) -> reliable for these
+  shapes. Pre-existing (P1/P2): an IL-VT-return-to-fresh-temp gap + the single-pass imprecision
+  itself are out of scope, noted not introduced.
+- **Verify:** NeoStep **358/0** (354 + TC1 float + TC2 double via Call; TC3 mul+add + TC4 reg-reg
+  via raw Ldfld); stash-toggle of JITCompiler.cs ONLY -> 4/4 FAULT (DivideByZero at the deliberate
+  1/0 guards) -> pop -> 0/4 PASS (airtight). JIT dump confirms typed specialization now fires
+  (`addi.r4`, `addi.r8`, `muli.r4`, `add.r4`). Legacy-neutral: 100% `#if ENABLE_NEO_MODE`;
+  identical Legacy NeoStep result with/without the change. Files: `JITCompiler.cs` (3 additive
+  sites, 71 added / 0 removed), new `TestCases/NeoStepFloatSeedingProbe.cs`. Capability =
+  `neo-optimizer`. Review: APPROVE-WITH-FINDINGS (0 Blocker/Major; M1 perf nit getMethod-not-hoisted,
+  M2 CLR-callee-float probe coverage accepted-known worst-case-no-regression; 3 Trivial).

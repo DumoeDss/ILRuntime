@@ -1,0 +1,28 @@
+{
+  "pipeline": "small-feature",
+  "classification": "small-feature",
+  "tier": "A",
+  "gatePolicy": { "effective": "off", "source": "flag" },
+  "parent": "neo-overhaul",
+  "childId": 21,
+  "stages": {
+    "propose": {
+      "status": "done",
+      "worker": { "role": "planner", "agentId": "planner-c21", "note": "re-audit CONFIRMED both shapes reproduce on HEAD fc2baa26; artifacts written" }
+    },
+    "apply": { "status": "in_progress" },
+    "verify": { "status": "pending" },
+    "review-loop": { "status": "pending" },
+    "ship": { "status": "pending" }
+  },
+  "rounds": 0,
+  "openFindings": [],
+  "reAuditVerdict": {
+    "call_returning_float": "REPRODUCES (DivideByZero; Call case JITCompiler.cs:1217-1282 only clears stale dest, never seeds ReturnType)",
+    "raw_ldfld_clr_struct_prim": "REPRODUCES (DivideByZero; no seeding case for raw OpCodeREnum.Ldfld)",
+    "raw_stfld": "DISPROVEN-in-scope (Stfld consumes a value, does not produce one feeding arithmetic)"
+  },
+  "design": "Seeding-switch additions to TypeSpecializeNeoOpcodes (NOT a JIT marker; type knowable at JIT time). Call: trailing primitive-ReturnType seed after stale-VT/ref clear. Raw Ldfld: new case resolving CLRType+field via child-4 hash lookup, seed primitive field type.",
+  "probe": "TestCases/NeoStepFloatSeedingProbe.cs (TC1 float + TC2 double via Call; TC3 mul+add + TC4 reg-reg via raw Ldfld) -- FAULTS on HEAD, should PASS after fix",
+  "baseline": "NeoStep 354/0 on HEAD fc2baa26 (pre-fix smoke with probe = 358 ran / 4 failed = the 4 faulting probes)"
+}
