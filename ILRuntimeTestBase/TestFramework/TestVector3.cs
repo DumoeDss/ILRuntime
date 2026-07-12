@@ -397,4 +397,18 @@ namespace ILRuntimeTest.TestFramework
             return n + (s != null ? s.Length : 0);
         }
     }
+
+    // ---- neo-raw-stfld-array-element host probe struct. A blittable CLR struct
+    //      (default LayoutKind.Sequential) with INT fields used as a CLR array
+    //      element so the probe `arr[i].A = x` lowers to `ldelema; stfld` and
+    //      exercises the raw Stfld array-element owner branch. INT fields are
+    //      deliberate: they sidestep the pre-existing unrelated Neo float bugs
+    //      (addi-on-float / conv.i4-float-bit-reinterpret). No ValueTypeBinder
+    //      is needed -- the fix uses reflection (Array.GetValue/SetValue +
+    //      FieldInfo.SetValue), not the binder flat-byte path. ----
+    public struct NeoArrElemIntProbe
+    {
+        public int A;
+        public int B;
+    }
 }

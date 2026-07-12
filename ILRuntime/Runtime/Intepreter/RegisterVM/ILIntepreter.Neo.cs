@@ -4058,10 +4058,12 @@ namespace ILRuntime.Runtime.Intepreter
                                     if (ct.TypeForCLR.IsValueType)
                                     {
                                         // CLR value-type owner: the owner slot holds a frame-native
-                                        // byref (objIdx, off). Box the whole struct from the byref
-                                        // target, reflection-write the field, and write the mutated
-                                        // struct back (box/mutate/unbox). An array-element byref
-                                        // (objIdx>=0, mStack[objIdx] is Array) is deferred with a
+                                        // byref (objIdx, off). A frame-local byref (objIdx == -1):
+                                        // box the whole struct from the byref target, reflection-write
+                                        // the field, write the mutated struct back (box/mutate/unbox).
+                                        // An array-element byref (objIdx>=0, mStack[objIdx] is Array):
+                                        // box/mutate/unbox via Array.GetValue/SetValue (Legacy
+                                        // ObjectTypes.ArrayReference parity). Any other shape is a
                                         // tagged NIE (not the Step-6 default).
                                         int objIdx = *(int*)(frameBase + ownerOff);
                                         int off = *(int*)(frameBase + ownerOff + 4);
@@ -4073,8 +4075,20 @@ namespace ILRuntime.Runtime.Intepreter
                                             f.SetValue(boxedOwner, value);
                                             ILIntepreter.WriteNeoValueType(boxedOwner, frameBase + off, ownerSz);
                                         }
-                                        else if (objIdx >= 0 && mStack[objIdx] is Array)
-                                            throw new NotImplementedException("Neo raw Stfld: array-element field write is deferred (stfld on a CLR array element; follow-up). Field " + f.Name + " on " + ct.FullName);
+                                        else if (objIdx >= 0 && mStack[objIdx] is Array cArr)
+                                        {
+                                            // CLR-struct ARRAY ELEMENT owner: the byref is (arrIdx,
+                                            // elementIdx) where `off` == elementIdx (the ldelema
+                                            // encoding, ILIntepreter.Neo.cs:5747-5748; same convention
+                                            // stind/ldind consume). Mirror Legacy's
+                                            // ObjectTypes.ArrayReference writeback (Register.cs:3154-3158):
+                                            // box the element, reflection-write the field, write the
+                                            // mutated struct back (box/mutate/unbox). The `value` is
+                                            // already boxed by field category above.
+                                            object boxedElem = cArr.GetValue(off);
+                                            f.SetValue(boxedElem, value);
+                                            cArr.SetValue(boxedElem, off);
+                                        }
                                         else
                                             throw new NotImplementedException("Neo raw Stfld: unrecognized CLR value-type owner byref shape (objIdx=" + objIdx + "). Field " + f.Name + " on " + ct.FullName);
                                     }
@@ -4082,7 +4096,9 @@ namespace ILRuntime.Runtime.Intepreter
                                     {
                                         // CLR reference-type owner: owner slot's first int is the
                                         // mStack index of the boxed CLR object. Route through Area
-                                        // 4d. IL-instance / array owners are deferred (tagged NIE).
+                                        // 4d. An IL-instance-with-CLR-base owner (child-9) routes
+                                        // through CLRInstance; an array-element owner (this change)
+                                        // does box/mutate/unbox via Array.GetValue/SetValue.
                                         int objIdx = *(int*)(frameBase + ownerOff);
                                         object target = objIdx >= 0 ? mStack[objIdx] : null;
                                         if (target == null)
@@ -4099,8 +4115,19 @@ namespace ILRuntime.Runtime.Intepreter
                                             ILTypeInstance il = target as ILTypeInstance ?? ((CrossBindingAdaptorType)target).ILInstance;
                                             NeoWriteClrObjectField(AppDomain, il.CLRInstance, fieldHash, value);
                                         }
-                                        else if (target is Array)
-                                            throw new NotImplementedException("Neo raw Stfld: array-element field write is deferred (stfld on a CLR array element; follow-up). Field " + f.Name + " on " + ct.FullName);
+                                        else if (target is Array cArr2)
+                                        {
+                                            // CLR ARRAY ELEMENT owner, ref-type declaring branch.
+                                            // Unreachable via ldelema on a ref-type-element array (which
+                                            // throws at the ldelema guard), but routed through the SAME
+                                            // box/mutate/unbox as the value-type branch for symmetry and
+                                            // to remove the dead NIE. Decode the element index from the
+                                            // byref's +4 half (the (arrIdx, elementIdx) convention).
+                                            int elementIdx2 = *(int*)(frameBase + ownerOff + 4);
+                                            object boxedElem2 = cArr2.GetValue(elementIdx2);
+                                            f.SetValue(boxedElem2, value);
+                                            cArr2.SetValue(boxedElem2, elementIdx2);
+                                        }
                                         else
                                             NeoWriteClrObjectField(AppDomain, target, fieldHash, value);
                                     }

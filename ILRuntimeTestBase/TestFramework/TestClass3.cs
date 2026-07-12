@@ -190,6 +190,16 @@ namespace ILRuntimeTest.TestFramework
             return new TestClrStructWithRef(n, s);
         }
 
+        // ---- neo-raw-stfld-array-element host read-back helper. The READ-BACK
+        //      happens on the CLR (host) side, so the probe verifies the Neo
+        //      `arr[i].field = x` Stfld WRITE landed in the array element WITHOUT
+        //      depending on Neo Ldfld (deferred for array-element owners) or Neo
+        //      float arithmetic (the pre-existing addi/conv.i4 float bugs). ----
+        public static int NeoArrElemFieldSum(NeoArrElemIntProbe[] arr, int i)
+        {
+            return arr[i].A + arr[i].B;
+        }
+
         // ---- Step 20 async-void side-effect box: a host-side int cell the IL
         //      async-void method writes (avoids the IL-side `stsfld` Step-6 gap;
         //      the cell is held on the host so no IL static-field store is

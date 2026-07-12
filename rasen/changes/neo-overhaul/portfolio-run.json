@@ -157,10 +157,17 @@
       "completedDate": "2026-07-12", "smoke": "NeoStep 352/0 (348 + 4 incl. TC4 negative-enum); EnumTest.Test01 (IL-enum GetValues) passes; stash-toggle TC1+TC4 FAIL-on-HEAD (bare NIE / signed sort) -> PASS; Legacy-neutral (no existing Legacy test regresses; TC4 is Neo-scoped -- see follow-up)",
       "review": "APPROVE-WITH-FINDINGS after 1 review-loop round. MAJOR (reviewer-found, LEAD-fixed): GetSortedEnumMembers used a SIGNED compare but the framework sorts by UNSIGNED binary value -> divergent for negative-member enums. Fix = EnumValueAsUnsignedBits per-type unchecked-cast helper (Convert.ToUInt64 overflow-threw on negatives; stash-toggle-proven). New finding: TC4 is Neo-scoped (Legacy doesn't dispatch the override -> Legacy declaration-order gap, pre-existing, follow-up).",
       "shipped": "commit+push 2026-07-12"
+    },
+    "neo-raw-stfld-array-element": {
+      "pipeline": "small-feature", "wave": 1, "scope": "Raw Stfld on a CLR-struct array element (4 hits, child-4 deferred): clrStructArray[i].field=x (ldelema;stfld) threw the tagged NIE. Fix = box/mutate/unbox via Array.GetValue/SetValue (the element lives in the Array CLR backing store)",
+      "prerequisites": ["neo-il-enum-getenumvalues"], "dependsOn": ["neo-il-enum-getenumvalues"], "status": "done", "capability": "neo-value-types",
+      "completedDate": "2026-07-12", "smoke": "NeoStep 354/0 (352 + 2); full-smoke array-element NIE 4->0; write-back-persists empirically confirmed; stash-toggle FAIL-on-HEAD (tagged NIE) -> PASS; Legacy-neutral (354 ran/18 failed, no new Legacy regression)",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major/Minor). 2-branches-correct + write-back-persists (FieldInfo.SetValue mutates boxed VT, Array.SetValue writes back) both confirmed. Ldfld array-element DEFERRED (not symmetric; untyped frame can't safely distinguish flat-bytes-local vs array-element-byref without a JIT marker -- latent silent-corruption if exercised, follow-up). 1 Trivial comment line-number drift.",
+      "shipped": "commit+push 2026-07-12"
     }
   },
   "runnableFrontier": ["neo-valuetask-marshal"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct", "neo-addi-on-float", "neo-clr-static-vt-slot-overflow", "neo-il-enum-getenumvalues"],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct", "neo-addi-on-float", "neo-clr-static-vt-slot-overflow", "neo-il-enum-getenumvalues", "neo-raw-stfld-array-element"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
