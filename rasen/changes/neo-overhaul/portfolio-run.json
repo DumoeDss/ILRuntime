@@ -164,10 +164,17 @@
       "completedDate": "2026-07-12", "smoke": "NeoStep 354/0 (352 + 2); full-smoke array-element NIE 4->0; write-back-persists empirically confirmed; stash-toggle FAIL-on-HEAD (tagged NIE) -> PASS; Legacy-neutral (354 ran/18 failed, no new Legacy regression)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major/Minor). 2-branches-correct + write-back-persists (FieldInfo.SetValue mutates boxed VT, Array.SetValue writes back) both confirmed. Ldfld array-element DEFERRED (not symmetric; untyped frame can't safely distinguish flat-bytes-local vs array-element-byref without a JIT marker -- latent silent-corruption if exercised, follow-up). 1 Trivial comment line-number drift.",
       "shipped": "commit+push 2026-07-12"
+    },
+    "neo-valuetask-marshal": {
+      "pipeline": "small-feature", "wave": 1, "scope": "ValueTask<T> VT1/VT2/VT6 async. DISPROVEN-STALE on re-audit (5th this session): the framed 8-vs-16 builder byref-this skip bug was ALREADY FIXED in a prior cycle (commit 9c9b795d; SetResult/SetException skip the builder's Unsafe.SizeOf, not a hardcoded 8). This child = spec-delta-only (pins the invariant) + verify",
+      "prerequisites": ["neo-raw-stfld-array-element"], "dependsOn": ["neo-raw-stfld-array-element"], "status": "done", "capability": "neo-async",
+      "completedDate": "2026-07-12", "smoke": "NeoStep20_VT 7/0 (VT1-VT6 + VT_ZeroAlloc) PASS on HEAD (independently confirmed); full smoke ZERO ValueTask NIEs; git diff HEAD -- source empty (no engine change). NO code change -- spec-delta-only.",
+      "review": "LEAD-verified (no-engine-change doc child): the spec delta (AsyncNeo.cs:276 SetResult uses Unsafe.SizeOf<T> per-builder, not hardcoded 8 -- grounded in the actual code) pins the invariant so a future refactor cannot silently restore += 8 (which would re-break only the ValueTask path, masked by the passing Task smoke). NeoStep20_VT 7/0 is the guard.",
+      "shipped": "commit+push 2026-07-12"
     }
   },
-  "runnableFrontier": ["neo-valuetask-marshal"],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct", "neo-addi-on-float", "neo-clr-static-vt-slot-overflow", "neo-il-enum-getenumvalues", "neo-raw-stfld-array-element"],
+  "runnableFrontier": [],
+  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct", "neo-addi-on-float", "neo-clr-static-vt-slot-overflow", "neo-il-enum-getenumvalues", "neo-raw-stfld-array-element", "neo-valuetask-marshal"],
   "surfacedFollowups": [
     { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
     { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate.", "source": "child 2" },
