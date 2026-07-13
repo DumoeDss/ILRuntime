@@ -680,6 +680,23 @@
       "smoke": "FULL SMOKE 118->114 (-4); 3 C13 + 1 bonus green; stash-toggle airtight; NeoStep 382/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author verify of recorded evidence; Dummy-only discriminator self-caught NeoStep19 regression)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-async-statemachine-null": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C8: async Task (non-generic) methods lower to non-generic AsyncTaskMethodBuilder; Register omitted Start for both non-generic builders -> autogen Start_1_Neo read SM as null adaptor -> ANE(stateMachine). Fix = register open-generic Start (reuse AsyncTaskMethodBuilder_T_Start_Neo, 8-byte byref). 5th missing-redirect instance.",
+      "prerequisites": [
+        "neo-delegate-adapter-notfound"
+      ],
+      "dependsOn": [
+        "neo-delegate-adapter-notfound"
+      ],
+      "status": "done",
+      "capability": "neo-async",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 114->110 (-4); all 4 C8 (AsyncAwaitTest) green; stash-toggle airtight; NeoStep 382/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author verify; missing-redirect pattern validated 5x)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -718,7 +735,8 @@
     "neo-iltype-cast-clr-base",
     "neo-ilruntimetype-runtime-bridge",
     "neo-array-vt-index-oob",
-    "neo-delegate-adapter-notfound"
+    "neo-delegate-adapter-notfound",
+    "neo-async-statemachine-null"
   ],
   "surfacedFollowups": [
     {
@@ -895,6 +913,7 @@
     "fullSmokeAfterC2": 133,
     "fullSmokeAfterC12": 122,
     "fullSmokeAfterC10": 118,
-    "fullSmokeAfterC13": 114
+    "fullSmokeAfterC13": 114,
+    "fullSmokeAfterC8": 110
   }
 }

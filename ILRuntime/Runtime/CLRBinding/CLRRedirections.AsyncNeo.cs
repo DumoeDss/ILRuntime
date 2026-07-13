@@ -1280,6 +1280,24 @@ namespace ILRuntime.Runtime.Enviorment
             RegisterTaskBuilderT(app, flag, typeof(AsyncTaskMethodBuilder<ILTypeInstance>), "Task`1");
 
             // ---- AsyncTaskMethodBuilder (non-generic) ----
+            // neo-async-statemachine-null (C8): an `async Task` (non-generic) method's
+            // builder is AsyncTaskMethodBuilder (no TResult generic arg). Its
+            // Start<TStateMachine>(ref TSM) was NOT registered here, so the autogen
+            // Start_1_Neo stub (System_Runtime_CompilerServices_AsyncTaskMethodBuilder_
+            // Bi.cs:201) fired instead: it reads the SM as an IAsyncStateMachineAdaptor
+            // (null under Neo -- the C#-emitted SM is a heap ILTypeInstance, not a CLR
+            // adaptor) and calls the framework AsyncMethodBuilderCore.Start(ref null) ->
+            // ArgumentNullException(Parameter 'stateMachine'). Registering the OPEN
+            // generic definition here (Run() is first-registered-wins in the AppDomain
+            // ctor, before the test-harness CLRBindings.Initialize; TryGetRedirection
+            // tries GetGenericMethodDefinition() first) preempts the autogen closed-
+            // generic stub -- the same lever the generic AsyncTaskMethodBuilder<T>.Start
+            // registration below + child-22 Activator.CreateInstance<T> rely on. The
+            // non-generic Start has the SAME signature + 8-byte this-byref layout as the
+            // generic builder's (verified: AsyncTaskMethodBuilder is an 8-byte struct,
+            // so the `curPrim += 8` builder-this skip is byte-correct either way), so
+            // AsyncTaskMethodBuilder_Start_Neo -> AsyncTaskMethodBuilder_T_Start_Neo
+            // handles it unchanged.
             {
                 Type t = typeof(AsyncTaskMethodBuilder);
                 RegisterSimple(app, flag, t, "Create", Type.EmptyTypes,
@@ -1290,6 +1308,9 @@ namespace ILRuntime.Runtime.Enviorment
                     nameof(AsyncTaskMethodBuilder_SetException_Neo));
                 RegisterSimple(app, flag, t, "SetResult", Type.EmptyTypes,
                     nameof(AsyncTaskMethodBuilder_SetResult_Neo));
+                MethodInfo startOpen = t.GetMethod("Start", flag);
+                if (startOpen != null && startOpen.IsGenericMethodDefinition)
+                    app.RegisterCLRMethodRedirectionNeo(startOpen, AsyncTaskMethodBuilder_Start_Neo);
                 RegisterAwaiters(app, flag, t);
             }
 
@@ -1315,6 +1336,15 @@ namespace ILRuntime.Runtime.Enviorment
             RegisterValueTaskAccessors(app, flag, typeof(ValueTask<string>));
 
             // ---- AsyncValueTaskMethodBuilder (non-generic) ----
+            // neo-async-statemachine-null (C8): same gap + fix as the non-generic
+            // AsyncTaskMethodBuilder block above -- an `async ValueTask` (non-generic)
+            // method's Start<TSM> would otherwise fall to the autogen stub and throw
+            // ArgumentNullException(Parameter 'stateMachine'). Register the open generic
+            // definition (preempts the autogen closed-generic stub; same param layout
+            // as the generic builder). AsyncValueTaskMethodBuilder is a 16-byte struct,
+            // but Start treats the builder `this` as an 8-byte byref Ref Slot (curPrim
+            // += 8 in AsyncTaskMethodBuilder_T_Start_Neo) -- correct regardless of the
+            // builder's flat-bytes size, since the byref is always 8 bytes.
             {
                 Type t = typeof(System.Runtime.CompilerServices.AsyncValueTaskMethodBuilder);
                 RegisterSimple(app, flag, t, "Create", Type.EmptyTypes,
@@ -1325,6 +1355,9 @@ namespace ILRuntime.Runtime.Enviorment
                     nameof(AsyncValueTaskMethodBuilder_SetException_Neo));
                 RegisterSimple(app, flag, t, "SetResult", Type.EmptyTypes,
                     nameof(AsyncValueTaskMethodBuilder_SetResult_Neo));
+                MethodInfo startOpen = t.GetMethod("Start", flag);
+                if (startOpen != null && startOpen.IsGenericMethodDefinition)
+                    app.RegisterCLRMethodRedirectionNeo(startOpen, AsyncValueTaskMethodBuilder_Start_Neo);
                 RegisterAwaiters(app, flag, t);
             }
 
