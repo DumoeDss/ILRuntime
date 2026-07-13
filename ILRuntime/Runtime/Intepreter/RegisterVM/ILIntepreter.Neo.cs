@@ -3252,7 +3252,39 @@ namespace ILRuntime.Runtime.Intepreter
                                     byte* crRetDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int crRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
 
-                                    InvokeNeoClrMethod(targetMethod, crIsNewObj, crTargetBase, mStack, crRetDstPtr, crRetRefBase);
+                                    // neo-clr-struct-newobj-retdest-null: a struct ctor
+                                    // reached via the Roslyn `call .ctor` lowering
+                                    // (`initobj; ldloca; <args>; call.redirect ctor`,
+                                    // dest=`-` so crRetDstPtr=null + crIsNewObj=false)
+                                    // must write its constructed result back to the
+                                    // caller's local THROUGH the byref `this` slot --
+                                    // the autogen ctor redirect writes the struct into
+                                    // the `this` slot (param-region offset 0), and this
+                                    // write-back propagates it to the caller's local.
+                                    // A redirect with no byref slots (Delegate.Combine
+                                    // etc.) is a no-op (PrimitiveByRefSrc == null).
+                                    // Snapshot the byref sources BEFORE the redirect: a
+                                    // Call_Redirect WITH a dest (Register1 >= 0) can
+                                    // reuse a byref source register as the dest,
+                                    // clobbering the byref bytes before the write-back
+                                    // reads them (mirrors the Call arm's Step-20 fixer).
+                                    bool[] crWbFlags = crMap.PrimitiveByRefWriteBack;
+                                    bool crNeedSnap = crWbFlags != null && crWbFlags.Length > 0;
+                                    int[] crSnapArr = crNeedSnap ? new int[(crWbFlags.Length > 16 ? 16 : crWbFlags.Length) * 2] : null;
+                                    if (crNeedSnap)
+                                    {
+                                        fixed (int* crSnap = crSnapArr)
+                                        {
+                                            int crCaptured = SnapshotNeoCallByRefSources(ref crMap, frameBase, crSnap);
+                                            int* crByRefSnap = crCaptured > 0 ? crSnap : null;
+                                            InvokeNeoClrMethod(targetMethod, crIsNewObj, crTargetBase, mStack, crRetDstPtr, crRetRefBase);
+                                            CopyNeoCallThisBack(ref crMap, frameBase, crTargetBase, mStack, AppDomain, crByRefSnap);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        InvokeNeoClrMethod(targetMethod, crIsNewObj, crTargetBase, mStack, crRetDstPtr, crRetRefBase);
+                                    }
 
                                     ip++;
                                     continue;

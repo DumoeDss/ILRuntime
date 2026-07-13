@@ -765,6 +765,23 @@
       "smoke": "FULL SMOKE 103->101 (-2); UnitTest_10027 + 1 transitive; stash-toggle airtight; NeoStep 382/0 (core LowerNeoOffsets change, no regression); Legacy-neutral (file-gated)",
       "review": "APPROVE (LEAD non-author; bit-0x2 collision-free audited; NeoStep broad green; StructTest7/DelegateTest24 unmasked to pre-existing deferred siblings)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-clr-struct-newobj-retdest-null": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: CLR struct newobj retDst gap. Framing refined: new TestVector3(f,f,f) is Roslyn call .ctor lowering (NOT newobj), crIsNewObj=false, dest=-. 2 defects: (A) Ctor_0_Neo stub !isNewObj was TODO reading zero-init this slot; (B) Call_Redirect arm lacked CopyNeoCallThisBack (Call/Callvirt_CLR have it). Fix = stub port + Call_Redirect write-back + generator template. REAL correctness (3 Call arms write-back consistent) but full-smoke delta 0 -- DelegateTest24 has independent 2nd blocker (callvirt.clr struct-arg to List<TestVector3>.Add).",
+      "prerequisites": [
+        "neo-lowerneoffsets-push-missing"
+      ],
+      "dependsOn": [
+        "neo-lowerneoffsets-push-missing"
+      ],
+      "status": "done",
+      "capability": "neo-newobj",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 101 (delta 0 -- real root-cause fix but DelegateTest24 has 2nd blocker); NeoStep 385/0 (+3 probes, 0 regression; NeoStep12 12/0 NeoStep13 36/0); stash-toggle airtight; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; honest delta-0 -- real correctness, Call_Redirect write-back gap closed, 2nd blocker surfaced as next child)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -808,7 +825,8 @@
     "neo-hotfix-not-bound-audit",
     "neo-iltypeinstance-parameterless-ctor",
     "neo-target-exception-mismatch",
-    "neo-lowerneoffsets-push-missing"
+    "neo-lowerneoffsets-push-missing",
+    "neo-clr-struct-newobj-retdest-null"
   ],
   "surfacedFollowups": [
     {
@@ -988,9 +1006,10 @@
     "fullSmokeAfterC13": 114,
     "fullSmokeAfterC8": 110,
     "fullSmokeAfterC9": 110,
-    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target).",
+    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target). struct-newobj delta-0 (real fix, DelegateTest24 2nd blocker = callvirt.clr struct-arg to List<VT>.Add).",
     "fullSmokeAfterC5": 104,
     "fullSmokeAfterC14": 103,
-    "fullSmokeAfterC7": 101
+    "fullSmokeAfterC7": 101,
+    "fullSmokeAfterNewobj": 101
   }
 }

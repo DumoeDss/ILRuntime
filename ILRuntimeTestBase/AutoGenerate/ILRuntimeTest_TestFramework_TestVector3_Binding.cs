@@ -651,19 +651,37 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
+            int __thisSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3));
             if (isNewObj)
             {
                 __curPrim += 4; // Skip retRefBase
             }
             else
             {
-                // TODO: Constructor binding for non-newObj (e.g. value type init) in Neo
+                // Non-newobj (Roslyn lowers a struct `new VT(args)` assigned to a
+                // local to `initobj; ldloca; <args>; call .ctor`): the `this`
+                // struct occupies the first __thisSz bytes of the param region
+                // (zero-init from initobj). Skip it to reach the args; the
+                // constructed result is written back to this slot (offset 0) for
+                // the runtime Call_Redirect write-back (CopyNeoCallThisBack) to
+                // propagate to the caller's local. Mirrors the Legacy `Ctor_0`
+                // `!isNewObj` WriteBackInstance path.
+                __curPrim += __thisSz;
             }
             System.Single @x = ILIntepreter.ReadNeoFloat(__frameBase, ref __curPrim);
             System.Single @y = ILIntepreter.ReadNeoFloat(__frameBase, ref __curPrim);
             System.Single @z = ILIntepreter.ReadNeoFloat(__frameBase, ref __curPrim);
             ILRuntimeTest.TestFramework.TestVector3 result_of_this_method = new ILRuntimeTest.TestFramework.TestVector3(@x, @y, @z);
-            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3)); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
+            if (isNewObj)
+            {
+                if (__retDst != null) { ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __thisSz); }
+            }
+            else
+            {
+                // Write the constructed struct into the `this` slot (offset 0);
+                // the runtime write-back propagates it to the caller's local.
+                ILIntepreter.WriteNeoValueType(result_of_this_method, __frameBase, __thisSz);
+            }
         }
 #else
         static StackObject* Ctor_0(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)

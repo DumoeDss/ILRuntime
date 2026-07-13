@@ -58,14 +58,33 @@ namespace ILRuntime.Runtime.CLRBinding
             sb.AppendLine("        {");
             sb.AppendLine("            ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;");
             sb.AppendLine("            int __curPrim = 0;");
-            
+            // neo-clr-struct-newobj-retdest-null: a value-type ctor reached via the
+            // Roslyn `call .ctor` lowering (`initobj; ldloca; <args>; call.redirect ctor`,
+            // isNewObj=false) has the `this` struct occupying the first __thisSz bytes of
+            // the param region (zero-init from initobj). Skip it to reach the args, and
+            // write the constructed result back to that slot (offset 0) so the runtime
+            // Call_Redirect write-back (CopyNeoCallThisBack) propagates it to the caller's
+            // local. Mirrors the Legacy `Ctor_0` `!isNewObj` WriteBackInstance path. A
+            // reference-type ctor is always invoked via newobj (the else branch is
+            // unreachable for classes); the value-type this-sz skip is value-type-only.
+            if (type.IsValueType && !type.IsPrimitive)
+            {
+                sb.AppendLine(string.Format("            int __thisSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof({0}));", typeClsName));
+            }
             sb.AppendLine("            if (isNewObj)");
             sb.AppendLine("            {");
             sb.AppendLine("                __curPrim += 4; // Skip retRefBase");
             sb.AppendLine("            }");
             sb.AppendLine("            else");
             sb.AppendLine("            {");
-            sb.AppendLine("                // TODO: Constructor binding for non-newObj (e.g. value type init) in Neo");
+            if (type.IsValueType && !type.IsPrimitive)
+            {
+                sb.AppendLine("                __curPrim += __thisSz; // Skip the in-frame `this` struct (Roslyn `call .ctor` via ldloca)");
+            }
+            else
+            {
+                sb.AppendLine("                // TODO: Constructor binding for non-newObj (e.g. value type init) in Neo");
+            }
             sb.AppendLine("            }");
 
             for (int j = 0; j < param.Length; j++)
@@ -101,7 +120,20 @@ namespace ILRuntime.Runtime.CLRBinding
                 sb.AppendLine(");");
             }
 
-            type.GetReturnValueCodeNeo(sb);
+            if (type.IsValueType && !type.IsPrimitive && !isMultiArr)
+            {
+                // Value-type ctor: write the constructed struct to the newobj dest
+                // (isNewObj=true, the dest slot) OR back to the `this` slot at offset 0
+                // (isNewObj=false, the Roslyn `call .ctor` lowering) for the runtime
+                // Call_Redirect write-back (CopyNeoCallThisBack) to propagate to the
+                // caller's local. Mirrors the Legacy `Ctor_0` isNewObj/WriteBack split.
+                sb.AppendLine("            if (isNewObj) { if (__retDst != null) ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __thisSz); }");
+                sb.AppendLine("            else { ILIntepreter.WriteNeoValueType(result_of_this_method, __frameBase, __thisSz); }");
+            }
+            else
+            {
+                type.GetReturnValueCodeNeo(sb);
+            }
 
             sb.AppendLine("        }");
         }
