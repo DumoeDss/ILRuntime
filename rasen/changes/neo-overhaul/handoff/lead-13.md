@@ -1,4 +1,12 @@
-# Handoff: neo-overhaul -- LEAD #13 (7-child correctness wave; triage sweeps COMPLETE)
+# Handoff: neo-overhaul -- LEAD #13 (8-child correctness wave; triage sweeps COMPLETE)
+
+> **ADDENDUM (post-handoff):** child 28 (`neo-float-vtreturn-opaddition`, commit pending) was completed AFTER
+> this handoff was first written -- it drove the HIGHEST-value newly-surfaced candidate (the float-ctor /
+> op_Addition VT-return gap). Root cause = STALE committed autogen TestVector3 binding stubs (never regenerated
+> post-Step-13b), NOT an engine bug. NeoStep 375->378. See the Child 28 section in planning-context.md +
+> portfolio-run.json. This brings the session total to **8 children (21-28)**, NeoStep **354->378** (+24 probes).
+> The "Next action" float-ctor item below is now RESOLVED; symptom-1 (struct newobj retDst=null) split off as
+> `neo-clr-struct-newobj-retdest-null`.
 
 > Read lead-12.md (the neo-overhaul COMPREHENSIVE COMPLETION, 20-child portfolio) for the PRIOR chapter.
 > This session drove the lead-12 "Remaining SMALL/LATENT follow-ups" list to completion: 7 MORE real

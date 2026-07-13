@@ -174,7 +174,7 @@ namespace ILRuntime.Runtime.CLRBinding
                 }
                 else
                 {
-                    sb.AppendLine($"            int __sz_{idx} = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({realClsName}));");
+                    sb.AppendLine($"            int __sz_{idx} = ILIntepreter.GetNeoValueTypeManagedSize(typeof({realClsName}));");
                     sb.AppendLine($"            {realClsName} {varName} = ({realClsName})ILIntepreter.ReadNeoValueType(typeof({realClsName}), __frameBase, ref __curPrim, __sz_{idx});");
                 }
             }
@@ -207,7 +207,7 @@ namespace ILRuntime.Runtime.CLRBinding
                     }
                     else
                     {
-                        sb.AppendLine($"            int __sz_{idx} = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({realClsName}));");
+                        sb.AppendLine($"            int __sz_{idx} = ILIntepreter.GetNeoValueTypeManagedSize(typeof({realClsName}));");
                         sb.AppendLine($"            {realClsName} {varName} = ({realClsName})ILIntepreter.ReadNeoValueType(typeof({realClsName}), __frameBase, ref __curPrim, __sz_{idx});");
                     }
                 }
@@ -281,7 +281,7 @@ namespace ILRuntime.Runtime.CLRBinding
                 if (elem.IsValueType)
                 {
                     string szVar = "__wb_sz_" + idx;
-                    sb.AppendLine($"            int {szVar} = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({elem.FullName}));");
+                    sb.AppendLine($"            int {szVar} = ILIntepreter.GetNeoValueTypeManagedSize(typeof({elem.FullName}));");
                     sb.AppendLine($"            ILIntepreter.WriteNeoValueType({varName}, __frameBase + {offVar}, {szVar});");
                 }
                 else
@@ -600,7 +600,7 @@ namespace ILRuntime.Runtime.CLRBinding
                 }
                 else
                 {
-                    sb.AppendLine($"            if (__retDst != null) {{ int __retSz = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({type.FullName})); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }}");
+                    sb.AppendLine($"            if (__retDst != null) {{ int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof({type.FullName})); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }}");
                 }
             }
             else

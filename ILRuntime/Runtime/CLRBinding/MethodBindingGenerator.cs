@@ -280,7 +280,7 @@ namespace ILRuntime.Runtime.CLRBinding
                     }
                     else
                     {
-                        sb.AppendLine(string.Format("            int __thisSz = ILRuntime.Runtime.Intepreter.RegisterVM.Optimizer.GetNeoValueTypeManagedSize(typeof({0}));", typeClsName));
+                        sb.AppendLine(string.Format("            int __thisSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof({0}));", typeClsName));
                         sb.AppendLine(string.Format("            {0} instance_of_this_method = ({0})ILIntepreter.ReadNeoValueType(typeof({0}), __frameBase, ref __curPrim, __thisSz);", typeClsName));
                     }
                 }

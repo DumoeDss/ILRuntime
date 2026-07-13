@@ -1050,3 +1050,41 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   runtime-detection-safe (VT-owner Stfld always byref) + regression-clean all confirmed. M1 pre-existing
   fieldInfoCache hash-collision theoretical (shared Area-4d foundation, handle-derived unique in practice);
   M2 forward-looking for the F-10 IL-instance sibling (the guard protects it today).
+
+## Child 28 DONE (neo-float-vtreturn-opaddition, shipped 2026-07-13) -- durable findings
+- **RE-AUDIT RECONCILED the suspicious "ctor yields zero" claim (it IS real, but context-specific).** `new
+  TestVector3(1f,2f,3f)` yields (0,0,0) AND `TestVector3.op_Addition`'s float VT-return yields (0,0,0) -- BOTH
+  CONFIRMED. BUT the green smoke uses `TestVector3.One` (a HOST-PRECOMPUTED static FIELD read via `ldsfld` -- the
+  precomputed bytes cross unchanged, NEVER calling the broken path). The bug manifests ONLY when IL CALLS the
+  TestVector3 ctor/operators (-> `call.redirect` -> the broken stubs). So children 3/8/15/16/21 passed because they
+  read `.One`/fields, not because the ctor/operators worked. LESSON: a struct used pervasively in green smoke can
+  STILL have broken ctors/operators if the smoke only reads precomputed statics -- re-audit the CALL path, not
+  just the field-read path.
+- **ROOT CAUSE = STALE COMMITTED AUTOGEN BINDING STUBS (the recurring child-2 defect class), NOT an engine or
+  generator bug.** The Step-13b GENERATOR is correct (emits ReadNeoValueType/WriteNeoValueType); the RUNTIME
+  reflection-fallback is correct; but the COMMITTED `ILRuntimeTest_TestFramework_TestVector3_Binding.cs` stubs
+  were NEVER REGENERATED post-Step-13b -> `op_Addition_2_Neo`/`op_Multiply_1_Neo` leave VT args as `default(...)`
+  and never write the return; `Ctor_0_Neo` discards the result. Every binder-VT method silently returns zero via
+  `call.redirect`. Full regen is GUI-bound (TestMainForm WinForms), so the fix HAND-PORTED the 4 stale stubs.
+- **THE FIX (4 hand-ported stubs + a generator latent-bug fix):** (1) hand-ported `get_One2_0_Neo`/
+  `op_Multiply_1_Neo`/`op_Addition_2_Neo`/`Ctor_0_Neo` to ReadNeoValueType/WriteNeoValueType (faithful to the
+  post-Step-13b generator template); (2) added a PUBLIC facade `ILIntepreter.GetNeoValueTypeManagedSize` +
+  repointed the generator (BindingGeneratorExtensions.cs 4 sites + MethodBindingGenerator.cs 1 site) from the
+  INTERNAL `Optimizer` class -- a LATENT GENERATOR COMPILE BUG (the generator's Step-13b emission referenced the
+  internal Optimizer class with no InternalsVisibleTo -> never compiled in the consumer). Future regen MUST use
+  the facade. Neo-gated/file-gated/generator-only -> Legacy-neutral.
+- **SYMPTOM 1 (CLR struct `newobj`) is a DISTINCT follow-up, honestly deferred.** A CLR struct `newobj` lowers to
+  `initobj; ldloca; push(this byref); call.redirect .ctor` with `retDst=-` (null) -> the runtime passes
+  `retDst=null` (`ILIntepreter.Neo.cs:~3079`) -> the ctor's write-to-retDst no-ops. The Ctor_0_Neo stub IS ported
+  (so the stub-side write is correct) but the result has nowhere to land on the autogen newobj path until the
+  retDst-null contract is fixed. NEXT follow-up: the struct-newobj dest convention.
+- **Verify:** NeoStep **378/0** (375 + 3 probes: op_Addition=9 + op_Multiply=18 + child-26 `arr[0]+=One`=6);
+  stash-toggle (revert ONLY the binding file to HEAD's stale stubs) -> 3/3 FAULT (DivByZero) -> restore -> 3/3
+  PASS -- proves the binding stubs are load-bearing (the engine + generator changes are enabling). Probe arithmetic
+  host-side-asserted (sidesteps the conv.i4-float bug). Legacy-neutral. Files: `ILIntepreter.Neo.cs` (+14 facade),
+  `BindingGeneratorExtensions.cs`/`MethodBindingGenerator.cs` (5 repoint sites), `ILRuntimeTest_TestFramework_
+  TestVector3_Binding.cs` (4 stubs), `TestClass3.cs` (+24 host helpers), new `TestCases/NeoStepFloatVtReturnTest.cs`.
+  Capability = `neo-value-types`. Review: APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Root-cause-
+  sound (stale stubs, not engine) + generator-change-justified (Optimizer internal, facade load-bearing) + stubs-
+  faithful-to-template all confirmed. F1 get_One2/Ctor stubs not directly exercised (coverage gap, stash-toggle
+  proves operators), F2 Ctor return-write dead on current path (correct by template, fires post-symptom-1).

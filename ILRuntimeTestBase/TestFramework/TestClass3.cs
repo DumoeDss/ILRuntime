@@ -224,6 +224,30 @@ namespace ILRuntimeTest.TestFramework
             return o.S.a + o.S.b + o.S.c;
         }
 
+        // ---- neo-float-vtreturn-opaddition DIAGNOSTIC helpers. Read-back + assert
+        //      happen on the CLR (host) side so the probes do not depend on Neo
+        //      float arithmetic (addi/conv.i4 bit-reinterpret). NeoAssertEq throws
+        //      with the ACTUAL value in the message so a diagnosis run reveals the
+        //      real computed sum (not just pass/fail). SumTestVector3ArrElem reads
+        //      the array element on the HOST side (sidesteps the separately-broken
+        //      ldelem.any CLR-struct-array path). ----
+        public static int SumTestVector3ArrElem(TestVector3[] arr, int i)
+        {
+            return (int)(arr[i].X + arr[i].Y + arr[i].Z);
+        }
+        // Host-built array so an IL probe can exercise `arr[0] += TestVector3.One`
+        // (ldobj + op_Addition + stobj) WITHOUT depending on the separately-broken
+        // stelem.any/ldelem.any CLR-struct-array paths (child-26 noted). arr[0]=(1,1,1).
+        public static TestVector3[] BuildTestVector3OneArray()
+        {
+            return new TestVector3[] { TestVector3.One };
+        }
+        public static void NeoAssertEq(int actual, int expected, string label)
+        {
+            if (actual != expected)
+                throw new Exception("[NeoDiag " + label + "] actual=" + actual + " expected=" + expected);
+        }
+
         // ---- neo-byref-array-element-marshal host helpers. IL lowers
         //      `M(ref arr[i])` to `ldelema <T>; call M` -- the byref routes through
         //      CopyNeoCallArguments -> NeoMarshalByrefFieldToSlot (forward) and

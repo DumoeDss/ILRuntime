@@ -160,7 +160,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             var result_of_this_method = ILRuntimeTest.TestFramework.TestVector3.One2;
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3)); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* get_One2_0(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)
@@ -185,11 +185,11 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            ILRuntimeTest.TestFramework.TestVector3 @a = default(ILRuntimeTest.TestFramework.TestVector3);
-            // TODO: CLR value type reflection fallback: Step 13
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3));
+            ILRuntimeTest.TestFramework.TestVector3 @a = (ILRuntimeTest.TestFramework.TestVector3)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.TestVector3), __frameBase, ref __curPrim, __sz_0);
             System.Single @b = ILIntepreter.ReadNeoFloat(__frameBase, ref __curPrim);
             var result_of_this_method = @a * @b;
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3)); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* op_Multiply_1(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)
@@ -227,12 +227,12 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            ILRuntimeTest.TestFramework.TestVector3 @a = default(ILRuntimeTest.TestFramework.TestVector3);
-            // TODO: CLR value type reflection fallback: Step 13
-            ILRuntimeTest.TestFramework.TestVector3 @b = default(ILRuntimeTest.TestFramework.TestVector3);
-            // TODO: CLR value type reflection fallback: Step 13
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3));
+            ILRuntimeTest.TestFramework.TestVector3 @a = (ILRuntimeTest.TestFramework.TestVector3)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.TestVector3), __frameBase, ref __curPrim, __sz_0);
+            int __sz_1 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3));
+            ILRuntimeTest.TestFramework.TestVector3 @b = (ILRuntimeTest.TestFramework.TestVector3)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.TestVector3), __frameBase, ref __curPrim, __sz_1);
             var result_of_this_method = @a + @b;
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3)); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* op_Addition_2(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)
@@ -663,7 +663,7 @@ namespace ILRuntime.Runtime.Generated
             System.Single @y = ILIntepreter.ReadNeoFloat(__frameBase, ref __curPrim);
             System.Single @z = ILIntepreter.ReadNeoFloat(__frameBase, ref __curPrim);
             ILRuntimeTest.TestFramework.TestVector3 result_of_this_method = new ILRuntimeTest.TestFramework.TestVector3(@x, @y, @z);
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3)); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* Ctor_0(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)
