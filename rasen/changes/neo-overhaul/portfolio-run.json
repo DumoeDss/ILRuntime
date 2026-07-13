@@ -748,6 +748,23 @@
       "smoke": "FULL SMOKE 104->103 (-1, IT15); stash-toggle airtight; NeoStep 382/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; honest partial -- C14 mostly resolved by C2; byref write-back fixed; 2 distinct follow-ups reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-lowerneoffsets-push-missing": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C7 JIT bug (child-1/14 lineage, 4th): new CLR-struct ctor with ValueTypeBinder redirect (>=3 params) -- JIT rewrites Newobj->Call_Redirect stamping Operand4 bit 0x2 (Newobj-origin), but LowerNeoOffsets saw Call_Redirect, re-bumped pCnt -> phantom Push -> throw. Fix = isNeoNewobjShape discriminator (same bit 0x2 runtime already keys).",
+      "prerequisites": [
+        "neo-target-exception-mismatch"
+      ],
+      "dependsOn": [
+        "neo-target-exception-mismatch"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 103->101 (-2); UnitTest_10027 + 1 transitive; stash-toggle airtight; NeoStep 382/0 (core LowerNeoOffsets change, no regression); Legacy-neutral (file-gated)",
+      "review": "APPROVE (LEAD non-author; bit-0x2 collision-free audited; NeoStep broad green; StructTest7/DelegateTest24 unmasked to pre-existing deferred siblings)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -790,7 +807,8 @@
     "neo-async-statemachine-null",
     "neo-hotfix-not-bound-audit",
     "neo-iltypeinstance-parameterless-ctor",
-    "neo-target-exception-mismatch"
+    "neo-target-exception-mismatch",
+    "neo-lowerneoffsets-push-missing"
   ],
   "surfacedFollowups": [
     {
@@ -972,6 +990,7 @@
     "fullSmokeAfterC9": 110,
     "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target).",
     "fullSmokeAfterC5": 104,
-    "fullSmokeAfterC14": 103
+    "fullSmokeAfterC14": 103,
+    "fullSmokeAfterC7": 101
   }
 }

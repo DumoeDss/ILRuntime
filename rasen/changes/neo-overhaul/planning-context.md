@@ -1128,3 +1128,49 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   from `ILRuntimeTestCLI/bin/Debug_Neo/net8.0/`, producing a misleading "Cannot find method" KeyNotFoundException
   even though the TestCases-side DLL is fresh. (Kills dotnet build-server + `-p:UseSharedCompilation=false` + rebuild
   the CLI.)
+
+## Wave-2 C7 DONE (neo-lowerneoffsets-push-missing, 2026-07-14) -- durable findings
+- **THE NEW Push-deletion shape (the crux, JIT-dump-confirmed):** a CLR `Newobj` whose target has a
+  redirect (e.g. `TestVector3::.ctor(float,float,float)` with a ValueTypeBinder redirect) is rewritten
+  by the JIT from `Newobj` to `Call_Redirect`, marking the Newobj origin in `Operand4` bit `0x2`
+  (`JITCompiler.cs` Newobj case: `op.Operand4 = 0x2 | rCnt<<16`). The JIT's Newobj path computes `pCnt`
+  WITHOUT the implicit-`this` bump (the `this` is the newobj RESULT, not an explicit arg) and emits
+  `max(pCnt-3,0)` synthetic Pushes. But `LowerNeoOffsets` saw `op.Code == Call_Redirect` (not Newobj)
+  and re-applied the HasThis bump -> `pCnt=PC+1` -> `pushCnt` one larger than the JIT emitted -> scanned
+  backwards for a nonexistent Push -> threw "Neo lowering could not find expected Push instructions for
+  Call/Newobj." Triggered by ANY CLR redirect ctor with >=3 declared params (3-param ctor is the
+  minimal trigger: bump makes pCnt=4, pushCnt=1, foundPushes=0).
+- **THE FIX (1 file, `Optimizer.Neo.cs` LowerNeoOffsets Call/Newobj case):** compute
+  `bool isNeoNewobjShape = op.Code == Newobj || (op.Code == Call_Redirect && (op.Operand4 & 0x2) != 0);`
+  and substitute it for `op.Code == Newobj` at ALL 10 param-layout sites (pCnt bump, paramInfos
+  'this'-slot reservation, dstIndex x2, paramType/Parameters index, dstIsVtThisSlot, paramLogical,
+  AllocNeoParamInfosFromSignature, totalParams, dest DstOffset/Operand3 stamping). This makes a
+  Newobj-originated Call_Redirect produce a BYTE-IDENTICAL NeoCallParamMap + dest layout as a genuine
+  Newobj -- which is exactly what the runtime consumes (the `Call_Redirect` arm's
+  `crIsNewObj = (ip->Operand4 & 0x2)==0x2` -> `InvokeNeoClrMethod(targetMethod, true, ...)` is
+  identical to the `Newobj` arm's `InvokeNeoClrMethod(clrCtor, true, ...)`).
+- **DISCRIMINATOR COLLISION-FREE (audited):** `Operand4` bit `0x2` is set ONLY in the JIT Newobj
+  redirect path. The Call/Callvirt redirect path (`JITCompiler.cs:2779-2788`) starts Operand4 at 0 and
+  ORs only `0x1` (constrained) / `0x4` (hasReturn) / `rCnt<<16` -- never `0x2`. So
+  `(op.Operand4 & 0x2) != 0` uniquely identifies a Newobj-originated Call_Redirect. This is the
+  JIT-side counterpart of the runtime's own `crIsNewObj` check (`ILIntepreter.Neo.cs:3251`) -- USE THE
+  SAME BIT for any future "is this Call_Redirect a Newobj?" question in either pass.
+- **ONLY THE 2ND COPY WAS BUGGY (two copies of the same pCnt/Push-scan logic exist in
+  `Optimizer.Neo.cs`):** (a) the alias-liveness analysis pass (~line 236-288) reads Pushes WITHOUT
+  deleting to recover overflow-arg registers for byref-escape analysis -- its Call-family case list
+  does NOT include `Call_Redirect`, so it never hit this bug; LEFT UNCHANGED. (b) the Push-deletion +
+  map-build pass (~line 1216+) DOES include `Call_Redirect` -- this is the one that threw; FIXED.
+  LATENT: if `Call_Redirect` is ever added to the alias pass case list, it needs the same
+  `isNeoNewobjShape` treatment for its byref-escape paramLogical.
+- **C7 unmasked 2 deferred siblings (NOT C7, do NOT re-attribute):** once the JIT throw is gone,
+  `StructTest7` reaches the F-10 ManagedObjects tagged NIE (raw Stfld on a CLR-struct field of an IL
+  instance -- child-27/29 deferred shape) and `DelegateTest24` reaches its own `res!=6` assertion
+  because `new TestVector3(float,float,float)` still yields zero (child-28 struct-newobj retDst
+  follow-up, explicitly out-of-scope at `NeoStepFloatVtReturnTest.cs:27`). The C7 JIT throw was
+  MASKING both.
+- **Verify:** 0 "Push" exceptions post-fix. `UnitTest_10027` PASS (was throw). NeoStep **382/0**
+  (no regression; the change only alters behavior for Call_Redirect with Operand4 bit 0x2 -- for every
+  other opcode `isNeoNewobjShape` == the old `op.Code==Newobj`). Full Neo smoke **103 -> 101** (delta
+  -2; UnitTest_10027 + 1 transitive callee unblock). Legacy-neutral: `Optimizer.Neo.cs` is
+  `#if ENABLE_NEO_MODE`-gated (file-level). Files: `Optimizer.Neo.cs` (1 file, ~30 added / 0 removed;
+  the `isNeoNewobjShape` definition + 10 site substitutions). Capability = `neo-optimizer`.

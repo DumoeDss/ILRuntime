@@ -1226,8 +1226,20 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 break;
                             
                             int pCnt = targetMethod.ParameterCount;
-                            if (targetMethod.HasThis && op.Code != OpCodeREnum.Newobj) pCnt++;
-                            
+                            // A CLR Newobj with a redirect is rewritten by the JIT from Newobj to
+                            // Call_Redirect (this is the LOWERING pass, not the emitter). The JIT's
+                            // Newobj path computes pCnt WITHOUT the implicit-`this` bump (the `this`
+                            // is the newobj RESULT, not an explicit arg) and emits max(pCnt-3,0)
+                            // synthetic Pushes (JITCompiler.cs Newobj case). Operand4 bit 0x2 is the
+                            // JIT's marker that this Call_Redirect originated from a Newobj (Newobj
+                            // case: `op.Operand4 = 0x2`; the Call/Callvirt path never sets 0x2 -- it
+                            // uses 0x1 constrained / 0x4 hasReturn / rCnt<<16). Without recognizing
+                            // this shape, the HasThis bump would make pCnt=PC+1, expect a phantom
+                            // Push the JIT never emitted, and throw "could not find expected Push".
+                            bool isNeoNewobjShape = op.Code == OpCodeREnum.Newobj ||
+                                (op.Code == OpCodeREnum.Call_Redirect && (op.Operand4 & 0x2) != 0);
+                            if (targetMethod.HasThis && !isNeoNewobjShape) pCnt++;
+
                             bool hasConstrained = op.Code != OpCodeREnum.Callvirt_IL &&
                                 op.Code != OpCodeREnum.Callvirt_CLR &&
                                 op.Code != OpCodeREnum.Callvirt_Interface &&
@@ -1265,7 +1277,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             }
                             
                             if (foundPushes != pushCnt)
-                                throw new Exception("Neo lowering could not find expected Push instructions for Call/Newobj.");
+                                throw new Exception($"Neo lowering could not find expected Push instructions for Call/Newobj. [code={op.Code} method={targetMethod} ParameterCount={targetMethod?.ParameterCount} HasThis={targetMethod?.HasThis} isNeoNewobjShape={isNeoNewobjShape} hasConstrained={hasConstrained} op4={op.Operand4} pCnt={pCnt} pushCnt={pushCnt} foundPushes={foundPushes}]");
                             
                              StackSlotInfo[] paramInfos = null;
                             if (targetMethod is ILRuntime.CLR.Method.ILMethod ilm)
@@ -1277,15 +1289,15 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 // concrete impl shares this signature, so the argument
                                 // copy is valid.
                                 if (paramInfos == null)
-                                    paramInfos = AllocNeoParamInfosFromSignature(targetMethod, op.Code == OpCodeREnum.Newobj, domain);
+                                    paramInfos = AllocNeoParamInfosFromSignature(targetMethod, isNeoNewobjShape, domain);
                             }
                             else if (targetMethod is ILRuntime.CLR.Method.CLRMethod clrMethod)
                             {
                                 // Generate contiguous paramInfos for CLRMethod
-                                int totalParams = pCnt + (op.Code == OpCodeREnum.Newobj ? 1 : 0);
+                                int totalParams = pCnt + (isNeoNewobjShape ? 1 : 0);
                                 paramInfos = new StackSlotInfo[totalParams];
                                 int curPrim = 0, curRef = 0;
-                                if (op.Code == OpCodeREnum.Newobj)
+                                if (isNeoNewobjShape)
                                 {
                                     paramInfos[0] = new StackSlotInfo { Offset = curPrim, Size = 4, RefOffset = curRef, RefCount = 1 };
                                     curPrim += 4;
@@ -1293,12 +1305,12 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 }
                                 for (int p = 0; p < pCnt; p++)
                                 {
-                                    int dstIndex = (op.Code == OpCodeREnum.Newobj) ? p + 1 : p;
+                                    int dstIndex = (isNeoNewobjShape) ? p + 1 : p;
                                     CLR.TypeSystem.IType paramType;
-                                    if (targetMethod.HasThis && op.Code != OpCodeREnum.Newobj && p == 0)
+                                    if (targetMethod.HasThis && !isNeoNewobjShape && p == 0)
                                         paramType = targetMethod.DeclearingType;
                                     else
-                                        paramType = clrMethod.Parameters[p - ((targetMethod.HasThis && op.Code != OpCodeREnum.Newobj) ? 1 : 0)];
+                                        paramType = clrMethod.Parameters[p - ((targetMethod.HasThis && !isNeoNewobjShape) ? 1 : 0)];
 
                                     // Step 13b (D1): ALL parameter types -- including CLR value
                                     // types -- flow through the unified AllocateNeoCallParamSlot
@@ -1354,7 +1366,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 {
                                     var srcInfo = localInfos[srcRegs[p]];
                                     // For Newobj, the ILMethod paramInfos[0] is 'this', so we need to offset the dstInfo by 1
-                                    int dstIndex = (op.Code == OpCodeREnum.Newobj) ? p + 1 : p;
+                                    int dstIndex = (isNeoNewobjShape) ? p + 1 : p;
                                     var dstInfo = paramInfos[dstIndex];
 
                                     // Step 13 Area 4b: a CLR value-type instance `this`
@@ -1369,7 +1381,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     // the byref verbatim. (A by-value VT PARAM also
                                     // has a flat-bytes dest but its source is the
                                     // struct local directly, not a byref -- no flag.)
-                                    bool dstIsVtThisSlot = (targetMethod.HasThis && op.Code != OpCodeREnum.Newobj && p == 0)
+                                    bool dstIsVtThisSlot = (targetMethod.HasThis && !isNeoNewobjShape && p == 0)
                                         && targetMethod.DeclearingType != null
                                         && targetMethod.DeclearingType.IsValueType
                                         && !(targetMethod.DeclearingType.IsPrimitive
@@ -1385,7 +1397,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     // frame-native-only subset; the param case adds the
                                     // mStack-object sub-case (handled at runtime by the
                                     // objIdx discriminator in CopyNeoCallArguments).
-                                    int paramLogical = p - ((targetMethod.HasThis && op.Code != OpCodeREnum.Newobj) ? 1 : 0);
+                                    int paramLogical = p - ((targetMethod.HasThis && !isNeoNewobjShape) ? 1 : 0);
                                     bool dstIsByRefParam = false;
                                     bool byRefWriteBack = false;
                                     System.Type byRefElemType = null;
@@ -1448,7 +1460,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 callParams.Add(map);
                             }
                             
-                            if (op.Code == OpCodeREnum.Newobj)
+                            if (isNeoNewobjShape)
                             {
                                 short r1 = op.Register1; // Destination
                                 int off1 = localInfos[r1].Offset;
