@@ -629,6 +629,23 @@
       "smoke": "FULL SMOKE 140->133 (-7); C2 flipped 6 (InheritanceTest01/02/03/04/14 + TestIs.TestInterface) + InheritanceTest05 bonus; stash-toggle airtight; NeoStep 380/0; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). projection-no-overfire PASS (only ILTypeInstance by-value CLR-ref param + non-VT this; caller frame never mutated; byref skipped; stride consistent). Minor-1/2/3 documented deferrals.",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-ilruntimetype-runtime-bridge": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C12: Delegate.CreateDelegate/Enum.ToObject bridge redirects on Legacy RedirectMap only -> Neo fell through -> Type must be a runtime Type. 4th missing-Neo-redirect instance. Fix=4 Neo twins + register RedirectMapNeo.",
+      "prerequisites": [
+        "neo-iltype-cast-clr-base"
+      ],
+      "dependsOn": [
+        "neo-iltype-cast-clr-base"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 133->122 (-11); all 10 C12 green; stash-toggle airtight; NeoStep 380/0; Legacy-neutral",
+      "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major). 3 delegate twins byte-match Legacy; EnumToObject IL-enum branch faithful. Minor-1 benign divergence on non-IL branches.",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -664,7 +681,8 @@
     "neo-raw-ldfld-clr-object-vt-field",
     "neo-delegate-adapter-clr-cast",
     "neo-callvirt-gettype-vtable",
-    "neo-iltype-cast-clr-base"
+    "neo-iltype-cast-clr-base",
+    "neo-ilruntimetype-runtime-bridge"
   ],
   "surfacedFollowups": [
     {
@@ -838,6 +856,7 @@
       "C6/C13/C14/C3 + AV"
     ],
     "fullSmokeAfterC4": 140,
-    "fullSmokeAfterC2": 133
+    "fullSmokeAfterC2": 133,
+    "fullSmokeAfterC12": 122
   }
 }

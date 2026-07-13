@@ -272,6 +272,15 @@ namespace ILRuntime.Runtime.Enviorment
                 if (i.Name == "ToObject" && i.GetParameters()[1].ParameterType == typeof(int))
                 {
                     RegisterCLRMethodRedirection(i, CLRRedirections.EnumToObject);
+#if ENABLE_NEO_MODE
+                    // C12 (neo-ilruntimetype-runtime-bridge): the autogen
+                    // ToObject_3_Neo stub passes the ILRuntimeType raw to the
+                    // framework Enum.ToObject -> "Type must be a type provided
+                    // by the runtime". Register the hand-written Neo redirect
+                    // (first-registered-wins: this ctor runs before the
+                    // test-harness CLRBindings.Initialize autogen Register).
+                    RegisterCLRMethodRedirectionNeo(i, CLRRedirections.EnumToObjectNeo);
+#endif
                 }
             }
             mi = typeof(System.Type).GetMethod("GetTypeFromHandle");
@@ -289,10 +298,24 @@ namespace ILRuntime.Runtime.Enviorment
 #endif
             mi = typeof(Delegate).GetMethod("CreateDelegate", new Type[] { typeof(Type), typeof(MethodInfo) });
             RegisterCLRMethodRedirection(mi, CLRRedirections.DelegateCreateDelegate);
+#if ENABLE_NEO_MODE
+            // C12 (neo-ilruntimetype-runtime-bridge): Neo dispatch consults
+            // RedirectMapNeo exclusively. Without a Neo entry the reflection
+            // fallback passed the ILRuntimeType raw to the framework
+            // Delegate.CreateDelegate -> "Type must be a runtime Type".
+            // First-registered-wins preempts any autogen CreateDelegate stub.
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.DelegateCreateDelegateNeo);
+#endif
             mi = typeof(Delegate).GetMethod("CreateDelegate", new Type[] { typeof(Type), typeof(object), typeof(string) });
             RegisterCLRMethodRedirection(mi, CLRRedirections.DelegateCreateDelegate2);
+#if ENABLE_NEO_MODE
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.DelegateCreateDelegate2Neo);
+#endif
             mi = typeof(Delegate).GetMethod("CreateDelegate", new Type[] { typeof(Type), typeof(object), typeof(MethodInfo) });
             RegisterCLRMethodRedirection(mi, CLRRedirections.DelegateCreateDelegate3);
+#if ENABLE_NEO_MODE
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.DelegateCreateDelegate3Neo);
+#endif
             mi = typeof(Delegate).GetMethod("get_Target");
             RegisterCLRMethodRedirection(mi, CLRRedirections.DelegateGetTarget);
             dMgr = new DelegateManager(this);

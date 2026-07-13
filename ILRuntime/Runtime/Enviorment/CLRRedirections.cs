@@ -782,6 +782,235 @@ namespace ILRuntime.Runtime.Enviorment
             }
             WriteNeoObjectResult(mStack, retDst, retRefBase, result);
         }
+
+        // C12 (neo-ilruntimetype-runtime-bridge): Neo redirect for
+        // Delegate.CreateDelegate(Type, MethodInfo). Mirrors the Legacy
+        // DelegateCreateDelegate (CLRRedirections.cs:1607). Under Neo the
+        // Legacy redirect (on RedirectMap only) never runs -> the reflection
+        // fallback passed the ILRuntimeType raw to the framework
+        // Delegate.CreateDelegate, throwing "Type must be a runtime Type".
+        // Params are read in DECLARATION order via the Neo cursor (param 0 =
+        // Type, param 1 = MethodInfo); Legacy read them stack-reverse. For an
+        // ILRuntimeType delegate + ILRuntimeMethodInfo -> build the IL delegate
+        // adapter (DelegateManager.FindDelegateAdapter); for an
+        // ILRuntimeWrapperType -> adapter or host Delegate.CreateDelegate; else
+        // host Delegate.CreateDelegate. Registered on RedirectMapNeo in the
+        // AppDomain ctor (first-registered-wins preempts any autogen stub).
+        public unsafe static void DelegateCreateDelegateNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            AppDomain domain = intp.AppDomain;
+            int curPrim = 0;
+            Type t = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            MethodInfo mi = (MethodInfo)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result;
+            if (t is ILRuntimeType)
+            {
+                ILType it = ((ILRuntimeType)t).ILType;
+                if (it.IsDelegate)
+                {
+                    var m = it.GetMethod("Invoke") as ILMethod;
+                    if (mi is ILRuntimeMethodInfo)
+                    {
+                        ILRuntimeMethodInfo imi = (ILRuntimeMethodInfo)mi;
+                        var ilMethod = imi.ILMethod;
+                        if (ilMethod.DelegateAdapter == null)
+                        {
+                            ilMethod.DelegateAdapter = domain.DelegateManager.FindDelegateAdapter(null, ilMethod, m);
+                        }
+                        result = ilMethod.DelegateAdapter;
+                    }
+                    else
+                    {
+                        throw new NotSupportedException();
+                    }
+                }
+                else
+                    throw new NotSupportedException(string.Format("{0} is not Delegate", t.FullName));
+            }
+            else if (t is ILRuntimeWrapperType)
+            {
+                ILRuntimeWrapperType iwt = (ILRuntimeWrapperType)t;
+                if (mi is ILRuntimeMethodInfo)
+                {
+                    ILRuntimeMethodInfo imi = (ILRuntimeMethodInfo)mi;
+                    result = domain.DelegateManager.FindDelegateAdapter(iwt.CLRType, null, imi.ILMethod);
+                }
+                else
+                {
+                    result = Delegate.CreateDelegate(iwt.RealType, mi);
+                }
+            }
+            else
+                result = Delegate.CreateDelegate(t, mi);
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
+        // C12: Neo redirect for Delegate.CreateDelegate(Type, object, string).
+        // Mirrors Legacy DelegateCreateDelegate2 (CLRRedirections.cs:1666).
+        public unsafe static void DelegateCreateDelegate2Neo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            AppDomain domain = intp.AppDomain;
+            int curPrim = 0;
+            Type t = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object obj = (object)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            string name = (string)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            if (obj == null)
+                throw new ArgumentNullException("Argument target cannot be null");
+            object result;
+            if (t is ILRuntimeType)
+            {
+                ILType it = ((ILRuntimeType)t).ILType;
+                if (it.IsDelegate)
+                {
+                    var m = it.GetMethod("Invoke") as ILMethod;
+                    if (obj is ILTypeInstance)
+                    {
+                        ILTypeInstance ii = (ILTypeInstance)obj;
+                        var ilMethod = ii.Type.GetMethod(name) as ILMethod;
+                        if (ilMethod == null)
+                            throw new ArgumentException(string.Format("Cannot find method \"{0}\" in type {1}", name, it.FullName));
+                        if (ilMethod.DelegateAdapter == null)
+                        {
+                            ilMethod.DelegateAdapter = domain.DelegateManager.FindDelegateAdapter(ii, ilMethod, m);
+                        }
+                        result = ilMethod.DelegateAdapter;
+                    }
+                    else
+                        throw new NotSupportedException();
+                }
+                else
+                    throw new NotSupportedException(string.Format("{0} is not Delegate", t.FullName));
+            }
+            else if (t is ILRuntimeWrapperType)
+            {
+                ILRuntimeWrapperType iwt = (ILRuntimeWrapperType)t;
+                if (obj is ILTypeInstance)
+                {
+                    ILTypeInstance ii = (ILTypeInstance)obj;
+                    var ilMethod = ii.Type.GetMethod(name) as ILMethod;
+                    if (ilMethod == null)
+                        throw new ArgumentException(string.Format("Cannot find method \"{0}\" in type {1}", name, ii.Type.FullName));
+                    result = domain.DelegateManager.FindDelegateAdapter(iwt.CLRType, ii, ilMethod);
+                }
+                else
+                {
+                    result = Delegate.CreateDelegate(iwt.RealType, obj, name);
+                }
+            }
+            else
+                result = Delegate.CreateDelegate(t, obj, name);
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
+        // C12: Neo redirect for Delegate.CreateDelegate(Type, object, MethodInfo).
+        // Mirrors Legacy DelegateCreateDelegate3 (CLRRedirections.cs:1733).
+        public unsafe static void DelegateCreateDelegate3Neo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            AppDomain domain = intp.AppDomain;
+            int curPrim = 0;
+            Type t = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object obj = (object)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            MethodInfo mi = (MethodInfo)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result;
+            if (t is ILRuntimeType)
+            {
+                ILType it = ((ILRuntimeType)t).ILType;
+                if (it.IsDelegate)
+                {
+                    if (mi is ILRuntimeMethodInfo)
+                    {
+                        ILRuntimeMethodInfo imi = (ILRuntimeMethodInfo)mi;
+                        var ilMethod = imi.ILMethod;
+                        if (obj != null)
+                        {
+                            result = ((ILTypeInstance)obj).GetDelegateAdapter(ilMethod);
+                            if (result == null)
+                            {
+                                var invokeMethod = it.GetMethod("Invoke", ilMethod.ParameterCount);
+                                if (invokeMethod == null && ilMethod.IsExtend)
+                                {
+                                    invokeMethod = it.GetMethod("Invoke", ilMethod.ParameterCount - 1);
+                                }
+                                result = domain.DelegateManager.FindDelegateAdapter(
+                                    (ILTypeInstance)obj, ilMethod, invokeMethod);
+                            }
+                        }
+                        else
+                        {
+                            if (ilMethod.DelegateAdapter == null)
+                            {
+                                var m = it.GetMethod("Invoke") as ILMethod;
+                                ilMethod.DelegateAdapter = domain.DelegateManager.FindDelegateAdapter(null, ilMethod, m);
+                            }
+                            result = ilMethod.DelegateAdapter;
+                        }
+                    }
+                    else
+                    {
+                        throw new NotSupportedException();
+                    }
+                }
+                else
+                    throw new NotSupportedException(string.Format("{0} is not Delegate", t.FullName));
+            }
+            else if (t is ILRuntimeWrapperType)
+            {
+                ILRuntimeWrapperType iwt = (ILRuntimeWrapperType)t;
+                if (mi is ILRuntimeMethodInfo)
+                {
+                    ILRuntimeMethodInfo imi = (ILRuntimeMethodInfo)mi;
+                    result = domain.DelegateManager.FindDelegateAdapter(iwt.CLRType, obj as ILTypeInstance, imi.ILMethod);
+                }
+                else
+                {
+                    result = Delegate.CreateDelegate(iwt.RealType, obj, mi);
+                }
+            }
+            else
+                result = Delegate.CreateDelegate(t, obj, mi);
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
+        // C12: Neo redirect for Enum.ToObject(Type, int). Mirrors Legacy
+        // EnumToObject (CLRRedirections.cs:1509). Under Neo the autogen
+        // ToObject_3_Neo stub (System_Enum_Binding.cs:173) passes the
+        // ILRuntimeType raw to the framework Enum.ToObject -> "Type must be a
+        // type provided by the runtime". This redirect bridges an IL enum type
+        // to an ILEnumTypeInstance carrying the underlying value. Param 0 =
+        // Type (reference), param 1 = int (primitive, via ReadNeoInt32). Under
+        // Neo an ILEnumTypeInstance stores its value as raw bytes in
+        // `fields` (sized to the underlying primitive), so the int is written
+        // as the underlying-type bytes (sign-extended for a long-backed enum,
+        // truncated for byte/short).
+        public unsafe static void EnumToObjectNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            Type t = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            int val = ILIntepreter.ReadNeoInt32(frameBase, ref curPrim);
+            object result;
+            if (t is ILRuntimeType)
+            {
+                ILType it = ((ILRuntimeType)t).ILType;
+                if (it.IsEnum)
+                {
+                    ILEnumTypeInstance ins = new ILEnumTypeInstance(it);
+                    byte[] fields = ins.Primitives;
+                    byte[] raw = fields.Length == 8 ? BitConverter.GetBytes((long)val) : BitConverter.GetBytes(val);
+                    int n = fields.Length < raw.Length ? fields.Length : raw.Length;
+                    Buffer.BlockCopy(raw, 0, fields, 0, n);
+                    result = ins;
+                }
+                else
+                    throw new Exception(string.Format("{0} is not Enum", t.FullName));
+            }
+            else if (t is ILRuntimeWrapperType)
+            {
+                result = Enum.ToObject(((ILRuntimeWrapperType)t).RealType, val);
+            }
+            else
+                result = Enum.ToObject(t, val);
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
 #endif
 
         public unsafe static StackObject* DelegateCombine(ILIntepreter intp, StackObject* esp, AutoList mStack, CLRMethod method, bool isNewObj)
