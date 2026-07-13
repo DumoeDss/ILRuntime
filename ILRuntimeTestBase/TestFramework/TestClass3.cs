@@ -224,6 +224,17 @@ namespace ILRuntimeTest.TestFramework
             return o.S.a + o.S.b + o.S.c;
         }
 
+        // ---- neo-raw-ldfld-clr-object-vt-field host SETUP helper. The STRUCT
+        //      FIELD VALUES are written on the CLR (host) side so an IL probe can
+        //      exercise the Neo `x = owner.S.field` raw Ldfld READ WITHOUT
+        //      depending on the Neo raw Stfld WRITE (child-27, the sibling) or on
+        //      Neo float arithmetic. This isolates the READ path under test: the
+        //      probe only reads, the host pre-populates the struct field. ----
+        public static NeoClrObjVtFieldOwner BuildNeoClrObjVtFieldOwner(int a, int b, int c)
+        {
+            return new NeoClrObjVtFieldOwner { S = new NeoClrObjVtFieldProbe { a = a, b = b, c = c } };
+        }
+
         // ---- neo-float-vtreturn-opaddition DIAGNOSTIC helpers. Read-back + assert
         //      happen on the CLR (host) side so the probes do not depend on Neo
         //      float arithmetic (addi/conv.i4 bit-reinterpret). NeoAssertEq throws

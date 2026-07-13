@@ -4000,6 +4000,50 @@ namespace ILRuntime.Runtime.Intepreter
                                             object boxedElem = cArr.GetValue(elementIdx);
                                             fldVal = f.GetValue(boxedElem);
                                         }
+                                        else if ((ip->Operand4 & JITCompiler.NeoRawLdfldClrObjectFieldByRefMarker) != 0)
+                                        {
+                                            // neo-raw-ldfld-clr-object-vt-field: CLR-OBJECT-FIELD
+                                            // byref owner. `obj.Struct.field` lowers to
+                                            // `ldflda Struct(on obj); ldfld field(on the struct
+                                            // address)`; the ldflda heap-CLR-object else branch
+                                            // (~:1955) produced the 8-byte byref (objIdx,
+                                            // structFieldHash) parked in the owner slot -- NOT flat
+                                            // managed bytes. ReadNeoValueType (the flat-bytes else
+                                            // below) would reinterpret the byref ints as the struct's
+                                            // first two fields -> SILENT WRONG VALUE (the corruption
+                                            // this fixes; same shape as child-24's array-element
+                                            // read). The READ counterpart of child-27's Stfld WRITE:
+                                            // read the WHOLE struct field via the containing object's
+                                            // CLRType (NeoReadClrObjectField resolves structFieldHash
+                                            // -> the struct FieldInfo via the Fields/fieldInfoCache
+                                            // dict keyed by FieldInfo.GetHashCode()), then reflection-
+                                            // read the leaf field off the boxed struct. The existing
+                                            // dest marshalling below handles fldVal by category.
+                                            int objIdx = *(int*)(frameBase + ownerOff);
+                                            int off = *(int*)(frameBase + ownerOff + 4);
+                                            if (objIdx == -1)
+                                            {
+                                                // Defensive: the marker fires whenever the raw Ldfld's
+                                                // CIL predecessor is Ldflda. A nested ldflda-on-frame-
+                                                // local (ldloca local; ldflda X; ldfld field) produces
+                                                // a frame-native byref (-1, addr); the struct's flat
+                                                // bytes ARE at frameBase+addr -> read them directly.
+                                                int ownerSz = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
+                                                int cur = off;
+                                                object boxedOwner = ILIntepreter.ReadNeoValueType(ct.TypeForCLR, frameBase, ref cur, ownerSz);
+                                                fldVal = f.GetValue(boxedOwner);
+                                            }
+                                            else
+                                            {
+                                                object target = objIdx >= 0 ? mStack[objIdx] : null;
+                                                if (target == null)
+                                                    throw new NullReferenceException();
+                                                if (target is ILTypeInstance || target is CrossBindingAdaptorType)
+                                                    throw new NotImplementedException("Neo raw Ldfld: byref owner is an IL instance whose CLR-struct field uses F-10 ManagedObjects storage (deferred; sibling of the heap-CLR-object-field read). Field " + f.Name + " on " + ct.FullName);
+                                                object boxedStruct = NeoReadClrObjectField(AppDomain, target, off);
+                                                fldVal = f.GetValue(boxedStruct);
+                                            }
+                                        }
                                         else
                                         {
                                             // CLR value-type owner loaded by value: the owner slot

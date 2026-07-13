@@ -225,6 +225,21 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // indirection (`ref var p = ref arr[i]; p.field`) is a documented
         // follow-up, not a regression (HEAD behavior).
         public const int NeoRawLdfldArrayElementByRefMarker = 0x1;
+        // neo-raw-ldfld-clr-object-vt-field: a raw Ldfld whose owner is a byref
+        // produced by `ldflda <CLR-struct field of a CLR object>` (the READ
+        // counterpart of child-27's Stfld fix). The owner slot holds the 8-byte
+        // byref (objIdx, structFieldHash) -- NOT flat managed bytes. The untyped
+        // Neo frame cannot distinguish a flat-bytes owner (ldloc structByValue;
+        // ldfld) from this byref at runtime (a flat-bytes struct's first int
+        // field can coincidentally index a real object in mStack -> a constructible
+        // collision), so mark the shape at JIT time. Stamped when `ins.Previous`
+        // is `Code.Ldflda` -- mutually exclusive with the 0x1 Ldelema marker above
+        // (a CIL instruction has exactly one immediate predecessor: it is EITHER
+        // Ldelema OR Ldflda, never both). Bit 0x2 of the raw-Ldfld Operand4
+        // (disjoint namespace from the Ldflda-opcode markers 0x1/0x2/0x4/0x8).
+        // The marker survives LowerNeoOffsets / TypeSpecializeNeoOpcodes (same
+        // argument as 0x1: the raw-Ldfld case does not touch Operand4).
+        public const int NeoRawLdfldClrObjectFieldByRefMarker = 0x2;
         // The runtime byref offset-half flag for an F-10 byref (set by the
         // Ldflda arm): the offset half carries (ReferenceOffset | this flag) so
         // the consumer arms can distinguish "this offset is a ManagedObjects
@@ -3144,6 +3159,20 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             // (raw-Ldfld seeding case reads only OperandLong/Register1).
                             if (ins.Previous != null && ins.Previous.OpCode.Code == Code.Ldelema)
                                 op.Operand4 |= NeoRawLdfldArrayElementByRefMarker;
+                            // neo-raw-ldfld-clr-object-vt-field: the owner is a
+                            // byref produced by `ldflda <CLR-struct field of a CLR
+                            // object>` (the READ counterpart of child-27's Stfld).
+                            // `obj.Struct.field` lowers to `ldflda Struct(on obj);
+                            // ldfld field(on the struct address)` -- the ldflda is
+                            // the immediate CIL predecessor and its dest register
+                            // IS the ldfld's owner register. Mutually exclusive
+                            // with the Ldelema stamp above (one predecessor per CIL
+                            // instruction). Prefixes (readonly./constrained.)
+                            // precede ldflda, never sit between ldflda and ldfld;
+                            // a volatile./unaligned. prefix ON the ldfld itself is
+                            // a rare edge that skips the marker (fails safe).
+                            else if (ins.Previous != null && ins.Previous.OpCode.Code == Code.Ldflda)
+                                op.Operand4 |= NeoRawLdfldClrObjectFieldByRefMarker;
                         }
                     }
                     break;

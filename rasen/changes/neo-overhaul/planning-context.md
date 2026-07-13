@@ -1088,3 +1088,43 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   sound (stale stubs, not engine) + generator-change-justified (Optimizer internal, facade load-bearing) + stubs-
   faithful-to-template all confirmed. F1 get_One2/Ctor stubs not directly exercised (coverage gap, stash-toggle
   proves operators), F2 Ctor return-write dead on current path (correct by template, fires post-symptom-1).
+
+## Child 29 DONE (neo-raw-ldfld-clr-object-vt-field, shipped 2026-07-13) -- durable findings
+- **THE READ COUNTERPART of child-27 (COMPLETES the write/read pair for the CLR-object-struct-field shape).**
+  `x = obj.Struct.field` (CIL `ldflda Struct(on obj); ldfld field`) silently corrupted under Neo -- the raw-Ldfld
+  IsValueType arm reinterpreted the 8-byte byref `(objIdx, structFieldHash)` as the struct's first fields (HEAD:
+  `o.S.a` returned 4 = the owner's mStack index instead of 111; no crash, no NIE). Identical mechanism to child-24's
+  array-element read.
+- **A JIT MARKER IS MANDATORY (the marker-vs-runtime crux, confirmed by review).** The raw-Ldfld owner is EITHER
+  flat bytes (`ldloc structByValue`) OR a byref (`ldflda`/`ldelema`); a flat-bytes struct's first int can false-
+  positive as an mStack objIdx pointing to a real CLR object, AND the +4 half can coincidentally match a real
+  FieldInfo.GetHashCode() on the wrong target. No runtime discriminator exists (the owner representation is a JIT-
+  time dataflow fact). This is the SAME split as child-19/24 for the array-element shape: only the raw-Ldfld READ
+  side needs a marker; every Stfld/ldobj/stobj/byref-marshal owner is ALWAYS a byref (runtime-safe). **The write/
+  read asymmetry is now COMPLETE for both the array-element shape (child-19/24) and the CLR-object-struct-field
+  shape (child-27/29).**
+- **THE FIX (JIT marker + runtime branch, Neo-gated, ~76 lines):** a DISTINCT bit `NeoRawLdfldClrObjectFieldByRef
+  Marker = 0x2` (NOT a reuse of child-24's 0x1). Rationale: keeps child-24's shipped const byte-untouched; clean
+  single-branch semantics; the two byref shapes are mutually exclusive by CIL predecessor (one predecessor per
+  instruction: Ldelema XOR Ldflda) anyway. Stamped in `case Code.Ldfld` CLRType else-branch when `ins.Previous.
+  OpCode.Code == Code.Ldflda`. Runtime `else if` in the raw-Ldfld IsValueType branch: decode `(objIdx,
+  structFieldHash)`, defensive `objIdx==-1` flat-bytes read, else `NeoReadClrObjectField(target, off)` boxes the
+  WHOLE struct field -> `f.GetValue(boxedStruct)` reads the inner field -> marshal to dest. F-10 IL-instance guarded
+  with a tagged deferred NIE.
+- **0x2 COLLISION-FREE (audited):** the raw `OpCodeREnum.Ldfld` Operand4 is written in exactly ONE place (the
+  CLRType else-branch), occupied by exactly {0x1 = child-24 array-element, 0x2 = this PR}. All other Operand4 writes
+  target different opcodes. LowerNeoOffsets Ldfld case sets only DstOffset/SrcOffset; the push-deletion remap is
+  opcode-gated to IsIntermediateBranching (Ldfld excluded). child-24's 0x1 byte-untouched in the diff.
+- **Verify:** NeoStep **380/0** (378 + 2 probes: TC1 single-field read 111 + TC2 per-field read 111/222/333);
+  stash-toggle the 2 engine files -> both probes FAULT (DivByZero) -> pop -> 380/0 (airtight); read-back CORRECT
+  (exact per-field values); sibling families green (child-4/9/19/24/21/27/28 + NeoStep12/13/17); Legacy-neutral.
+  Files: `JITCompiler.cs` (const 0x2 + stamp), `ILIntepreter.Neo.cs` (runtime else if), `TestClass3.cs` (host
+  helper), new `TestCases/NeoStepRawLdfldClrObjVtFieldTest.cs`. Capability = `neo-value-types`. Review: APPROVE-WITH-
+  FINDINGS (reviewer!=implementer; 0 Blocker/Major). Marker-mandatory + 0x2-collision-free(audited) + branch-correct
+  + regression-clean all confirmed. M1 doc/prose (design describes TC2 as a sum but the probe is a stricter per-field
+  OR -- implemented STRONGER than described); T1/T2 trivial (comment line-refs).
+- **GOTCHA (child-25 build-server-cache, 2nd flavor):** after adding a host helper to `TestClass3.cs`, you MUST
+  rebuild the **CLI** (not just TestCases) -- the `--no-build` run loads the CLI's OWN stale `ILRuntimeTestBase.dll`
+  from `ILRuntimeTestCLI/bin/Debug_Neo/net8.0/`, producing a misleading "Cannot find method" KeyNotFoundException
+  even though the TestCases-side DLL is fresh. (Kills dotnet build-server + `-p:UseSharedCompilation=false` + rebuild
+  the CLI.)

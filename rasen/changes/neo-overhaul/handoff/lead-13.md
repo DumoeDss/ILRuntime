@@ -1,12 +1,19 @@
-# Handoff: neo-overhaul -- LEAD #13 (8-child correctness wave; triage sweeps COMPLETE)
+# Handoff: neo-overhaul -- LEAD #13 (9-child correctness wave; triage sweeps COMPLETE)
 
 > **ADDENDUM (post-handoff):** child 28 (`neo-float-vtreturn-opaddition`, commit pending) was completed AFTER
 > this handoff was first written -- it drove the HIGHEST-value newly-surfaced candidate (the float-ctor /
 > op_Addition VT-return gap). Root cause = STALE committed autogen TestVector3 binding stubs (never regenerated
 > post-Step-13b), NOT an engine bug. NeoStep 375->378. See the Child 28 section in planning-context.md +
-> portfolio-run.json. This brings the session total to **8 children (21-28)**, NeoStep **354->378** (+24 probes).
+> portfolio-run.json. This brings the session total to **9 children (21-29)**, NeoStep **354->380** (+26 probes).
 > The "Next action" float-ctor item below is now RESOLVED; symptom-1 (struct newobj retDst=null) split off as
 > `neo-clr-struct-newobj-retdest-null`.
+>
+> **ADDENDUM 2 (child 29):** `neo-raw-ldfld-clr-object-vt-field` -- the READ counterpart of child-27
+> (`x = obj.Struct.field`, silent flat-bytes-reinterpret corruption). A JIT marker (distinct bit `0x2`, not reusing
+> child-24's `0x1`) is mandatory (raw-Ldfld owner is flat-bytes-OR-byref; no runtime discriminator). COMPLETES the
+> write/read asymmetry for BOTH the array-element shape (child-19/24) AND the CLR-object-struct-field shape
+> (child-27/29). NeoStep 378->380. General rule now pinned: **only the raw-Ldfld READ side needs a JIT marker;
+> every Stfld/ldobj/stobj/byref-marshal owner is always a byref (runtime-safe).**
 
 > Read lead-12.md (the neo-overhaul COMPREHENSIVE COMPLETION, 20-child portfolio) for the PRIOR chapter.
 > This session drove the lead-12 "Remaining SMALL/LATENT follow-ups" list to completion: 7 MORE real
