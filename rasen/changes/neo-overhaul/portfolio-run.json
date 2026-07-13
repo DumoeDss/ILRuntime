@@ -612,6 +612,23 @@
       "smoke": "FULL SMOKE 153->140 (-13); 4a fixed 7 (DelegateTest38-40/EnumTest15/ReflectionTest03/TestMethodParametersInfo/StaticTest01), 4b fixed 4+2-incidental; stash-toggle airtight; NeoStep 380/0; Legacy-neutral; MAJOR-1 (NeoAOT double-cctor) fixed pre-ship",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker after MAJOR-1 fix). 4a-no-overfire CONFIRMED (fallback gated on CLRMethod; virtual Object methods stay VTable). 4b-cctor-change SAFE (lazy fires before access; single-invoke guarded on both Cecil+AOT).",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-iltype-cast-clr-base": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C2: ILTypeInstance passed as a CLR-base/interface-typed CLR-call arg wasnt unwrapped to its CrossBindingAdaptor -> InvalidCastException. Re-audit DISPROVED the castclass/isinst framing (those match Legacy); real site = autogen binding call-arg (T)ReadNeoReference missing CheckCLRTypes->CLRInstance. Fix = project ILTypeInstance->CLRInstance at InvokeNeoClrMethod choke point (redirect+reflection).",
+      "prerequisites": [
+        "neo-callvirt-gettype-vtable"
+      ],
+      "dependsOn": [
+        "neo-callvirt-gettype-vtable"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 140->133 (-7); C2 flipped 6 (InheritanceTest01/02/03/04/14 + TestIs.TestInterface) + InheritanceTest05 bonus; stash-toggle airtight; NeoStep 380/0; Legacy-neutral",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). projection-no-overfire PASS (only ILTypeInstance by-value CLR-ref param + non-VT this; caller frame never mutated; byref skipped; stride consistent). Minor-1/2/3 documented deferrals.",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -646,7 +663,8 @@
     "neo-float-vtreturn-opaddition",
     "neo-raw-ldfld-clr-object-vt-field",
     "neo-delegate-adapter-clr-cast",
-    "neo-callvirt-gettype-vtable"
+    "neo-callvirt-gettype-vtable",
+    "neo-iltype-cast-clr-base"
   ],
   "surfacedFollowups": [
     {
@@ -791,14 +809,14 @@
   },
   "planner": null,
   "sessionHandoff": {
-    "path": "handoff/lead-13.md",
-    "n": 13,
-    "pct": 0.24,
-    "afterStage": "neo-overhaul lead-12 latent follow-ups DONE (7 children 21-27 shipped; 2 triage batches winnowed; triage sweeps COMPLETE)",
-    "at": "2026-07-13",
-    "head": "2fbcef2c",
-    "baseline": "NeoStep 375/0 (354 lead-12 baseline + 21 new probes). 7 correctness children: float-seeding Call/raw-Ldfld (21), Activator CreateInstance Neo redirect (22), Ldfld_Ref seeding + bonus child-22 P1 (23), raw-Ldfld array element JIT marker (24), ref-arr[i] byref marshal (25), ldobj/stobj array element (26), raw-Stfld CLR-object VT field (27). Full Neo smoke now COMPLETES CLEANLY (902 ran/192 failed -- no more pre-crash; NIE counts exhaustive). See lead-13.md.",
-    "note": "The lead-12 latent follow-up list driven to completion. The 17-for-17 disproven streak ENDED (child 21 broke it; 7 of the next 8 candidates were REAL). Remaining = a NEW wave of freshly-surfaced candidates (float-ctor/op_Addition VT-return; raw-Ldfld-read-CLR-object-field; ldelem.any CLR-struct-array; += nested-ldflda; F-10 IL-instance CLR-struct-field) + Step 19 (delegates) + L1 (Legacy GetEnumValues, low value) + housekeeping (archive the 27 children + 3 stragglers). KEY LESSONS: re-audit every framed gap (paid off BOTH ways -- child 21/22/26/27 real, child-23 mechanism wrong); marker-vs-runtime-detection is per-opcode (ambiguous owner needs a JIT marker; an unambiguous always-byref owner = runtime-safe)."
+    "path": "handoff/lead-14.md",
+    "n": 14,
+    "pct": 0.85,
+    "afterStage": "wave-2: 3 children (C1/C4/C2) shipped, full-smoke 189->133",
+    "at": "2026-07-14",
+    "head": "(this commit)",
+    "baseline": "NeoStep 380/0; full Neo smoke 189->133 (-56 across C1/C4/C2). Grounding-driven: 187/189 failures are REAL bugs not NIEs. See lead-14.md + wave2-rootcause-plan.md (remaining ~13 clusters).",
+    "note": "User mandate drove grounding (real run) over doc-judgment. Re-audit caught wrong framings (C2). Stale-binding class recurring. .cctor stale-TODO was highest value (C4)."
   },
   "notes": "Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push. Serial-by-shared-interpreter/JIT-files. Build/test: dotnet build ILRuntimeTestCLI -c Debug_Neo --no-incremental + dotnet build TestCases -c Debug; run: dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- TestCases/bin/Debug/netstandard2.1/TestCases.dll HotfixAOT/Patched/HotfixAOT.patch true [filter]. NeoStep smoke must stay green (301/0/0 baseline at lead-11).",
   "wave2": {
@@ -819,6 +837,7 @@
       "C7 LowerNeoOffsets Push ~3",
       "C6/C13/C14/C3 + AV"
     ],
-    "fullSmokeAfterC4": 140
+    "fullSmokeAfterC4": 140,
+    "fullSmokeAfterC2": 133
   }
 }

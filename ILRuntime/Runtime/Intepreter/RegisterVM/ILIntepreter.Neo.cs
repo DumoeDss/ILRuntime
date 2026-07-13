@@ -1088,8 +1088,162 @@ namespace ILRuntime.Runtime.Intepreter
             return ok;
         }
 
+        // C2 (neo-iltype-cast-clr-base): project ILTypeInstance -> CLRInstance for
+        // a CLR call's `this` and by-value reference params, in the callee frame
+        // (targetBase). The autogen Neo bindings read the `this` / reference params
+        // via a DIRECT cast `(CLRType)ReadNeoReference(...)`, which throws
+        // InvalidCastException when the value is an ILTypeInstance that inherits /
+        // implements the CLR type (the raw ILTypeInstance is NOT is-a the CLR base).
+        // Legacy's bindings call `typeof(T).CheckCLRTypes(...)`, which unwraps an
+        // ILTypeInstance to ins.CLRInstance -- the CrossBindingAdaptor wrapper that
+        // IS-A the CLR base / interface (Extensions.cs CheckCLRTypes :297-313). The
+        // Neo reflection fallback (CLRMethod.Invoke) projects only the `this`
+        // (:578); the autogen-redirect path projects NEITHER. This helper projects
+        // BOTH the `this` and by-value CLR-reference params before either reader
+        // runs, walking the SAME param layout the readers use (mirrors
+        // CLRMethod.Invoke's curPrim walk + the autogen AppendArgumentCodeNeo
+        // emission, which are byte-consistent by construction -- natural primitive
+        // sizes 1/2/4/8, enum=4, CLR-VT=GetNeoValueTypeManagedSize, ref=4,
+        // newobj skips the 4-byte retRefBase). The projected CLRInstance is stored
+        // in a FRESH mStack slot and the callee-frame index rewritten, so the
+        // caller's slot is untouched (no corruption for by-value params). Byref
+        // params are SKIPPED (their post-call write-back with a projected value is
+        // a deferred edge case; skipping preserves current behavior = no
+        // regression). ILType params are skipped (they expect an ILTypeInstance).
+        // A pure-CLR call (no ILTypeInstance in any ref slot) is a read-only walk.
+        static void ProjectNeoClrCallRefArgs(CLRMethod clrMethod, bool isNewobj, byte* targetBase, AutoList mStack)
+        {
+            int curPrim = 0;
+            if (isNewobj)
+            {
+                curPrim += 4; // Skip retRefBase (mirrors autogen Ctor_*_Neo + CLRMethod.Invoke).
+            }
+            else if (clrMethod.HasThis)
+            {
+                // `this` slot. A CLR value-type `this` is flat bytes (no projection);
+                // a reference `this` is a 4-byte mStack index (project if it is an
+                // ILTypeInstance wrapping a CLR base / interface).
+                var dt = clrMethod.DeclearingType;
+                if (dt is CLRType thisClr && thisClr.IsValueType
+                    && !thisClr.TypeForCLR.IsPrimitive && !thisClr.TypeForCLR.IsEnum)
+                {
+                    curPrim += Optimizer.GetNeoValueTypeManagedSize(thisClr.TypeForCLR);
+                }
+                else if (dt != null)
+                {
+                    ProjectNeoClrRefSlot(targetBase, curPrim, mStack, dt.TypeForCLR, true);
+                    curPrim += 4;
+                }
+            }
+
+            var parameters = clrMethod.Parameters;
+            if (parameters == null)
+                return;
+            for (int i = 0; i < parameters.Count; i++)
+            {
+                var ptRaw = parameters[i];
+                // A byref param's dest slot is sized by the ELEMENT type and deref'd
+                // by CopyNeoCallArguments, so the reader reads it like a by-value
+                // param of the element type. De-byref `pt` for the size/project
+                // dispatch (mirrors CLRMethod.Invoke :447).
+                var pt = ptRaw.IsByRef && ptRaw.ElementType != null ? ptRaw.ElementType : ptRaw;
+                Type t = pt.TypeForCLR;
+                if (pt is CLRType clrType && clrType.IsValueType && !t.IsPrimitive && !t.IsEnum)
+                {
+                    // CLR value-type param: flat bytes, no projection.
+                    curPrim += Optimizer.GetNeoValueTypeManagedSize(t);
+                }
+                else if (pt is ILType)
+                {
+                    // IL-type ref param: 4-byte index to an ILTypeInstance. The
+                    // reader expects an ILTypeInstance, so do NOT project.
+                    curPrim += 4;
+                }
+                else if (!t.IsPrimitive && !t.IsEnum)
+                {
+                    // CLR reference-type param (class / interface / object): 4-byte
+                    // index. Project a by-value param whose value is an ILTypeInstance;
+                    // skip byref (write-back safety) and delegates (the autogen binding
+                    // unwraps those via its own CheckCLRTypes(IsDelegate) branch, and a
+                    // delegate value is an IDelegateAdapter, not an ILTypeInstance, so
+                    // projection would be a no-op anyway).
+                    if (!ptRaw.IsByRef && !typeof(Delegate).IsAssignableFrom(t))
+                        ProjectNeoClrRefSlot(targetBase, curPrim, mStack, t, false);
+                    curPrim += 4;
+                }
+                else
+                {
+                    // Primitive / enum param: natural slot size, no projection.
+                    curPrim += NeoClrPrimitiveSlotSize(t);
+                }
+            }
+        }
+
+        // C2: project a single 4-byte reference slot if it holds an ILTypeInstance
+        // wrapping a CLR base / interface. Rewrites the callee-frame index to a
+        // FRESH mStack slot holding the adaptor (CLRInstance); the caller's slot is
+        // untouched. No-op for null / out-of-range / ILEnumTypeInstance / no-adaptor.
+        //
+        // `isThis`: for the call's `this` slot, project whenever an adaptor exists
+        // (mirrors Legacy's CheckCLRTypes, which projects an ILTypeInstance
+        // unconditionally). This is LOAD-BEARING for a base-call to a System.Object
+        // virtual method (e.g. an IL override `return base.ToString()` lowers to
+        // `call Object::ToString`): the autogen Object.ToString binding virtually
+        // dispatches `this.ToString()`, so a raw ILTypeInstance this re-enters
+        // ILTypeInstance.ToString() -> re-invokes the IL override -> infinite
+        // recursion (StackOverflow). Projecting this -> adaptor makes the binding
+        // call adaptor.ToString() (the CLR base) instead. (Virtual ToString on an
+        // IL object routes to callvirt.il / the IL override, NOT this binding, so
+        // projecting the Object binding's this only affects base/explicit calls.)
+        //
+        // For a PARAM (`isThis`=false), project only when the raw ILTypeInstance
+        // does NOT already satisfy the param type (targetType.IsInstanceOfType(obj)
+        // is false) -- an ILTypeInstance-typed / object-typed param wants the
+        // ILTypeInstance itself (NeoStep14_ILEx_GapB: an ILTypeInstance-typed
+        // exception ctor arg must not become its ExceptionAdaptor).
+        static void ProjectNeoClrRefSlot(byte* targetBase, int slotOff, AutoList mStack, Type targetType, bool isThis)
+        {
+            if (targetType == null)
+                return;
+            int idx = *(int*)(targetBase + slotOff);
+            if (idx < 0 || idx >= mStack.Count)
+                return;
+            object obj = mStack[idx];
+            if (obj is ILTypeInstance ili && !(ili is ILEnumTypeInstance))
+            {
+                if (!isThis && targetType.IsInstanceOfType(obj))
+                    return; // param: raw ILTypeInstance already satisfies the target type.
+                object clrInstance = ili.CLRInstance;
+                if (clrInstance != null && clrInstance != obj)
+                {
+                    int newIdx = mStack.Count;
+                    mStack.Add(clrInstance);
+                    *(int*)(targetBase + slotOff) = newIdx;
+                }
+            }
+        }
+
+        // C2: the natural byte size of a primitive / enum callee param slot, mirroring
+        // the ReadNeo* helpers' curPrim advancement (byte/sbyte/bool=1, short/ushort=2,
+        // int/uint/float/char=4, long/ulong/double=8) and the enum-as-int convention
+        // (CLRMethod.Invoke :529 reads an enum via ReadNeoInt32 = 4).
+        static int NeoClrPrimitiveSlotSize(Type t)
+        {
+            if (t == typeof(long) || t == typeof(ulong) || t == typeof(double))
+                return 8;
+            if (t == typeof(short) || t == typeof(ushort))
+                return 2;
+            if (t == typeof(byte) || t == typeof(sbyte) || t == typeof(bool))
+                return 1;
+            return 4; // int, uint, float, char, enum
+        }
+
         void InvokeNeoClrMethod(CLRMethod clrMethod, bool isNewobj, byte* targetBase, AutoList mStack, byte* retDstPtr, int targetRetRefBase)
         {
+            // C2 (neo-iltype-cast-clr-base): unwrap ILTypeInstance -> CLRInstance
+            // for the `this` and by-value CLR-reference params before the autogen
+            // redirect (or reflection fallback) reads them with a direct cast.
+            ProjectNeoClrCallRefArgs(clrMethod, isNewobj, targetBase, mStack);
             var redirectNeo = clrMethod.RedirectionNeo;
             if (redirectNeo != null)
             {
