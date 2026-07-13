@@ -1080,14 +1080,36 @@ namespace LitJson
                     if(param[0].ParameterType == typeof(string))
                     {
                         appdomain.RegisterCLRMethodRedirection(i, JsonToObject);
+#if ENABLE_NEO_MODE
+                        // C5 (neo-iltypeinstance-parameterless-ctor): Neo dispatch
+                        // consults RedirectMapNeo exclusively. Without a Neo entry,
+                        // JsonMapper.ToObject<T> fell through to the autogen
+                        // ToObject_*_Neo stub, which hardcodes the generic arg to
+                        // ILTypeInstance (the IL type's TypeForCLR) and calls the
+                        // raw CLR ToObject<ILTypeInstance> -> ReadValue ->
+                        // Activator.CreateInstance(typeof(ILTypeInstance)) ->
+                        // MissingMethodException (ILTypeInstance's parameterless
+                        // ctor is protected). Registered for the generic DEFINITION
+                        // so CLRMethod.TryGetRedirection (GetGenericMethodDefinition
+                        // first) serves it for every instantiation, preempting the
+                        // autogen stubs -- same lever as child-22 Activator /
+                        // child-6 InitializeArray. Mirrors Legacy JsonToObject.
+                        appdomain.RegisterCLRMethodRedirectionNeo(i, JsonToObjectNeo);
+#endif
                     }
                     else if(param[0].ParameterType == typeof(JsonReader))
                     {
                         appdomain.RegisterCLRMethodRedirection(i, JsonToObject2);
+#if ENABLE_NEO_MODE
+                        appdomain.RegisterCLRMethodRedirectionNeo(i, JsonToObjectNeo2);
+#endif
                     }
                     else if (param[0].ParameterType == typeof(TextReader))
                     {
                         appdomain.RegisterCLRMethodRedirection(i, JsonToObject3);
+#if ENABLE_NEO_MODE
+                        appdomain.RegisterCLRMethodRedirectionNeo(i, JsonToObjectNeo3);
+#endif
                     }
                 }
             }
@@ -1134,5 +1156,59 @@ namespace LitJson
 
             return ILIntepreter.PushObject(__ret, mStack, result_of_this_method);
         }
+#if ENABLE_NEO_MODE
+        // C5 Neo equivalents of JsonToObject/2/3. Read the single reference
+        // param (json/reader) from the Neo param region, resolve the generic
+        // arg's ReflectionType (an ILRuntimeType for IL types -> the ReadValue
+        // ILRuntimeType branch calls ILType.Instantiate instead of
+        // Activator.CreateInstance on the literal ILTypeInstance), and write the
+        // object result into the caller's dest ref slot (null -> -1 sentinel,
+        // matching ILIntepreter.ReadNeoReference).
+        public unsafe static void JsonToObjectNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            string json = (string)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            var type = method.GenericArguments[0].ReflectionType;
+            var result = ReadValue(type, new JsonReader(json));
+            WriteNeoJsonResult(mStack, retDst, retRefBase, result);
+        }
+
+        public unsafe static void JsonToObjectNeo2(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            JsonReader json = (JsonReader)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            var type = method.GenericArguments[0].ReflectionType;
+            var result = ReadValue(type, json);
+            WriteNeoJsonResult(mStack, retDst, retRefBase, result);
+        }
+
+        public unsafe static void JsonToObjectNeo3(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            TextReader json = (TextReader)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            var type = method.GenericArguments[0].ReflectionType;
+            var result = ReadValue(type, new JsonReader(json));
+            WriteNeoJsonResult(mStack, retDst, retRefBase, result);
+        }
+
+        // Mirrors CLRRedirections.WriteNeoObjectResult: null -> -1 sentinel,
+        // otherwise store into the dest ref slot + write the index. Inlined here
+        // (CLRRedirections.WriteNeoObjectResult is private / engine-internal).
+        static unsafe void WriteNeoJsonResult(AutoList mStack, byte* retDst, int retRefBase, object result)
+        {
+            if (retDst == null)
+                return;
+            if (result == null)
+            {
+                *(int*)retDst = -1;
+                return;
+            }
+            if (retRefBase >= mStack.Count)
+                mStack.Add(result);
+            else
+                mStack[retRefBase] = result;
+            *(int*)retDst = retRefBase;
+        }
+#endif
     }
 }
