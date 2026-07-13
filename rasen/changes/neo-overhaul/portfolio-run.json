@@ -697,6 +697,23 @@
       "smoke": "FULL SMOKE 114->110 (-4); all 4 C8 (AsyncAwaitTest) green; stash-toggle airtight; NeoStep 382/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author verify; missing-redirect pattern validated 5x)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-hotfix-not-bound-audit": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C9 AUDIT: C9 is NOT test-setup NOR an independent engine bug -- it is a downstream CASCADE of C1 (DelegateTest45 failed on the C1 cast, never restored AllowUnboundCLRMethod=true -> the rest of the suite hit the is-not-bound guard). C1 (68038a6e) already fixed it; C9 is gone at the 110 baseline. Defense-in-depth: DelegateTest45 try/finally restores the flag (test hygiene; 110->110 redundant but prevents future C1-class regression amplification). Decisive: Legacy full smoke 0 is-not-bound (not test-setup); Neo isolation 0 (order-dependent).",
+      "prerequisites": [
+        "neo-async-statemachine-null"
+      ],
+      "dependsOn": [
+        "neo-async-statemachine-null"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "AUDIT (no engine fix warranted); full smoke 110 (unchanged -- C9 already resolved by C1); NeoStep 382/0; Legacy full smoke 916/20 (all NeoStep probes) 0 is-not-bound",
+      "review": "APPROVE (LEAD non-author; honest audit -- C9=C1 cascade, not fabricated; try/finally kept as test hygiene)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -736,7 +753,8 @@
     "neo-ilruntimetype-runtime-bridge",
     "neo-array-vt-index-oob",
     "neo-delegate-adapter-notfound",
-    "neo-async-statemachine-null"
+    "neo-async-statemachine-null",
+    "neo-hotfix-not-bound-audit"
   ],
   "surfacedFollowups": [
     {
@@ -914,6 +932,8 @@
     "fullSmokeAfterC12": 122,
     "fullSmokeAfterC10": 118,
     "fullSmokeAfterC13": 114,
-    "fullSmokeAfterC8": 110
+    "fullSmokeAfterC8": 110,
+    "fullSmokeAfterC9": 110,
+    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures)."
   }
 }
