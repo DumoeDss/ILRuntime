@@ -113,8 +113,17 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestFramework.TestClass2 instance_of_this_method = (ILRuntimeTest.TestFramework.TestClass2)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            int __off_2 = __curPrim;
             System.Int32 @arg = (System.Int32)ILIntepreter.ReadNeoInt32(__frameBase, ref __curPrim);
             instance_of_this_method.VMethod3(ref @arg);
+            // C14 (neo-target-exception-mismatch): Step 13 Area 4c byref write-back
+            // epilogue -- store the (possibly-mutated) ref int back into the callee
+            // param region so CopyNeoCallThisBack (the Callvirt_CLR handler) propagates
+            // it to the caller's local. This committed stub was stale (predated the
+            // generator's AppendNeoWriteBackCode); hand-ported to match the current
+            // generator template (child-28 stale-stub pattern).
+            int __wb_sz_2 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Int32));
+            ILIntepreter.WriteNeoValueType(@arg, __frameBase + __off_2, __wb_sz_2);
         }
 #else
         static StackObject* VMethod3_1(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)

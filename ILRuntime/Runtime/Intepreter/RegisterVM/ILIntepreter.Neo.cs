@@ -3860,7 +3860,41 @@ namespace ILRuntime.Runtime.Intepreter
                                         }
                                     }
                                     CLRMethod clrMethod = ResolveNeoCallvirtCLRTarget(ip, targetMethod, targetBase, mStack);
-                                    InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
+
+                                    // C14 (neo-target-exception-mismatch): a CLR virtual/instance
+                                    // method with a ref/out param mutates the param box inside
+                                    // CLRMethod.Invoke and re-flattens the (possibly-mutated) value
+                                    // into targetBase (the callee param region, CLRMethod.cs Area-4c
+                                    // write-back). The post-call reverse copy (CopyNeoCallThisBack)
+                                    // propagates those bytes back to the caller's in-frame local --
+                                    // WITHOUT it, the caller never observes the mutation
+                                    // (InheritanceTest07/15: `obj.VMethod3(ref val)` left val
+                                    // unchanged). The IL Call path (above) already does this; the
+                                    // Callvirt_CLR path was missing it. Mirror the Call path's
+                                    // snapshot (the call dest may alias a byref source register,
+                                    // clobbering its bytes before the write-back re-reads them). A
+                                    // no-op when the method has no ref/out params
+                                    // (PrimitiveByRefSrc == null -> CopyNeoCallThisBack returns
+                                    // immediately). F-7B rebasing does NOT apply (IL-method-only).
+                                    int* cvClrByRefSnap = null;
+                                    bool[] cvClrWb = map.PrimitiveByRefWriteBack;
+                                    bool cvClrNeedSnap = cvClrWb != null && cvClrWb.Length > 0;
+                                    int[] cvClrSnapArr = cvClrNeedSnap ? new int[(cvClrWb.Length > 16 ? 16 : cvClrWb.Length) * 2] : null;
+                                    if (cvClrNeedSnap)
+                                    {
+                                        fixed (int* snap = cvClrSnapArr)
+                                        {
+                                            if (SnapshotNeoCallByRefSources(ref map, frameBase, snap) > 0)
+                                                cvClrByRefSnap = snap;
+                                            InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
+                                            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, cvClrByRefSnap);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
+                                        CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, cvClrByRefSnap);
+                                    }
 
                                     ip++;
                                     continue;

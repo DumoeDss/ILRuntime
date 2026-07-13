@@ -731,6 +731,23 @@
       "smoke": "FULL SMOKE 110->104 (-6); GenericMethodTest4 + JsonTest3/4/6/8 + JsonTest2 bonus; before/after stash pair airtight; NeoStep 382/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; missing-redirect pattern 6x validated; before/after full-smoke pair)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-target-exception-mismatch": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C14 (PARTIAL): TargetException symptom ALREADY resolved by C2 (projection). 104-baseline residual = byref write-back. Fix = Callvirt_CLR gained CopyNeoCallThisBack (mirror IL Call) + stale VMethod3_1_Neo stub ported to write-back. IT15 green. IT07/IT18 reported as distinct follow-ups (adaptor->Legacy ExecuteR; reverse-projection unbox.any on adaptor).",
+      "prerequisites": [
+        "neo-iltypeinstance-parameterless-ctor"
+      ],
+      "dependsOn": [
+        "neo-iltypeinstance-parameterless-ctor"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 104->103 (-1, IT15); stash-toggle airtight; NeoStep 382/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; honest partial -- C14 mostly resolved by C2; byref write-back fixed; 2 distinct follow-ups reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -772,7 +789,8 @@
     "neo-delegate-adapter-notfound",
     "neo-async-statemachine-null",
     "neo-hotfix-not-bound-audit",
-    "neo-iltypeinstance-parameterless-ctor"
+    "neo-iltypeinstance-parameterless-ctor",
+    "neo-target-exception-mismatch"
   ],
   "surfacedFollowups": [
     {
@@ -952,7 +970,8 @@
     "fullSmokeAfterC13": 114,
     "fullSmokeAfterC8": 110,
     "fullSmokeAfterC9": 110,
-    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator).",
-    "fullSmokeAfterC5": 104
+    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target).",
+    "fullSmokeAfterC5": 104,
+    "fullSmokeAfterC14": 103
   }
 }
