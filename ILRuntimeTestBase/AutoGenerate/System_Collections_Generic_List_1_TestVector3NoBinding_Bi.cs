@@ -60,8 +60,8 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             System.Collections.Generic.List<ILRuntimeTest.TestFramework.TestVector3NoBinding> instance_of_this_method = (System.Collections.Generic.List<ILRuntimeTest.TestFramework.TestVector3NoBinding>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            ILRuntimeTest.TestFramework.TestVector3NoBinding @item = default(ILRuntimeTest.TestFramework.TestVector3NoBinding);
-            // TODO: ByRef or unsupported ValueType parameters in Neo
+            int __sz_1 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3NoBinding));
+            ILRuntimeTest.TestFramework.TestVector3NoBinding @item = (ILRuntimeTest.TestFramework.TestVector3NoBinding)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.TestVector3NoBinding), __frameBase, ref __curPrim, __sz_1);
             instance_of_this_method.Add(@item);
         }
 #else

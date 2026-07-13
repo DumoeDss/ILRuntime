@@ -137,6 +137,31 @@ namespace ILRuntimeTest.TestFramework
             return (int)(a.X + a.Y + a.Z + b.X + b.Y + b.Z);
         }
 
+        // ---- neo-callvirt-clr-struct-arg host helpers. Read list[0] / all X
+        //      ENTIRELY in the host (CLR) to verify the struct ARG marshalling
+        //      to a CLR-generic instance method (List<TestVector3>.Add) delivered
+        //      the real struct, not a zero. Sidesteps any IL-side ldfld/conv.i4
+        //      read bug. The list itself is a reference (mStack index) so passing
+        //      it by value is unaffected. ----
+        public static int HostSumListTestVector3First(List<TestVector3> list)
+        {
+            if (list == null || list.Count == 0) return -1000;
+            var v = list[0];
+            return (int)(v.X + v.Y + v.Z);
+        }
+        public static int HostSumListTestVector3AllX(List<TestVector3> list)
+        {
+            if (list == null) return -1000;
+            float s = 0;
+            for (int i = 0; i < list.Count; i++) s += list[i].X;
+            return (int)s;
+        }
+        public static int HostListIntFirst(List<int> list)
+        {
+            if (list == null || list.Count == 0) return -1000;
+            return list[0];
+        }
+
         // K2 (return side): a CLR struct RETURN value. The reflection return
         // path (InvokeNeoClrMethod) must write the struct's flat bytes into the
         // caller's dest local. Returns a known struct; the IL caller checks it

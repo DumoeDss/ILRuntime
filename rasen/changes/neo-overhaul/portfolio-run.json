@@ -782,6 +782,23 @@
       "smoke": "FULL SMOKE 101 (delta 0 -- real root-cause fix but DelegateTest24 has 2nd blocker); NeoStep 385/0 (+3 probes, 0 regression; NeoStep12 12/0 NeoStep13 36/0); stash-toggle airtight; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; honest delta-0 -- real correctness, Call_Redirect write-back gap closed, 2nd blocker surfaced as next child)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-callvirt-clr-struct-arg": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: callvirt.clr struct-arg to CLR-generic (List<TestVector3>.Add). Framing DISPROVEN by byte-dump (param-map layout CORRECT). Real = stale Add_0_Neo stub (default TODO, child-28 class). Fix = hand-port 2 stubs to ReadNeoValueType (NO engine change). REAL correctness (host reads list[i].X=1,2,3) but full-smoke delta 0 -- DelegateTest24 cascade to FunctionDelegateAdapter2 VT/float return (4E-45 bit-reinterpret, Step-19 delegate = neo-delegate-vt-float-return).",
+      "prerequisites": [
+        "neo-clr-struct-newobj-retdest-null"
+      ],
+      "dependsOn": [
+        "neo-clr-struct-newobj-retdest-null"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 101 (delta 0 -- real stub fix, DelegateTest24 cascade deeper); NeoStep 388/0 (+3 probes, 0 regression); stash-toggle airtight; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; honest delta-0 -- stale-stub fix verified by byte-dump + host read; deeper cascade surfaced)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -826,7 +843,8 @@
     "neo-iltypeinstance-parameterless-ctor",
     "neo-target-exception-mismatch",
     "neo-lowerneoffsets-push-missing",
-    "neo-clr-struct-newobj-retdest-null"
+    "neo-clr-struct-newobj-retdest-null",
+    "neo-callvirt-clr-struct-arg"
   ],
   "surfacedFollowups": [
     {
@@ -1006,7 +1024,7 @@
     "fullSmokeAfterC13": 114,
     "fullSmokeAfterC8": 110,
     "fullSmokeAfterC9": 110,
-    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target). struct-newobj delta-0 (real fix, DelegateTest24 2nd blocker = callvirt.clr struct-arg to List<VT>.Add).",
+    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target). struct-newobj delta-0 (real fix, DelegateTest24 2nd blocker = callvirt.clr struct-arg to List<VT>.Add). struct-arg delta-0 (stale Add stub fixed; DelegateTest24 cascade to neo-delegate-vt-float-return). 9 stale default-TODO stubs remain.",
     "fullSmokeAfterC5": 104,
     "fullSmokeAfterC14": 103,
     "fullSmokeAfterC7": 101,

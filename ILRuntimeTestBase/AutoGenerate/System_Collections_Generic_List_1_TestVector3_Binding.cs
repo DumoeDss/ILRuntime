@@ -53,8 +53,8 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             System.Collections.Generic.List<ILRuntimeTest.TestFramework.TestVector3> instance_of_this_method = (System.Collections.Generic.List<ILRuntimeTest.TestFramework.TestVector3>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            ILRuntimeTest.TestFramework.TestVector3 @item = default(ILRuntimeTest.TestFramework.TestVector3);
-            // TODO: CLR value type reflection fallback: Step 13
+            int __sz_1 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3));
+            ILRuntimeTest.TestFramework.TestVector3 @item = (ILRuntimeTest.TestFramework.TestVector3)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.TestVector3), __frameBase, ref __curPrim, __sz_1);
             instance_of_this_method.Add(@item);
         }
 #else
