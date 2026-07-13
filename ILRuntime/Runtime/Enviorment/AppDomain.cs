@@ -280,6 +280,13 @@ namespace ILRuntime.Runtime.Enviorment
             RegisterCLRMethodRedirection(mi, CLRRedirections.TypeMakeGenericType);
             mi = typeof(object).GetMethod("GetType");
             RegisterCLRMethodRedirection(mi, CLRRedirections.ObjectGetType);
+#if ENABLE_NEO_MODE
+            // C4 (callvirt-gettype-vtable): Neo redirect for Object.GetType so an IL
+            // instance's GetType() returns its ILRuntimeType (not typeof(ILTypeInstance)).
+            // Reached after ResolveNeoCallvirtILTarget falls back to CLR dispatch for the
+            // inherited non-virtual GetType (no VTable slot). Mirrors InitializeArrayNeo.
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.ObjectGetTypeNeo);
+#endif
             mi = typeof(Delegate).GetMethod("CreateDelegate", new Type[] { typeof(Type), typeof(MethodInfo) });
             RegisterCLRMethodRedirection(mi, CLRRedirections.DelegateCreateDelegate);
             mi = typeof(Delegate).GetMethod("CreateDelegate", new Type[] { typeof(Type), typeof(object), typeof(string) });
@@ -869,11 +876,21 @@ namespace ILRuntime.Runtime.Enviorment
                 {
                     // Instantiate the StaticInstance FIRST (it sizes the static
                     // byte[]/AutoList from the installed static totals + offsets;
-                    // the .cctor's Stsfld writes into it). Setting
-                    // staticConstructorCalled=true before Invoke mirrors the Legacy
-                    // lazy path (avoids re-entrant .cctor via the getter).
+                    // the .cctor's Stsfld writes into it). C4 made the lazy getter
+                    // fire the .cctor under Neo (the Cecil-path win), so for a
+                    // Cecil-free type WITH static fields the getter invoked it
+                    // already (flag now true). Guard the explicit seed so the .cctor
+                    // runs EXACTLY ONCE: if the getter did not fire it (e.g. a side-
+                    // effect-only .cctor with no static fields -> staticInstance not
+                    // materialized -> flag still false), seed here + set the flag
+                    // FIRST to mirror the lazy path and prevent a re-entrant .cctor
+                    // via the getter during Invoke.
                     _ = t.StaticInstance;
-                    Invoke(cctor, null, null);
+                    if (!t.StaticConstructorCalledForNeoAOT)
+                    {
+                        t.StaticConstructorCalledForNeoAOT = true;
+                        Invoke(cctor, null, null);
+                    }
                     report.Attached.Add(".cctor seeded: " + t.FullName);
                 }
                 catch (Exception ex)

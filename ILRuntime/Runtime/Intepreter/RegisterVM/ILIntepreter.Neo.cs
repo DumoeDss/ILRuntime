@@ -1210,7 +1210,26 @@ namespace ILRuntime.Runtime.Intepreter
                 if (slot == 0xffff)
                 {
                     if (!instance.Type.TryGetNeoVTableSlot(declaredMethod, out slot))
+                    {
+                        // C4 (callvirt-gettype-vtable): an inherited NON-VIRTUAL CLR
+                        // method called on an IL instance (the canonical case is
+                        // System.Object.GetType -- non-virtual, so IsNeoVTableCandidate
+                        // rejects it and it is never in the Neo VTable) legitimately
+                        // has no VTable slot. Fall back to CLR dispatch instead of
+                        // throwing: the caller (ResolveNeoGenericCallvirtTarget, reached
+                        // because MayCallvirtTargetILObject emits plain Callvirt for a
+                        // typeof(object)-declared method) passes the returned CLRMethod
+                        // to InvokeNeoCallTarget -> InvokeNeoClrMethod, which serves a
+                        // registered Neo redirect (ObjectGetTypeNeo) when one exists, so
+                        // GetType returns the ILRuntimeType (not typeof(ILTypeInstance)).
+                        // Virtual Object methods (ToString/Equals/GetHashCode) ARE VTable
+                        // candidates and resolved above, so this fallback only catches
+                        // the non-virtual inherited shape. Callvirt_IL always declares an
+                        // ILMethod, so a failing ILMethod lookup is still a genuine error.
+                        if (declaredMethod is CLRMethod)
+                            return declaredMethod;
                         throw new MissingMethodException(string.Format("Neo callvirt cannot resolve VTable slot for {0} on {1}.", declaredMethod, instance.Type.FullName));
+                    }
                 }
 
                 var vtable = instance.Type.NeoVTable;

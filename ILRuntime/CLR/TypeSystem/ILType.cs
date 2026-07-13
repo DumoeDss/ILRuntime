@@ -202,10 +202,13 @@ namespace ILRuntime.CLR.TypeSystem
                     // TypeReference -> TypeReference.HasGenericParameters NREs here.
                     // The capstone probe is non-generic, so for a Cecil-free type the
                     // generic-parameter check is vacuously TRUE (no generic params).
-                    // The #if ENABLE_NEO_MODE suppression below STAYS (the .cctor is
-                    // seeded explicitly at Cecil-free load by LoadNeoAssembly, NOT via
-                    // this lazy getter) -- this guard only makes the CONDITION Cecil-
-                    // free-safe, it does NOT lift the suppression.
+                    // The isNeoAotType short-circuit to TRUE only makes the CONDITION
+                    // Cecil-free-safe (avoids the NRE). C4 LIFTED the stale Step-7
+                    // #if ENABLE_NEO_MODE suppression that wrapped the Invoke below --
+                    // this lazy getter is now the Neo .cctor trigger for BOTH the
+                    // Cecil path AND the Cecil-free path. LoadNeoAssembly guards its
+                    // own explicit seed against this getter (StaticConstructorCalled-
+                    // ForNeoAOT) so the .cctor still fires EXACTLY ONCE per type.
                     bool cctorEligible =
 #if ENABLE_NEO_MODE
                         isNeoAotType ? true :
@@ -213,14 +216,22 @@ namespace ILRuntime.CLR.TypeSystem
                         ( !TypeReference.HasGenericParameters || IsGenericInstance );
                     if ( staticConstructor != null && cctorEligible )
                     {
-#if ENABLE_NEO_MODE
-                        // TODO Step 7: Neo interpreter still lacks Stfld_*/Ldfld_* case handlers,
-                        // and ExecuteR (Legacy register VM) refuses the specialized field opcodes
-                        // that JITCompiler emits in Neo mode. Suppressing cctor invocation here
-                        // unblocks Step 6 smoke tests; restore once Step 7 lands.
-#else
+
+                        // C4 (callvirt-gettype-vtable): the Step-7 suppression of the
+                        // .cctor under ENABLE_NEO_MODE is STALE -- the Stsfld/Ldsfeld
+                        // IL-static arms (and every field/opcode a typical .cctor
+                        // exercises) landed across Steps 7-25 (+ children). Suppressing
+                        // it left every IL static field with an inline initializer
+                        // (`= new ...`) at its default (null), so a callvirt on such a
+                        // field surfaced as "Neo callvirt this is null" (the C4-4b
+                        // static-field sub-class: SimpleTest.StaticTest,
+                        // StaticTest.UnitTest_StaticTest03, and likely many of the C16
+                        // "Object reference not set" NRE bucket whose `this` is a static
+                        // field). Restored unconditionally. The NeoAOT Cecil-free path
+                        // seeds its .cctor separately at load (LoadNeoAssembly) and this
+                        // getter is guarded by staticConstructorCalled (set above) so it
+                        // still fires at most once per type.
                         appdomain.Invoke ( staticConstructor, null, null );
-#endif
                     }
                 }
                 return staticInstance;
@@ -327,6 +338,14 @@ namespace ILRuntime.CLR.TypeSystem
         // the bodies are bound. Returns null for a type with no .cctor
         // (StaticCtorMethodRefIdx == -1).
         internal ILMethod StaticConstructorForNeoAOT { get { return staticConstructor; } }
+        // Step 25 S3-4 / C4: Neo-only get+set for the private staticConstructorCalled
+        // flag. The lazy StaticInstance getter is now the .cctor trigger under Neo
+        // (C4 lifted the stale Step-7 suppression). LoadNeoAssembly's explicit .cctor
+        // seed reads this to guard against a double-invoke (the getter may have
+        // already fired it) and sets it before its own Invoke so a re-entrant getter
+        // access (a .cctor Stsfld) does not fire it again. Cecil-path load never
+        // calls LoadNeoAssembly, so this accessor is unused there.
+        internal bool StaticConstructorCalledForNeoAOT { get { return staticConstructorCalled; } set { staticConstructorCalled = value; } }
 #endif
         public ILRuntime.Runtime.Enviorment.AppDomain AppDomain
         {
@@ -1499,11 +1518,15 @@ namespace ILRuntime.CLR.TypeSystem
             // ---- Step 25 S3-4: track the static constructor (.cctor). The .cctor
             // shell is built above (the ".cctor" name match routes it to
             // constructors). Record it as the type's staticConstructor so the
-            // Cecil-free LoadNeoAssembly seed step can resolve + run it (the
-            // legacy lazy StaticInstance getter's #if ENABLE_NEO_MODE suppression
-            // stays in place on the Cecil ctor path -- S3-4 seeds ONLY the
-            // Cecil-free path). staticConstructorCalled stays FALSE (the seed runs
-            // it). rec.StaticCtorMethodRefIdx points at it but the live shell is
+            // Cecil-free LoadNeoAssembly seed step can resolve + run it after the
+            // bodies are bound. C4 lifted the stale Step-7 suppression in the lazy
+            // StaticInstance getter, so the getter now also fires the .cctor under
+            // Neo (for Cecil-free types too). LoadNeoAssembly guards its explicit
+            // seed against that getter (StaticConstructorCalledForNeoAOT) so the
+            // .cctor runs EXACTLY ONCE on the Cecil-free path. staticConstructor-
+            // Called starts FALSE and is set by whichever path fires first (the
+            // getter on first StaticInstance access, or the explicit seed here).
+            // rec.StaticCtorMethodRefIdx points at it but the live shell is
             // resolved by the .cctor NAME (the MethodRef idx -> name roundtrip is
             // already how the shells are built above). ----
             if (t.constructors != null)
@@ -2412,19 +2435,27 @@ namespace ILRuntime.CLR.TypeSystem
                 }
             }
 
+            // C4 (callvirt-gettype-vtable): under Neo, do NOT invoke the .cctor eagerly
+            // here (InitializeMethods). Doing so re-enters initialization before the
+            // type's StaticInstance byte[]/AutoList storage is materialized -- a .cctor
+            // whose Stsfld touches StaticInstance (e.g. TestCases.Fixed64..cctor's
+            // `stsfld Zero`) NRE'd inside the Stsfld VT arm (ExecuteNeo :4565) because
+            // staticFieldTypes was not yet populated -> the getter returned a null
+            // staticInstance. Instead defer to the LAZY StaticInstance getter (the site
+            // above), which fires only AFTER InitializeMethods/Fields complete, so the
+            // .cctor's Stsfld finds a fully-built staticInstance. Legacy keeps the eager
+            // invocation (its StackObject[] storage is ready during InitializeMethods);
+            // guarded out under ENABLE_NEO_MODE only.
+#if !ENABLE_NEO_MODE
             if (!appdomain.SuppressStaticConstructor && !staticConstructorCalled)
             {
                 staticConstructorCalled = true;
                 if (staticConstructor != null && (!TypeReference.HasGenericParameters || IsGenericInstance))
                 {
-#if ENABLE_NEO_MODE
-                    // TODO Step 7: see InitializeMethods entry above. Re-enable once
-                    // Neo Stfld_*/Ldfld_* handlers are wired up.
-#else
                     appdomain.Invoke(staticConstructor, null, null);
-#endif
                 }
             }
+#endif
         }
 
         public IMethod GetVirtualMethod ( IMethod method )

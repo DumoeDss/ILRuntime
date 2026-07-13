@@ -595,6 +595,23 @@
       "smoke": "FULL SMOKE 189->153 (-36); C1 delegate-cast cluster ~32->0; InvalidCastException 56->40; stash-toggle airtight; NeoStep 380/0 unchanged; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Fix-B byte-fidelity CONFIRMED (41 sites match generator, 0 deviations). M1 perf (Fix C double GetField, non-blocking), T1/T2 trivial.",
       "shipped": "commit+push 2026-07-13"
+    },
+    "neo-callvirt-gettype-vtable": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C4: (4a) IL instance calling inherited non-virtual CLR method GetType() hit \"cannot resolve VTable slot\" -- Neo callvirt threw instead of falling back to CLR dispatch; (4b) a STALE Step-7 .cctor suppression left every IL static field with an inline initializer null -> \"Neo callvirt this is null\". Fix 4a = CLRMethod fallback in ResolveNeoCallvirtILTarget + ObjectGetTypeNeo redirect on RedirectMapNeo. Fix 4b = lift the stale suppression (lazy StaticInstance getter is the Neo .cctor trigger) + guard LoadNeoAssembly single-invoke (MAJOR-1).",
+      "prerequisites": [
+        "neo-delegate-adapter-clr-cast"
+      ],
+      "dependsOn": [
+        "neo-delegate-adapter-clr-cast"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch+neo-optimizer",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 153->140 (-13); 4a fixed 7 (DelegateTest38-40/EnumTest15/ReflectionTest03/TestMethodParametersInfo/StaticTest01), 4b fixed 4+2-incidental; stash-toggle airtight; NeoStep 380/0; Legacy-neutral; MAJOR-1 (NeoAOT double-cctor) fixed pre-ship",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker after MAJOR-1 fix). 4a-no-overfire CONFIRMED (fallback gated on CLRMethod; virtual Object methods stay VTable). 4b-cctor-change SAFE (lazy fires before access; single-invoke guarded on both Cecil+AOT).",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -628,7 +645,8 @@
     "neo-raw-stfld-clr-object-vt-field",
     "neo-float-vtreturn-opaddition",
     "neo-raw-ldfld-clr-object-vt-field",
-    "neo-delegate-adapter-clr-cast"
+    "neo-delegate-adapter-clr-cast",
+    "neo-callvirt-gettype-vtable"
   ],
   "surfacedFollowups": [
     {
@@ -800,6 +818,7 @@
       "C8 async ~4",
       "C7 LowerNeoOffsets Push ~3",
       "C6/C13/C14/C3 + AV"
-    ]
+    ],
+    "fullSmokeAfterC4": 140
   }
 }

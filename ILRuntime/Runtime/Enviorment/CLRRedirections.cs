@@ -749,6 +749,39 @@ namespace ILRuntime.Runtime.Enviorment
                 result = null;
             WriteNeoObjectResult(mStack, retDst, retRefBase, result);
         }
+
+        // Neo redirect for System.Object.GetType(). Mirrors the Legacy
+        // CLRRedirections.ObjectGetType (CLRRedirections.cs:1250). The `this`
+        // (param 0, a 4-byte mStack index at frameBase offset 0 -- the callvirt
+        // thisArgOffset is always 0) is recovered via ReadNeoReference. For an IL
+        // instance (ILTypeInstance / ILEnumTypeInstance) the raw CLR GetType would
+        // return typeof(ILTypeInstance); instead return the IL type's ReflectionType
+        // (the ILRuntimeType), matching Legacy + C# `typeof` semantics for IL types.
+        // Any other (CLR) instance -> its real CLR Type. Registered on RedirectMapNeo
+        // so InvokeNeoClrMethod serves it for every obj.GetType() callvirt (IL or CLR
+        // receiver). Reached after the ResolveNeoCallvirtILTarget CLR-fallback routes
+        // the inherited non-virtual GetType (no VTable slot) to CLR dispatch.
+        public unsafe static void ObjectGetTypeNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            object instance = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result;
+            if (instance == null)
+            {
+                // A null `this` is guarded upstream (ReadNeoCallThis throws NRE before
+                // the redirect); defensively emit the null sentinel if ever reached.
+                result = null;
+            }
+            else
+            {
+                var type = instance.GetType();
+                if (type == typeof(ILTypeInstance) || type == typeof(ILEnumTypeInstance))
+                    result = ((ILTypeInstance)instance).Type.ReflectionType;
+                else
+                    result = type;
+            }
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
 #endif
 
         public unsafe static StackObject* DelegateCombine(ILIntepreter intp, StackObject* esp, AutoList mStack, CLRMethod method, bool isNewObj)
