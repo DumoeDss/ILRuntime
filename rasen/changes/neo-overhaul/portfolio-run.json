@@ -663,6 +663,23 @@
       "smoke": "FULL SMOKE 122->118 (-4); ArrayTest05/UnitTest_10035/TestValueTypeBinding.Test03/TestUsingNested green; stash-toggle airtight; NeoStep 382/0 (+2 probes); Legacy-neutral",
       "review": "APPROVE (LEAD non-author delta-review; multi-root honesty)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-delegate-adapter-notfound": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C13: CLR delegate Invoke dispatches via Callvirt_CLR (not Callvirt_IL); Neo lacked the delegate-Invoke interception there -> DummyDelegateAdapter routed to autogen -> Cannot find Delegate Adapter (KeyNotFound). Fix = Callvirt_CLR Dummy-only interception (Dummy-only load-bearing: real adapter served by GetConvertor; intercept-all -> D2 rebind -> NeoStep19 regression). Distinct from C1.",
+      "prerequisites": [
+        "neo-array-vt-index-oob"
+      ],
+      "dependsOn": [
+        "neo-array-vt-index-oob"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 118->114 (-4); 3 C13 + 1 bonus green; stash-toggle airtight; NeoStep 382/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author verify of recorded evidence; Dummy-only discriminator self-caught NeoStep19 regression)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -700,7 +717,8 @@
     "neo-callvirt-gettype-vtable",
     "neo-iltype-cast-clr-base",
     "neo-ilruntimetype-runtime-bridge",
-    "neo-array-vt-index-oob"
+    "neo-array-vt-index-oob",
+    "neo-delegate-adapter-notfound"
   ],
   "surfacedFollowups": [
     {
@@ -876,6 +894,7 @@
     "fullSmokeAfterC4": 140,
     "fullSmokeAfterC2": 133,
     "fullSmokeAfterC12": 122,
-    "fullSmokeAfterC10": 118
+    "fullSmokeAfterC10": 118,
+    "fullSmokeAfterC13": 114
   }
 }

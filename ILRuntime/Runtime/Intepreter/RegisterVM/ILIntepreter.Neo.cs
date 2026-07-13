@@ -3792,6 +3792,73 @@ namespace ILRuntime.Runtime.Intepreter
                                         ip++;
                                         continue;
                                     }
+                                    // C13 (neo-delegate-adapter-notfound): a CLR delegate type's
+                                    // Invoke (Action<>/Func<>, lowered to callvirt.clr) whose
+                                    // `this` is a DummyDelegateAdapter. A Dummy arises when the IL
+                                    // target's parameter shape has no registered per-arity adapter
+                                    // (e.g. Action<string>, Action<string,Object>, Func<string,
+                                    // string>). The autogen/reflection CLR dispatch would call
+                                    // CheckCLRTypes(IsDelegate) -> GetConvertor -> NativeDelegateType
+                                    // -> ThrowAdapterNotFound (KeyNotFound). Route to the adapter's
+                                    // NeoRunDelegateTargetOnThis / NeoInvokePublic instead (mirrors
+                                    // Legacy IsDelegateInvoke -> IDelegateAdapter.ILInvoke and the
+                                    // Neo Callvirt_IL delegate handler). ONLY a DummyDelegateAdapter
+                                    // is intercepted: a REAL adapter (MethodDelegateAdapter /
+                                    // FunctionDelegateAdapter) has a registered converter, so the
+                                    // existing GetConvertor path already serves it -- intercepting it
+                                    // would needlessly overwrite a possibly-reused mStack this-slot
+                                    // via NeoRunDelegateTargetOnThis's D2 rebind (mStack[thisIdx]=
+                                    // instance), corrupting a later delegate Invoke on the same slot.
+                                    if (targetMethod.IsDelegateInvoke)
+                                    {
+                                        object delThis = mStack[*(int*)targetBase];
+                                        if (delThis is DummyDelegateAdapter dDummy)
+                                        {
+                                            if (dDummy.Method is ILMethod dTargetIlm)
+                                            {
+                                                int headShift = dTargetIlm.HasThis ? 0 : 4;
+                                                // F-7B: caller-owned mStack slot for a reference-byref,
+                                                // reserved ONCE and shared across the multicast chain.
+                                                int f7bCallerOwnedRefSlot = -1;
+                                                if (!NeoRunDelegateTargetOnThis(dTargetIlm, dDummy.Instance,
+                                                    targetBase, headShift, frameBase, mStack,
+                                                    retDstPtr, targetRetRefBase, ref f7bCallerOwnedRefSlot, out unhandledException))
+                                                    return null;
+                                                // D3: multicast next-chain (Legacy ILInvokeSub semantics;
+                                                // last target's return wins).
+                                                IDelegateAdapter nxt = dDummy.Next;
+                                                while (nxt != null)
+                                                {
+                                                    if (nxt is DelegateAdapter nAdapter && nAdapter.Method is ILMethod nIlm)
+                                                    {
+                                                        int nShift = nIlm.HasThis ? 0 : 4;
+                                                        if (!NeoRunDelegateTargetOnThis(nIlm, nAdapter.Instance,
+                                                            targetBase, nShift, frameBase, mStack,
+                                                            retDstPtr, targetRetRefBase, ref f7bCallerOwnedRefSlot, out unhandledException))
+                                                            return null;
+                                                        nxt = nAdapter.Next;
+                                                    }
+                                                    else
+                                                    {
+                                                        object[] delArgs = ReadNeoDelegateInvokeArgs(targetMethod, targetBase, mStack);
+                                                        object delRes = ((DelegateAdapter)nxt).NeoInvokePublic(delArgs);
+                                                        WriteNeoDelegateInvokeReturn(targetMethod, delRes, retDstPtr, mStack, targetRetRefBase);
+                                                        nxt = nxt.Next;
+                                                    }
+                                                }
+                                                ip++;
+                                                continue;
+                                            }
+                                            else
+                                            {
+                                                object[] delArgs = ReadNeoDelegateInvokeArgs(targetMethod, targetBase, mStack);
+                                                object delRes = dDummy.NeoInvokePublic(delArgs);
+                                                WriteNeoDelegateInvokeReturn(targetMethod, delRes, retDstPtr, mStack, targetRetRefBase);
+                                                ip++;
+                                                continue;
+                                            }
+                                        }
+                                    }
                                     CLRMethod clrMethod = ResolveNeoCallvirtCLRTarget(ip, targetMethod, targetBase, mStack);
                                     InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
 
