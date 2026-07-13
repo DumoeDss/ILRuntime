@@ -6667,10 +6667,34 @@ namespace ILRuntime.Runtime.Intepreter
                                                         "Step 17: constrained.callvirt on an IL value type WITH reference fields (inherited CLR method) through a non-direct-local byref is deferred (ref-region base recovery; follow-up)");
                                                 }
                                             }
-                                            ILTypeInstance ilBox = ilBoxType.Instantiate(false);
-                                            CopyFrameToIL(frameBase, thisByteOff, boxSrcRefOffset,
-                                                ilBoxType.TotalPrimitiveSize, ilBoxType.TotalReferenceCount,
-                                                mStack, frameRefBase, ilBox);
+                                            ILTypeInstance ilBox;
+                                            if (ilBoxType.IsEnum)
+                                            {
+                                                // C3 (neo-enum-cluster-residual): an IL enum's
+                                                // constrained.callvirt to an inherited Object method
+                                                // (ToString/Equals/GetHashCode) must box to an
+                                                // ILEnumTypeInstance -- whose ToString returns the VALUE
+                                                // name and Equals does value equality -- NOT a plain
+                                                // ILTypeInstance (whose ToString returns the type's full
+                                                // name). Without this, `enumValue.ToString()` returned
+                                                // the type name (EnumTest Test11) and CompareTo's receiver
+                                                // was an un-castable ILTypeInstance (EnumTest Test22).
+                                                // Mirrors the Box arm (OpCodeREnum.Box ~4157).
+                                                ilBox = new ILEnumTypeInstance(ilBoxType);
+                                                int esz = AppDomain.GetPrimitiveSize(ilBoxType.FieldTypes[0]);
+                                                if (esz > 0)
+                                                {
+                                                    ref byte edst = ref MemoryMarshal.GetReference(ilBox.Primitives.AsSpan());
+                                                    Unsafe.CopyBlock(ref edst, ref *(frameBase + thisByteOff), (uint)esz);
+                                                }
+                                            }
+                                            else
+                                            {
+                                                ilBox = ilBoxType.Instantiate(false);
+                                                CopyFrameToIL(frameBase, thisByteOff, boxSrcRefOffset,
+                                                    ilBoxType.TotalPrimitiveSize, ilBoxType.TotalReferenceCount,
+                                                    mStack, frameRefBase, ilBox);
+                                            }
                                             ilBox.Boxed = true;
                                             boxedReceiver = ilBox;
                                         }

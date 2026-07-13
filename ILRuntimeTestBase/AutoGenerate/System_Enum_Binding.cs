@@ -137,13 +137,57 @@ namespace ILRuntime.Runtime.Generated
 #endif
 
 #if ENABLE_NEO_MODE
+        // C3 (neo-enum-cluster-residual): read an IL enum's underlying value out of
+        // its boxed ILTypeInstance's Primitives byte[] as a sign-extended long. An IL
+        // enum boxed value is an ILTypeInstance (the ILEnumTypeInstance derived class,
+        // internal to ILRuntime) carrying the underlying value in Primitives -- it is
+        // NOT a real System.Enum, so the autogen `(System.Enum)ReadNeoReference` cast
+        // threw InvalidCastException on HasFlag (EnumTest Test20) and CompareTo
+        // (EnumTest Test22). The stubs now detect an IL enum (ILTypeInstance with
+        // Type.IsEnum) and compute the result directly on this value. Sign-extension
+        // is correct for signed underlying types (sbyte/short/int/long) and for
+        // unsigned types whose value fits in the positive signed range (the common
+        // case); HasFlag uses only the low bits so it is unaffected.
+        static long NeoEnumRawLong(byte[] p)
+        {
+            if (p == null || p.Length == 0)
+                return 0;
+            switch (p.Length)
+            {
+                case 1: return (sbyte)p[0];
+                case 2: return (short)(p[0] | (p[1] << 8));
+                case 4: return (int)((uint)p[0] | ((uint)p[1] << 8) | ((uint)p[2] << 16) | ((uint)p[3] << 24));
+                default:
+                    {
+                        ulong u = 0;
+                        int n = p.Length < 8 ? p.Length : 8;
+                        for (int i = 0; i < n; i++)
+                            u |= (ulong)p[i] << (i * 8);
+                        return (long)u;
+                    }
+            }
+        }
+
         static void HasFlag_2_Neo(ILIntepreter __intp, byte* __frameBase, AutoList __mStack, CLRMethod __method, bool isNewObj, byte* __retDst, int __retRefBase)
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Enum instance_of_this_method = (System.Enum)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Enum @flag = (System.Enum)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            var result_of_this_method = instance_of_this_method.HasFlag(@flag);
+            object instanceRaw = ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            object flagRaw = ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            bool result_of_this_method;
+            if (instanceRaw is ILTypeInstance enumThis && enumThis.Type != null && enumThis.Type.IsEnum
+                && flagRaw is ILTypeInstance enumFlag && enumFlag.Type != null && enumFlag.Type.IsEnum)
+            {
+                if (enumThis.Type != enumFlag.Type)
+                    result_of_this_method = false;
+                else
+                {
+                    long a = NeoEnumRawLong(enumThis.Primitives), b = NeoEnumRawLong(enumFlag.Primitives);
+                    result_of_this_method = (a & b) == b;
+                }
+            }
+            else
+                result_of_this_method = ((System.Enum)instanceRaw).HasFlag((System.Enum)flagRaw);
             if (__retDst != null) *(int*)__retDst = result_of_this_method ? 1 : 0;
         }
 #else
@@ -217,10 +261,23 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Enum instance_of_this_method = (System.Enum)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Object @target = (System.Object)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            var result_of_this_method = instance_of_this_method.CompareTo(@target);
-            if (__retDst != null) *(int*)__retDst = (int)result_of_this_method;
+            object instanceRaw = ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            object targetRaw = ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            int result_of_this_method;
+            if (instanceRaw is ILTypeInstance enumThis && enumThis.Type != null && enumThis.Type.IsEnum
+                && targetRaw is ILTypeInstance enumTarget && enumTarget.Type != null && enumTarget.Type.IsEnum)
+            {
+                // C3: an IL enum boxed value is not a System.Enum -> autogen cast threw.
+                // Compare underlying values directly (same-type enforced, mirroring
+                // System.Enum.CompareTo which throws on a type mismatch).
+                if (enumThis.Type != enumTarget.Type)
+                    throw new System.ArgumentException("Object must be of the same Enum type as this instance.");
+                long a = NeoEnumRawLong(enumThis.Primitives), b = NeoEnumRawLong(enumTarget.Primitives);
+                result_of_this_method = a.CompareTo(b);
+            }
+            else
+                result_of_this_method = ((System.Enum)instanceRaw).CompareTo(targetRaw);
+            if (__retDst != null) *(int*)__retDst = result_of_this_method;
         }
 #else
         static StackObject* CompareTo_4(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)

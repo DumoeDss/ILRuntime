@@ -799,6 +799,23 @@
       "smoke": "FULL SMOKE 101 (delta 0 -- real stub fix, DelegateTest24 cascade deeper); NeoStep 388/0 (+3 probes, 0 regression); stash-toggle airtight; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; honest delta-0 -- stale-stub fix verified by byte-dump + host read; deeper cascade surfaced)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-enum-cluster-residual": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C3: EnumTest residual (6 at 101). 3 roots: (B) ILTypeInstance.Equals ILEnumTypeInstance value-eq branch #if-d out under Neo -> ref equality; (C) constrained.callvirt ToString/Equals boxed IL enum as plain ILTypeInstance not ILEnumTypeInstance; (A) stale HasFlag/CompareTo stubs cast boxed IL enum to System.Enum. Fix = ILEnumTypeInstance Equals/GetHashCode override (Neo-gated) + constrained-box IsEnum arm + hand-port HasFlag/CompareTo + NeoEnumRawLong helper.",
+      "prerequisites": [
+        "neo-callvirt-clr-struct-arg"
+      ],
+      "dependsOn": [
+        "neo-callvirt-clr-struct-arg"
+      ],
+      "status": "done",
+      "capability": "neo-type-checks",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 101->95 (-6); all 6 EnumTest residual green, 0 EnumTest failures remain; stash-toggle airtight; NeoStep 388/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; 3 roots pinned Neo-vs-Legacy; 0 EnumTest residual)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -844,7 +861,8 @@
     "neo-target-exception-mismatch",
     "neo-lowerneoffsets-push-missing",
     "neo-clr-struct-newobj-retdest-null",
-    "neo-callvirt-clr-struct-arg"
+    "neo-callvirt-clr-struct-arg",
+    "neo-enum-cluster-residual"
   ],
   "surfacedFollowups": [
     {
@@ -1028,6 +1046,7 @@
     "fullSmokeAfterC5": 104,
     "fullSmokeAfterC14": 103,
     "fullSmokeAfterC7": 101,
-    "fullSmokeAfterNewobj": 101
+    "fullSmokeAfterNewobj": 101,
+    "fullSmokeAfterC3": 95
   }
 }

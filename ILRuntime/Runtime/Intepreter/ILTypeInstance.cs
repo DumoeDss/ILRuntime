@@ -271,6 +271,52 @@ namespace ILRuntime.Runtime.Intepreter
             return isLong ? longVal.ToString() : intVal.ToString();
         }
 #endif
+#if ENABLE_NEO_MODE
+        // C3 (neo-enum-cluster-residual): a boxed IL enum (ILEnumTypeInstance) must
+        // compare/hash by VALUE. The Legacy ILTypeInstance.Equals/GetHashCode enum
+        // branch is #if !ENABLE_NEO_MODE, so under Neo it compiled out and
+        // base.Equals fell back to REFERENCE equality -- two separately-boxed enum
+        // values were never equal (EnumTest Test30/32/33, e.g.
+        // boxedEnum.Equals(Feature3)). Overriding on the derived class covers every
+        // dispatch path (Object.Equals redirect Equals_3_Neo, static Object.Equals
+        // Equals_4_Neo, reflection invoke) because the boxed receiver IS an
+        // ILEnumTypeInstance at the CLR level (Box arm creates `new
+        // ILEnumTypeInstance`). fields here is the Neo byte[] holding the underlying
+        // value (Primitives returns the same array).
+        public override bool Equals(object obj)
+        {
+            if (obj is ILEnumTypeInstance other)
+            {
+                if (this.type != other.type)
+                    return false;
+                byte[] a = this.fields;
+                byte[] b = other.fields;
+                if (a == b)
+                    return true;
+                if (a == null || b == null || a.Length != b.Length)
+                    return false;
+                for (int i = 0; i < a.Length; i++)
+                    if (a[i] != b[i])
+                        return false;
+                return true;
+            }
+            return base.Equals(obj);
+        }
+
+        public override int GetHashCode()
+        {
+            // Mirror Legacy: hash the underlying value (fields[0].Value.GetHashCode()),
+            // not the instance identity -- keeps Equals/GetHashCode consistent for
+            // enum-valued dict keys.
+            if (fields == null || fields.Length == 0)
+                return 0;
+            long v = 0;
+            int n = fields.Length < 8 ? fields.Length : 8;
+            for (int i = 0; i < n; i++)
+                v |= (long)fields[i] << (i * 8);
+            return v.GetHashCode();
+        }
+#endif
     }
 
     public class ILTypeInstance
