@@ -337,7 +337,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass @i = (ILRuntimeTest.TestBase.ExtensionClass)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<System.Object> @a = (System.Action<System.Object>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<System.Object> @a = (System.Action<System.Object>)typeof(System.Action<System.Object>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method1<ILRuntimeTest.TestBase.ExtensionClass>(@i, @a);
         }
 #else
@@ -368,7 +368,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass @i = (ILRuntimeTest.TestBase.ExtensionClass)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Object> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Object>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Object> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Object>)typeof(System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Object>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method1<ILRuntimeTest.TestBase.ExtensionClass>(@i, @a);
         }
 #else
@@ -399,7 +399,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass @i = (ILRuntimeTest.TestBase.ExtensionClass)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<System.Exception> @a = (System.Action<System.Exception>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<System.Exception> @a = (System.Action<System.Exception>)typeof(System.Action<System.Exception>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2(@i, @a);
         }
 #else
@@ -430,7 +430,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass @i = (ILRuntimeTest.TestBase.ExtensionClass)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Exception> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Exception>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Exception> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Exception>)typeof(System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.Exception>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2(@i, @a);
         }
 #else
@@ -461,7 +461,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass @i = (ILRuntimeTest.TestBase.ExtensionClass)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<System.ArgumentException> @a = (System.Action<System.ArgumentException>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<System.ArgumentException> @a = (System.Action<System.ArgumentException>)typeof(System.Action<System.ArgumentException>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2<System.ArgumentException>(@i, @a);
         }
 #else
@@ -492,7 +492,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass @i = (ILRuntimeTest.TestBase.ExtensionClass)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.ArgumentException> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.ArgumentException>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.ArgumentException> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.ArgumentException>)typeof(System.Action<ILRuntimeTest.TestBase.ExtensionClass, System.ArgumentException>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2<System.ArgumentException>(@i, @a);
         }
 #else
@@ -523,7 +523,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass<System.Int32> @i = (ILRuntimeTest.TestBase.ExtensionClass<System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<System.Exception> @a = (System.Action<System.Exception>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<System.Exception> @a = (System.Action<System.Exception>)typeof(System.Action<System.Exception>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2<System.Int32>(@i, @a);
         }
 #else
@@ -554,7 +554,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass<System.Int32> @i = (ILRuntimeTest.TestBase.ExtensionClass<System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.Exception> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.Exception>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.Exception> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.Exception>)typeof(System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.Exception>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2<System.Int32>(@i, @a);
         }
 #else
@@ -585,7 +585,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass<System.Int32> @i = (ILRuntimeTest.TestBase.ExtensionClass<System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<System.ArgumentException> @a = (System.Action<System.ArgumentException>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<System.ArgumentException> @a = (System.Action<System.ArgumentException>)typeof(System.Action<System.ArgumentException>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2<System.Int32, System.ArgumentException>(@i, @a);
         }
 #else
@@ -616,7 +616,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             ILRuntimeTest.TestBase.ExtensionClass<System.Int32> @i = (ILRuntimeTest.TestBase.ExtensionClass<System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.ArgumentException> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.ArgumentException>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.ArgumentException> @a = (System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.ArgumentException>)typeof(System.Action<ILRuntimeTest.TestBase.ExtensionClass<System.Int32>, System.ArgumentException>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.GenericExtensions.Method2<System.Int32, System.ArgumentException>(@i, @a);
         }
 #else

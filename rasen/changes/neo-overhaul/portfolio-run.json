@@ -21,251 +21,785 @@
   },
   "completionPlan": {
     "orderedFrontier": [
-      { "id": "neo-jit-bogus-opcode", "scope": "JIT correctness: ip->Code=2359324 garbage opcode (~8 sites). Instrument the ExecuteNeo default case to log method+IL-offset, build a minimal reproducer, find the OpCodeR emission bug (field offset / uninitialized Code), fix, add a NeoStep guard.", "deps": [], "size": "mod", "priority": "CRITICAL-correctness" },
-      { "id": "neo-ldtoken", "scope": "Implement ldtoken in ExecuteNeo: push RuntimeTypeHandle/RuntimeMethodHandle/RuntimeFieldHandle from the metadata token (Operand). Wire the handle -> IType/IMethod/IField resolution. typeof()/reflection unblocks. Add NeoStep probe.", "deps": ["neo-jit-bogus-opcode"], "size": "mod", "priority": "HIGH-dominant" },
-      { "id": "neo-bare-nie", "scope": "Locate the 5 bare 'throw new NotImplementedException()' (no message) sites reached in Neo mode; implement or correctly guard each. Add probes.", "deps": ["neo-ldtoken"], "size": "small-mod" },
-      { "id": "neo-clr-static-fields", "scope": "Step 25 S3-4 capstone: Stsfld/Ldsfld on a CLR static field (currently throws 'IL-only capstone'). Resolve the CLR static via CLRType + read/write the CLR FieldInfo. Add NeoStep probe.", "deps": ["neo-bare-nie"], "size": "mod" },
-      { "id": "neo-raw-field-edges", "scope": "Raw Ldfld/Stfld/Ldloc/Ldarg reaching the Step 6 default: find why the Neo typed-splitter does not lower them, add the missing lowering arm or default-case handling. Add probes.", "deps": ["neo-clr-static-fields"], "size": "small-mod" },
-      { "id": "neo-valuetask-marshal", "scope": "VT1/VT2/VT6 ValueTask<T> async: the 16-byte builder byref-this call-arg marshalling skip in AsyncValueTaskMethodBuilder_T_SetResult_Neo (CLRRedirections.AsyncNeo.cs) + matching SetException/AwaitUnsafeOnCompleted. Dump the call-frame layout vs AsyncTaskMethodBuilder<int> (TC8, works). Deepest.", "deps": ["neo-raw-field-edges"], "size": "mod-large" },
-      { "id": "neo-overhaul-eh-table-remap", "scope": "LATENT landmine surfaced by child-1 review (F-1, pre-existing): method.ExceptionHandlerRegister (TryStart/TryEnd/HandlerStart/HandlerEnd, body-indexed) is NOT remapped by LowerNeoOffsets Push-deletion. Trigger: try/catch/finally + >3-arg call/newobj that THROWS -> mis-routed exception handler. Same family as child 1 (Leave remap). Plumb exceptionHandlerR through LowerNeoOffsets + add a THROWING-EH regression probe. Not triggered by the current 306 smoke.", "deps": ["neo-valuetask-marshal"], "size": "mod", "priority": "correctness-followup" }
+      {
+        "id": "neo-jit-bogus-opcode",
+        "scope": "JIT correctness: ip->Code=2359324 garbage opcode (~8 sites). Instrument the ExecuteNeo default case to log method+IL-offset, build a minimal reproducer, find the OpCodeR emission bug (field offset / uninitialized Code), fix, add a NeoStep guard.",
+        "deps": [],
+        "size": "mod",
+        "priority": "CRITICAL-correctness"
+      },
+      {
+        "id": "neo-ldtoken",
+        "scope": "Implement ldtoken in ExecuteNeo: push RuntimeTypeHandle/RuntimeMethodHandle/RuntimeFieldHandle from the metadata token (Operand). Wire the handle -> IType/IMethod/IField resolution. typeof()/reflection unblocks. Add NeoStep probe.",
+        "deps": [
+          "neo-jit-bogus-opcode"
+        ],
+        "size": "mod",
+        "priority": "HIGH-dominant"
+      },
+      {
+        "id": "neo-bare-nie",
+        "scope": "Locate the 5 bare 'throw new NotImplementedException()' (no message) sites reached in Neo mode; implement or correctly guard each. Add probes.",
+        "deps": [
+          "neo-ldtoken"
+        ],
+        "size": "small-mod"
+      },
+      {
+        "id": "neo-clr-static-fields",
+        "scope": "Step 25 S3-4 capstone: Stsfld/Ldsfld on a CLR static field (currently throws 'IL-only capstone'). Resolve the CLR static via CLRType + read/write the CLR FieldInfo. Add NeoStep probe.",
+        "deps": [
+          "neo-bare-nie"
+        ],
+        "size": "mod"
+      },
+      {
+        "id": "neo-raw-field-edges",
+        "scope": "Raw Ldfld/Stfld/Ldloc/Ldarg reaching the Step 6 default: find why the Neo typed-splitter does not lower them, add the missing lowering arm or default-case handling. Add probes.",
+        "deps": [
+          "neo-clr-static-fields"
+        ],
+        "size": "small-mod"
+      },
+      {
+        "id": "neo-valuetask-marshal",
+        "scope": "VT1/VT2/VT6 ValueTask<T> async: the 16-byte builder byref-this call-arg marshalling skip in AsyncValueTaskMethodBuilder_T_SetResult_Neo (CLRRedirections.AsyncNeo.cs) + matching SetException/AwaitUnsafeOnCompleted. Dump the call-frame layout vs AsyncTaskMethodBuilder<int> (TC8, works). Deepest.",
+        "deps": [
+          "neo-raw-field-edges"
+        ],
+        "size": "mod-large"
+      },
+      {
+        "id": "neo-overhaul-eh-table-remap",
+        "scope": "LATENT landmine surfaced by child-1 review (F-1, pre-existing): method.ExceptionHandlerRegister (TryStart/TryEnd/HandlerStart/HandlerEnd, body-indexed) is NOT remapped by LowerNeoOffsets Push-deletion. Trigger: try/catch/finally + >3-arg call/newobj that THROWS -> mis-routed exception handler. Same family as child 1 (Leave remap). Plumb exceptionHandlerR through LowerNeoOffsets + add a THROWING-EH regression probe. Not triggered by the current 306 smoke.",
+        "deps": [
+          "neo-valuetask-marshal"
+        ],
+        "size": "mod",
+        "priority": "correctness-followup"
+      }
     ]
   },
-  "executionOrder": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-bare-nie", "neo-clr-static-fields", "neo-raw-field-edges", "neo-valuetask-marshal", "neo-overhaul-eh-table-remap"],
+  "executionOrder": [
+    "neo-jit-bogus-opcode",
+    "neo-ldtoken",
+    "neo-bare-nie",
+    "neo-clr-static-fields",
+    "neo-raw-field-edges",
+    "neo-valuetask-marshal",
+    "neo-overhaul-eh-table-remap"
+  ],
   "children": {
     "neo-jit-bogus-opcode": {
-      "pipeline": "small-feature", "wave": 1, "scope": "JIT correctness: ip->Code=2359324 garbage opcode (~8 sites) -> root-cause + fix + permanent ExecuteNeo dispatch guard",
-      "prerequisites": [], "dependsOn": [], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 306/0 (301 baseline + 5 probes); stash-toggle FAIL-on-HEAD overrun-throw -> PASS-after; Legacy-neutral (#if ENABLE_NEO_MODE)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "JIT correctness: ip->Code=2359324 garbage opcode (~8 sites) -> root-cause + fix + permanent ExecuteNeo dispatch guard",
+      "prerequisites": [],
+      "dependsOn": [],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 306/0 (301 baseline + 5 probes); stash-toggle FAIL-on-HEAD overrun-throw -> PASS-after; Legacy-neutral (#if ENABLE_NEO_MODE)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker; 1 Major PRE-EXISTING/deferred -> neo-overhaul-eh-table-remap; 2 Minor fixed inline F-2/F-3; 1 Trivial accepted-known). Root cause H1 confirmed via instrumented dump: FixBranchTargetsAfterRemove missed Leave/Leave_S Operand remap after Push-deletion.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-ldtoken": {
-      "pipeline": "small-feature", "wave": 1, "scope": "Implement ldtoken in ExecuteNeo (type + field paths) + LowerNeoOffsets lowering case + fix the broken autogen GetTypeFromHandle_0_Neo stub",
-      "prerequisites": ["neo-jit-bogus-opcode"], "dependsOn": ["neo-jit-bogus-opcode"], "status": "done", "capability": "neo-type-checks",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 311/0 (306 + 5 ldtoken probes); full-smoke Ldtoken NIE 254->0, GetStaticFieldOffset NRE 20->0; stash-toggle FAIL-on-HEAD Step-6 NIE -> PASS-after; Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "Implement ldtoken in ExecuteNeo (type + field paths) + LowerNeoOffsets lowering case + fix the broken autogen GetTypeFromHandle_0_Neo stub",
+      "prerequisites": [
+        "neo-jit-bogus-opcode"
+      ],
+      "dependsOn": [
+        "neo-jit-bogus-opcode"
+      ],
+      "status": "done",
+      "capability": "neo-type-checks",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 311/0 (306 + 5 ldtoken probes); full-smoke Ldtoken NIE 254->0, GetStaticFieldOffset NRE 20->0; stash-toggle FAIL-on-HEAD Step-6 NIE -> PASS-after; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS after 1 review-loop round. MAJOR-1 (reviewer-found, fixer-fixed, re-reviewed): planner+implementer wrongly claimed Operand3 is a disjoint spare -- it ALIASES OperandLong high dword, clobbering the field path declaring type. Fix = carry dest ref slot in Operand4 (@20-23, the only disjoint int spare). Offset-verified independently twice; 2-line toggle reproduced. MINOR-A doc reconciliation done; TRIVIAL-A (dead op.Operand4==1 @1218) recorded out-of-scope.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-clr-static-fields": {
-      "pipeline": "small-feature", "wave": 1, "scope": "Stsfld/Ldsfld on a CLR static field (Step 25 S3-4 capstone was IL-only) + NeoClrVtStaticFieldIsUnsafe guard",
-      "prerequisites": ["neo-ldtoken"], "dependsOn": ["neo-ldtoken"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 314/0 (311 + 3); full smoke COMPLETES 848/249 (no crash); CLR-static NIE 88->0; stash-toggle FAIL-on-HEAD NIE -> PASS; bug-fix-1 wrong-slot empirically reproduced; Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "Stsfld/Ldsfld on a CLR static field (Step 25 S3-4 capstone was IL-only) + NeoClrVtStaticFieldIsUnsafe guard",
+      "prerequisites": [
+        "neo-ldtoken"
+      ],
+      "dependsOn": [
+        "neo-ldtoken"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 314/0 (311 + 3); full smoke COMPLETES 848/249 (no crash); CLR-static NIE 88->0; stash-toggle FAIL-on-HEAD NIE -> PASS; bug-fix-1 wrong-slot empirically reproduced; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Recovery implementer found+fixed 2 bugs in the dead worker's partial code (raw-DstOffset wrong-slot + VT-binder AV). F1 weak-probes accepted; F3 (IL-static raw DstOffset) + F4 (brtrue-on-reference null misclassify) -> paired follow-up child neo-brtrue-on-reference (masked, fix together); F5/F6 trivial.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-raw-stfld-ldfld": {
-      "pipeline": "small-feature", "wave": 1, "scope": "Raw Stfld/Ldfld on a CLR-declaring-type field reach Step-6 default -> ExecuteNeo handlers (3 owner cases) + optimizer offset-lowering entry",
-      "prerequisites": ["neo-clr-static-fields"], "dependsOn": ["neo-clr-static-fields"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 316/0 (314 + 2); typed arms UNREGRESSED (NeoStep12/13/17 green); full-smoke raw Stfld 36->0, Ldfld 80->0; stash-toggle FAIL-on-HEAD Step-6 NIE -> PASS; Legacy-neutral (316 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "Raw Stfld/Ldfld on a CLR-declaring-type field reach Step-6 default -> ExecuteNeo handlers (3 owner cases) + optimizer offset-lowering entry",
+      "prerequisites": [
+        "neo-clr-static-fields"
+      ],
+      "dependsOn": [
+        "neo-clr-static-fields"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 316/0 (314 + 2); typed arms UNREGRESSED (NeoStep12/13/17 green); full-smoke raw Stfld 36->0, Ldfld 80->0; stash-toggle FAIL-on-HEAD Step-6 NIE -> PASS; Legacy-neutral (316 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Optimizer-additive + 3-owner-case + typed-arm-unregressed all confirmed. Root cause: raw Stfld/Ldfld escape the splitter when the declaring type is CLRType (no JIT change). M2 (IL-instance-with-CLR-base-field, 10 hits, Legacy handles) -> follow-up child; M1/M3 deferred fail-loud; T1 perf accepted.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-bare-nie": {
-      "pipeline": "small-feature", "wave": 1, "scope": "Bare throw new NotImplementedException() (~38 hits) -> all collapse to AppDomain.GetPrimitiveSize lacking enum/CLR-VT branches; 1 additive fix + 5 guard-tags",
-      "prerequisites": ["neo-raw-stfld-ldfld"], "dependsOn": ["neo-raw-stfld-ldfld"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 318/0 (316 + 2); full-smoke bare-default ~38->6 (all 6 = deferred framework Enum.GetValues); GetPrimitiveSize ~16->0; stash-toggle FAIL-on-HEAD (JIT + runtime) -> PASS; Legacy-neutral (318 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "Bare throw new NotImplementedException() (~38 hits) -> all collapse to AppDomain.GetPrimitiveSize lacking enum/CLR-VT branches; 1 additive fix + 5 guard-tags",
+      "prerequisites": [
+        "neo-raw-stfld-ldfld"
+      ],
+      "dependsOn": [
+        "neo-raw-stfld-ldfld"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 318/0 (316 + 2); full-smoke bare-default ~38->6 (all 6 = deferred framework Enum.GetValues); GetPrimitiveSize ~16->0; stash-toggle FAIL-on-HEAD (JIT + runtime) -> PASS; Legacy-neutral (318 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). SIZING-correct confirmed (GetNeoValueTypeManagedSize canonical). F1 (ref-field CLR struct stobj/ldobj refCount=0, latent missed-GC-root, line unchanged by PR) -> follow-up; F2 trivial.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-clr-vt-reffields-binder": {
-      "pipeline": "small-feature", "wave": 1, "scope": "The 18 Step-13b 'CLR VT with ref fields, no ValueTypeBinder' NIEs were ALL RuntimeFieldHandle from array initializers -> add a Neo RedirectionNeo for RuntimeHelpers.InitializeArray + source the blob from Cecil FieldDefinition.InitialValue (RESOLVES child-2 InitializeArray follow-up)",
-      "prerequisites": ["neo-bare-nie"], "dependsOn": ["neo-bare-nie"], "status": "done", "capability": "neo-arrays",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 320/0 (318+2); NeoStepLdtoken 5/0 (TC5 upgraded, TC1-4 unregressed); full-smoke Step-13b ~18->0; stash-toggle FAIL-on-HEAD -> PASS; Legacy-neutral (320 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "The 18 Step-13b 'CLR VT with ref fields, no ValueTypeBinder' NIEs were ALL RuntimeFieldHandle from array initializers -> add a Neo RedirectionNeo for RuntimeHelpers.InitializeArray + source the blob from Cecil FieldDefinition.InitialValue (RESOLVES child-2 InitializeArray follow-up)",
+      "prerequisites": [
+        "neo-bare-nie"
+      ],
+      "dependsOn": [
+        "neo-bare-nie"
+      ],
+      "status": "done",
+      "capability": "neo-arrays",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 320/0 (318+2); NeoStepLdtoken 5/0 (TC5 upgraded, TC1-4 unregressed); full-smoke Step-13b ~18->0; stash-toggle FAIL-on-HEAD -> PASS; Legacy-neutral (320 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major/Minor). Redirect-correct + ldtoken-blast-radius-clean confirmed. Implementer DISPROVED planner's blob-path assumption (blob via Cecil InitialValue, not ManagedObjects). RESOLVES neo-runtimehelpers-initializearray-neo.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-misc-opcodes": {
-      "pipeline": "small-feature", "wave": 1, "scope": "Batch 4 small unimplemented opcodes: Conv_R_Un + Switch + Unbox-of-enum + Ldsflda (ExecuteNeo arms, mirror Legacy)",
-      "prerequisites": ["neo-clr-vt-reffields-binder"], "dependsOn": ["neo-clr-vt-reffields-binder"], "status": "done", "capability": "neo-optimizer/neo-type-checks/neo-byref",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 324/0 (320 + 4); full-smoke per-opcode NIE all ->0 (Conv_R_Un 4, Switch 2, Ldsflda 5, Unbox-enum 2); stash-toggle 4/4 FAIL-on-HEAD -> PASS; Legacy-neutral (324 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "Batch 4 small unimplemented opcodes: Conv_R_Un + Switch + Unbox-of-enum + Ldsflda (ExecuteNeo arms, mirror Legacy)",
+      "prerequisites": [
+        "neo-clr-vt-reffields-binder"
+      ],
+      "dependsOn": [
+        "neo-clr-vt-reffields-binder"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer/neo-type-checks/neo-byref",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 324/0 (320 + 4); full-smoke per-opcode NIE all ->0 (Conv_R_Un 4, Switch 2, Ldsflda 5, Unbox-enum 2); stash-toggle 4/4 FAIL-on-HEAD -> PASS; Legacy-neutral (324 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). All 4 correct; Ldsflda zero-consumer-change confirmed. F1 (Conv_R_Un exact-double vs Legacy float32-round, Neo more accurate, accepted-known); F2 (Ldsflda ref-typed probe coverage) optional follow-up.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-clr-static-vt-field": {
-      "pipeline": "small-feature", "wave": 1, "scope": "CLR VT static field (TestVector3.One, 11 hits) hit child-3's over-cautious hasBinder guard -> delete the false-correlation clause (keep ref-field + slot-overflow)",
-      "prerequisites": ["neo-misc-opcodes"], "dependsOn": ["neo-misc-opcodes"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 326/0 (324 + 2); full-smoke CLR-static-VT NIE ~11->1 (the 1 = correct slot-overflow guard on ArrayTest05); stash-toggle FAIL-on-HEAD -> PASS; net crashes unchanged; Legacy-neutral (326 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "CLR VT static field (TestVector3.One, 11 hits) hit child-3's over-cautious hasBinder guard -> delete the false-correlation clause (keep ref-field + slot-overflow)",
+      "prerequisites": [
+        "neo-misc-opcodes"
+      ],
+      "dependsOn": [
+        "neo-misc-opcodes"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 326/0 (324 + 2); full-smoke CLR-static-VT NIE ~11->1 (the 1 = correct slot-overflow guard on ArrayTest05); stash-toggle FAIL-on-HEAD -> PASS; net crashes unchanged; Legacy-neutral (326 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Deletion-safe + AV-guarded + unmasked-AV-not-regression confirmed. Root cause: hasBinder was a false correlation (flat-byte path never consults binder). Surfaced unmasked ldind/stind-byref-CLR-struct AV (pre-existing) -> follow-up.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-il-instance-clr-base-field": {
-      "pipeline": "small-feature", "wave": 1, "scope": "IL instance accessing a CLR-base-declared field (5 hits; child-4 M2) -> route via ILTypeInstance.CLRInstance + existing NeoReadClrObjectField/NeoWriteClrObjectField (Legacy parity)",
-      "prerequisites": ["neo-clr-static-vt-field"], "dependsOn": ["neo-clr-static-vt-field"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 328/0 (326 + 2); full-smoke 'IL-instance CLR-base field deferred' ~5->0; stash-toggle FAIL-on-HEAD (tagged Stfld/Ldfld NIE) -> PASS; Legacy-neutral (328 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "IL instance accessing a CLR-base-declared field (5 hits; child-4 M2) -> route via ILTypeInstance.CLRInstance + existing NeoReadClrObjectField/NeoWriteClrObjectField (Legacy parity)",
+      "prerequisites": [
+        "neo-clr-static-vt-field"
+      ],
+      "dependsOn": [
+        "neo-clr-static-vt-field"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 328/0 (326 + 2); full-smoke 'IL-instance CLR-base field deferred' ~5->0; stash-toggle FAIL-on-HEAD (tagged Stfld/Ldfld NIE) -> PASS; Legacy-neutral (328 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major/Minor). Unwrap+helper-reuse confirmed at source; Array-deferral untouched. 1 Trivial (helper re-resolves CLRType each call, deliberate minimal-diff) accepted.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-clr-object-field-il-path": {
-      "pipeline": "small-feature", "wave": 1, "scope": "'Step 17/13b: CLR object via the IL-instance path' NIE (5 hits) -- rework GetNeoILInstance: null->NRE (CLR-faithful), adaptor->unwrap, else defensive NIE. Hypothesis DISPROVEN (hits were null/adaptor/delegate, not CLR objects)",
-      "prerequisites": ["neo-il-instance-clr-base-field"], "dependsOn": ["neo-il-instance-clr-base-field"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-11", "smoke": "NeoStep 330/0 (328 + 2); full-smoke 'CLR object via IL-instance path' NIE ~5->0 (the 4 reachable tests now throw NRE -- still fail but exception type strictly more correct); stash-toggle FAIL-on-HEAD (NIE propagates) -> PASS (NRE caught); Legacy-neutral (330 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "'Step 17/13b: CLR object via the IL-instance path' NIE (5 hits) -- rework GetNeoILInstance: null->NRE (CLR-faithful), adaptor->unwrap, else defensive NIE. Hypothesis DISPROVEN (hits were null/adaptor/delegate, not CLR objects)",
+      "prerequisites": [
+        "neo-il-instance-clr-base-field"
+      ],
+      "dependsOn": [
+        "neo-il-instance-clr-base-field"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-11",
+      "smoke": "NeoStep 330/0 (328 + 2); full-smoke 'CLR object via IL-instance path' NIE ~5->0 (the 4 reachable tests now throw NRE -- still fail but exception type strictly more correct); stash-toggle FAIL-on-HEAD (NIE propagates) -> PASS (NRE caught); Legacy-neutral (330 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=planner-author; 0 Blocker/Major/Minor). GetNeoILInstance-rework sound + byref-route-confirmed + probe-valid + scope-worth-shipping all confirmed. SCOPE: the null-owner tests still fail (now NRE) -- real root cause is the ceq/brfalse-on-reference lazy-init gap (child-3 F3+F4 = brtrue-on-reference) + VT-THIS-ADDR. This change is a correct prerequisite.",
       "shipped": "commit+push 2026-07-11"
     },
     "neo-brtrue-on-reference": {
-      "pipeline": "small-feature", "wave": 1, "scope": "CORRECTNESS: Neo brtrue/brfalse null-sentinel -- null ref (non-zero mStack idx / -1) misclassified as truthy -> lazy-init/delegate-cache skipped. Type-specialize Brtrue_Ref/Brfalse_Ref (deref mStack[idx]!=null) + Ldsfld registerTypes seeding + F3 IL-static DstOffset + Call-case stale-ref clear",
-      "prerequisites": ["neo-clr-object-field-il-path"], "dependsOn": ["neo-clr-object-field-il-path"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 332/0 (330 + 2); Tr2/Tr5/OrChain/TC10 all pass; the Call-case clear toggle-proven load-bearing (off -> 2 regressions); F4+F3 coupling confirmed (F3-alone breaks); Legacy-neutral (332 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "CORRECTNESS: Neo brtrue/brfalse null-sentinel -- null ref (non-zero mStack idx / -1) misclassified as truthy -> lazy-init/delegate-cache skipped. Type-specialize Brtrue_Ref/Brfalse_Ref (deref mStack[idx]!=null) + Ldsfld registerTypes seeding + F3 IL-static DstOffset + Call-case stale-ref clear",
+      "prerequisites": [
+        "neo-clr-object-field-il-path"
+      ],
+      "dependsOn": [
+        "neo-clr-object-field-il-path"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 332/0 (330 + 2); Tr2/Tr5/OrChain/TC10 all pass; the Call-case clear toggle-proven load-bearing (off -> 2 regressions); F4+F3 coupling confirmed (F3-alone breaks); Legacy-neutral (332 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major; 3 Minor all in design Risks). Deref + Call-case-clear (toggle-proven) + Ldsfld-seeding + coupling all confirmed. Fixes the DIRECT ldsfld;brtrue form; the ceq form (ldsfld;ldnull;ceq;brfalse) is a clean separate follow-up.",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-ceq-null-sentinel": {
-      "pipeline": "small-feature", "wave": 1, "scope": "CORRECTNESS sibling of child-11: the ceq form of the null-comparison gap. Ceq/Beq/Bne_Un -> Ceq_Ref/Beq_Ref/Bne_Un_Ref (deref R(v)=v>=0?mStack[v]:null + C# identity). x==null (ceq form) now works; null-comparison gap CLOSED",
-      "prerequisites": ["neo-brtrue-on-reference"], "dependsOn": ["neo-brtrue-on-reference"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 335/0 (332 + 3); child-11 canaries 5/5 (orthogonal); TestStaticFieldInstance PROGRESSED (ceq NRE gone -> downstream IL-static-ref-field read-back gap); stash-toggle TC1+TC2 FAIL (DivByZero) -> PASS; Legacy-neutral (335 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "CORRECTNESS sibling of child-11: the ceq form of the null-comparison gap. Ceq/Beq/Bne_Un -> Ceq_Ref/Beq_Ref/Bne_Un_Ref (deref R(v)=v>=0?mStack[v]:null + C# identity). x==null (ceq form) now works; null-comparison gap CLOSED",
+      "prerequisites": [
+        "neo-brtrue-on-reference"
+      ],
+      "dependsOn": [
+        "neo-brtrue-on-reference"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 335/0 (332 + 3); child-11 canaries 5/5 (orthogonal); TestStaticFieldInstance PROGRESSED (ceq NRE gone -> downstream IL-static-ref-field read-back gap); stash-toggle TC1+TC2 FAIL (DivByZero) -> PASS; Legacy-neutral (335 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). 3-deref-correct + child-11-orthogonal(3 ways) + bookkeeping-complete + Ceq_Ref-probe-load-bearing all confirmed. F1 (Beq_Ref/Bne_Un_Ref no direct coverage, symmetric siblings) accepted-known. Root cause = shared InferPrimTag I4-fallback for references.",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-il-static-ref-field-readback": {
-      "pipeline": "small-feature", "wave": 1, "scope": "Read-back of a freshly-written IL-static REFERENCE field returned ILTypeInstance/wrong-value -> InvalidCastException. HYPOTHESIS DISPROVEN (the static ref-field arms are CORRECT); real root cause = newobj dest/arg register ALIAS clobbering a reference ctor arg before CopyNeoCallArguments. Fix = re-base the aliased ref arg to a fresh mStack slot (Q-NEWOBJ aliasing contract extension). (change name reflects the disproven framing; the fix is the newoj alias)",
-      "prerequisites": ["neo-ceq-null-sentinel"], "dependsOn": ["neo-ceq-null-sentinel"], "status": "done", "capability": "neo-newobj",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 339/0 (335 + 4); TestStaticFieldInstance PASSES (was InvalidCastException); child-11/12 canaries intact; stash-toggle FAIL (DivByZero) -> PASS; Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "Read-back of a freshly-written IL-static REFERENCE field returned ILTypeInstance/wrong-value -> InvalidCastException. HYPOTHESIS DISPROVEN (the static ref-field arms are CORRECT); real root cause = newobj dest/arg register ALIAS clobbering a reference ctor arg before CopyNeoCallArguments. Fix = re-base the aliased ref arg to a fresh mStack slot (Q-NEWOBJ aliasing contract extension). (change name reflects the disproven framing; the fix is the newoj alias)",
+      "prerequisites": [
+        "neo-ceq-null-sentinel"
+      ],
+      "dependsOn": [
+        "neo-ceq-null-sentinel"
+      ],
+      "status": "done",
+      "capability": "neo-newobj",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 339/0 (335 + 4); TestStaticFieldInstance PASSES (was InvalidCastException); child-11/12 canaries intact; stash-toggle FAIL (DivByZero) -> PASS; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=planner-author; 0 Blocker/Major). New-root-cause confirmed (static arms correct; newoj dest/arg ref-alias is the defect). Fix correct on all 4 (alias detection via map.RefSrc + rebase + primitive-int exclusion + no-overfire; retDstPtr reorder load-bearing). F1/F2 doc nits, F3 out-of-scope downstream, F4 trivial.",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-overhaul-eh-table-remap": {
-      "pipeline": "small-feature", "wave": 1, "scope": "LATENT CORRECTNESS (child-1 sibling): method.exceptionHandlerR (TryStart/TryEnd/HandlerStart/HandlerEnd) was NULL during LowerNeoOffsets + stale post-deletion -> a thrown exception in a try/catch + >3-arg-call method could miss its handler. Fix: build EH table before the back-half at both funnels (idempotent) + per-deletion lockstep remap in FixBranchTargetsAfterRemove. CLOSES the child-1 EH-table landmine",
-      "prerequisites": ["neo-il-static-ref-field-readback"], "dependsOn": ["neo-il-static-ref-field-readback"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 341/0 (339 + 2); NeoStep14 (EH) 26/26 UNREGRESSED (the build-order change load-bearing for all protected-region Neo methods); stash-toggle FAIL (throw escapes catch) -> PASS; Legacy-neutral (341 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "LATENT CORRECTNESS (child-1 sibling): method.exceptionHandlerR (TryStart/TryEnd/HandlerStart/HandlerEnd) was NULL during LowerNeoOffsets + stale post-deletion -> a thrown exception in a try/catch + >3-arg-call method could miss its handler. Fix: build EH table before the back-half at both funnels (idempotent) + per-deletion lockstep remap in FixBranchTargetsAfterRemove. CLOSES the child-1 EH-table landmine",
+      "prerequisites": [
+        "neo-il-static-ref-field-readback"
+      ],
+      "dependsOn": [
+        "neo-il-static-ref-field-readback"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 341/0 (339 + 2); NeoStep14 (EH) 26/26 UNREGRESSED (the build-order change load-bearing for all protected-region Neo methods); stash-toggle FAIL (throw escapes catch) -> PASS; Legacy-neutral (341 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major). Build-order-correct + remap-correct (ExceptionHandler class mutation works) + NeoStep14-gate 26/26 + probe-reliable all confirmed. 1 Minor (no dedicated generic-instance EH probe, CloneAndPatch structurally identical + stash-proven, low risk).",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-ldind-stind-byref-clr-struct": {
-      "pipeline": "small-feature", "wave": 1, "scope": "LATENT AV (child-8 unmasked): ldflda on a CLR-struct-local field used FieldInfo.GetHashCode() (a huge hash, not a byte offset) -> out-of-frame AV in ldind/stind. Fix = JIT marker 0x8 + cached Marshal.OffsetOf resolution",
-      "prerequisites": ["neo-overhaul-eh-table-remap"], "dependsOn": ["neo-overhaul-eh-table-remap"], "status": "done", "capability": "neo-byref",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 343/0 (341 + 2); TestValueTypeBinding.Test00 PASSES (was segfault); stash-toggle FAIL-on-HEAD (AV exit 139) -> PASS; Legacy-neutral (343 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "LATENT AV (child-8 unmasked): ldflda on a CLR-struct-local field used FieldInfo.GetHashCode() (a huge hash, not a byte offset) -> out-of-frame AV in ldind/stind. Fix = JIT marker 0x8 + cached Marshal.OffsetOf resolution",
+      "prerequisites": [
+        "neo-overhaul-eh-table-remap"
+      ],
+      "dependsOn": [
+        "neo-overhaul-eh-table-remap"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 343/0 (341 + 2); TestValueTypeBinding.Test00 PASSES (was segfault); stash-toggle FAIL-on-HEAD (AV exit 139) -> PASS; Legacy-neutral (343 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Marker-0x8-unambiguous + Marshal.OffsetOf-correct (blittable-sound) + addi-on-float-confirmed-pre-existing all confirmed. M1 TC2 probe-strength nit; M2 the surfaced addi/conv.i4 float bugs (pre-existing).",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-addi-on-float": {
-      "pipeline": "small-feature", "wave": 1, "scope": "CORRECTNESS (child-15 surfaced, pre-existing): addi integer-added float bit-patterns (a.X += 100 -> addi r,r,0x42C80000). Real root cause = Ldind_*/Ldelem_* never seeded registerTypes -> typed *_R4/R8/I8 specialization no-oped. Fix = seed the 8 missing cases (free scope over subi/muli/divi/remi + add/sub/mul/div/rem)",
-      "prerequisites": ["neo-ldind-stind-byref-clr-struct"], "dependsOn": ["neo-ldind-stind-byref-clr-struct"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 346/0 (343 + 3); NeoStep16 27/0 + OrChain 10/0 + Float/Double green (type-specializer regression check); stash-toggle 3/3 FAIL (DivByZero) -> PASS (addi.r4 now fires); Legacy-neutral (346 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "CORRECTNESS (child-15 surfaced, pre-existing): addi integer-added float bit-patterns (a.X += 100 -> addi r,r,0x42C80000). Real root cause = Ldind_*/Ldelem_* never seeded registerTypes -> typed *_R4/R8/I8 specialization no-oped. Fix = seed the 8 missing cases (free scope over subi/muli/divi/remi + add/sub/mul/div/rem)",
+      "prerequisites": [
+        "neo-ldind-stind-byref-clr-struct"
+      ],
+      "dependsOn": [
+        "neo-ldind-stind-byref-clr-struct"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 346/0 (343 + 3); NeoStep16 27/0 + OrChain 10/0 + Float/Double green (type-specializer regression check); stash-toggle 3/3 FAIL (DivByZero) -> PASS (addi.r4 now fires); Legacy-neutral (346 ran/17 failed == baseline)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Seeding-correct (I4 provable no-op) + regression-surface-confirmed + stash-toggle-airtight all confirmed. Root cause shared with child-11/12/13 (untyped-frame + InferPrimTag I4-fallback). 1 Minor doc-imprecision (JIT dump prints pre-specialization addi).",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-clr-static-vt-slot-overflow": {
-      "pipeline": "small-feature", "wave": 1, "scope": "#1 active gap (14 hits): AllocateLocalStackSpaces maxSize loop grew eval-temp size only for ILType -> a CLRType VT (TestVector3, 12 bytes) was skipped -> temp stayed 8 -> genuine 12-into-8 OOB the NeoClrVtStaticFieldIsUnsafe guard refused. Fix = add a CLRType arm to the maxSize loop (sizing matches write+guard); guard unchanged",
-      "prerequisites": ["neo-addi-on-float"], "dependsOn": ["neo-addi-on-float"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 348/0 (346 + 2); layout-regression check clean (broad NeoStep all categories green: EH/byref/VT/box/arithmetic); full-smoke TestVector3.One NIE 14->0; stash-toggle FAIL (slot-overflow NIE) -> PASS; Legacy-neutral (348 ran/17 failed == baseline)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "#1 active gap (14 hits): AllocateLocalStackSpaces maxSize loop grew eval-temp size only for ILType -> a CLRType VT (TestVector3, 12 bytes) was skipped -> temp stayed 8 -> genuine 12-into-8 OOB the NeoClrVtStaticFieldIsUnsafe guard refused. Fix = add a CLRType arm to the maxSize loop (sizing matches write+guard); guard unchanged",
+      "prerequisites": [
+        "neo-addi-on-float"
+      ],
+      "dependsOn": [
+        "neo-addi-on-float"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 348/0 (346 + 2); layout-regression check clean (broad NeoStep all categories green: EH/byref/VT/box/arithmetic); full-smoke TestVector3.One NIE 14->0; stash-toggle FAIL (slot-overflow NIE) -> PASS; Legacy-neutral (348 ran/17 failed == baseline)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major). CLRType-arm-correct (additive, sizing matches write+guard -> no OOB) + layout-regression-confirmed (broad NeoStep 348/0) both confirmed. F-1 minor probe-coverage (Ldsfeld-into-temp only; other shapes rely on structural fix + 14->0); F-2 trivial maxAlignment-inert.",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-il-enum-getenumvalues": {
-      "pipeline": "small-feature", "wave": 1, "scope": "System.Enum.GetValues/GetNames on an IL enum bare-NIE'd (ILRuntimeType overrode none of the GetEnum* virtuals). Fix = 4 overrides (IsEnum/GetEnumUnderlyingType/GetEnumValues/GetEnumNames) on ILRuntimeType, members from Cecil FieldDefinition.Constant, sorted by UNSIGNED binary value",
-      "prerequisites": ["neo-clr-static-vt-slot-overflow"], "dependsOn": ["neo-clr-static-vt-slot-overflow"], "status": "done", "capability": "neo-type-checks",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 352/0 (348 + 4 incl. TC4 negative-enum); EnumTest.Test01 (IL-enum GetValues) passes; stash-toggle TC1+TC4 FAIL-on-HEAD (bare NIE / signed sort) -> PASS; Legacy-neutral (no existing Legacy test regresses; TC4 is Neo-scoped -- see follow-up)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "System.Enum.GetValues/GetNames on an IL enum bare-NIE'd (ILRuntimeType overrode none of the GetEnum* virtuals). Fix = 4 overrides (IsEnum/GetEnumUnderlyingType/GetEnumValues/GetEnumNames) on ILRuntimeType, members from Cecil FieldDefinition.Constant, sorted by UNSIGNED binary value",
+      "prerequisites": [
+        "neo-clr-static-vt-slot-overflow"
+      ],
+      "dependsOn": [
+        "neo-clr-static-vt-slot-overflow"
+      ],
+      "status": "done",
+      "capability": "neo-type-checks",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 352/0 (348 + 4 incl. TC4 negative-enum); EnumTest.Test01 (IL-enum GetValues) passes; stash-toggle TC1+TC4 FAIL-on-HEAD (bare NIE / signed sort) -> PASS; Legacy-neutral (no existing Legacy test regresses; TC4 is Neo-scoped -- see follow-up)",
       "review": "APPROVE-WITH-FINDINGS after 1 review-loop round. MAJOR (reviewer-found, LEAD-fixed): GetSortedEnumMembers used a SIGNED compare but the framework sorts by UNSIGNED binary value -> divergent for negative-member enums. Fix = EnumValueAsUnsignedBits per-type unchecked-cast helper (Convert.ToUInt64 overflow-threw on negatives; stash-toggle-proven). New finding: TC4 is Neo-scoped (Legacy doesn't dispatch the override -> Legacy declaration-order gap, pre-existing, follow-up).",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-raw-stfld-array-element": {
-      "pipeline": "small-feature", "wave": 1, "scope": "Raw Stfld on a CLR-struct array element (4 hits, child-4 deferred): clrStructArray[i].field=x (ldelema;stfld) threw the tagged NIE. Fix = box/mutate/unbox via Array.GetValue/SetValue (the element lives in the Array CLR backing store)",
-      "prerequisites": ["neo-il-enum-getenumvalues"], "dependsOn": ["neo-il-enum-getenumvalues"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-12", "smoke": "NeoStep 354/0 (352 + 2); full-smoke array-element NIE 4->0; write-back-persists empirically confirmed; stash-toggle FAIL-on-HEAD (tagged NIE) -> PASS; Legacy-neutral (354 ran/18 failed, no new Legacy regression)",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "Raw Stfld on a CLR-struct array element (4 hits, child-4 deferred): clrStructArray[i].field=x (ldelema;stfld) threw the tagged NIE. Fix = box/mutate/unbox via Array.GetValue/SetValue (the element lives in the Array CLR backing store)",
+      "prerequisites": [
+        "neo-il-enum-getenumvalues"
+      ],
+      "dependsOn": [
+        "neo-il-enum-getenumvalues"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep 354/0 (352 + 2); full-smoke array-element NIE 4->0; write-back-persists empirically confirmed; stash-toggle FAIL-on-HEAD (tagged NIE) -> PASS; Legacy-neutral (354 ran/18 failed, no new Legacy regression)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major/Minor). 2-branches-correct + write-back-persists (FieldInfo.SetValue mutates boxed VT, Array.SetValue writes back) both confirmed. Ldfld array-element DEFERRED (not symmetric; untyped frame can't safely distinguish flat-bytes-local vs array-element-byref without a JIT marker -- latent silent-corruption if exercised, follow-up). 1 Trivial comment line-number drift.",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-valuetask-marshal": {
-      "pipeline": "small-feature", "wave": 1, "scope": "ValueTask<T> VT1/VT2/VT6 async. DISPROVEN-STALE on re-audit (5th this session): the framed 8-vs-16 builder byref-this skip bug was ALREADY FIXED in a prior cycle (commit 9c9b795d; SetResult/SetException skip the builder's Unsafe.SizeOf, not a hardcoded 8). This child = spec-delta-only (pins the invariant) + verify",
-      "prerequisites": ["neo-raw-stfld-array-element"], "dependsOn": ["neo-raw-stfld-array-element"], "status": "done", "capability": "neo-async",
-      "completedDate": "2026-07-12", "smoke": "NeoStep20_VT 7/0 (VT1-VT6 + VT_ZeroAlloc) PASS on HEAD (independently confirmed); full smoke ZERO ValueTask NIEs; git diff HEAD -- source empty (no engine change). NO code change -- spec-delta-only.",
+      "pipeline": "small-feature",
+      "wave": 1,
+      "scope": "ValueTask<T> VT1/VT2/VT6 async. DISPROVEN-STALE on re-audit (5th this session): the framed 8-vs-16 builder byref-this skip bug was ALREADY FIXED in a prior cycle (commit 9c9b795d; SetResult/SetException skip the builder's Unsafe.SizeOf, not a hardcoded 8). This child = spec-delta-only (pins the invariant) + verify",
+      "prerequisites": [
+        "neo-raw-stfld-array-element"
+      ],
+      "dependsOn": [
+        "neo-raw-stfld-array-element"
+      ],
+      "status": "done",
+      "capability": "neo-async",
+      "completedDate": "2026-07-12",
+      "smoke": "NeoStep20_VT 7/0 (VT1-VT6 + VT_ZeroAlloc) PASS on HEAD (independently confirmed); full smoke ZERO ValueTask NIEs; git diff HEAD -- source empty (no engine change). NO code change -- spec-delta-only.",
       "review": "LEAD-verified (no-engine-change doc child): the spec delta (AsyncNeo.cs:276 SetResult uses Unsafe.SizeOf<T> per-builder, not hardcoded 8 -- grounded in the actual code) pins the invariant so a future refactor cannot silently restore += 8 (which would re-break only the ValueTask path, masked by the passing Task smoke). NeoStep20_VT 7/0 is the guard.",
       "shipped": "commit+push 2026-07-12"
     },
     "neo-raw-ldfld-stfld-clr-struct-seeding": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (float-corruption sibling of child-16, lead-12 highest-value latent item): seed registerTypes for (a) a Call returning primitive float/double/long + (b) raw Ldfld of a CLR-struct primitive field (the child-4 CLRType-owner escaping shape). Both producers were unseeded -> typed-arithmetic specialization no-oped -> plain integer op on float bits -> garbage. RE-AUDIT CONFIRMED both reproduce on HEAD fc2baa26 (17-for-17 disproven streak broken honestly). Fix = seeding-switch additions to TypeSpecializeNeoOpcodes (type knowable at JIT time, no marker needed) + a NeoClrPrimitiveTypeToIType helper. Raw Stfld DISPROVEN-in-scope (consumes a value, does not produce one feeding arithmetic).",
-      "prerequisites": ["neo-valuetask-marshal"], "dependsOn": ["neo-valuetask-marshal"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 358/0 (354 + 4 probes: TC1 float + TC2 double via Call, TC3 mul+add + TC4 reg-reg via raw Ldfld); stash-toggle JITCompiler.cs ONLY -> 4/4 FAULT (DivByZero at deliberate 1/0 guards) -> pop -> 0/4 PASS (airtight); JIT dump confirms addi.r4/addi.r8/muli.r4/add.r4 now fire; Legacy-neutral (100% #if ENABLE_NEO_MODE, identical Legacy result with/without)",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (float-corruption sibling of child-16, lead-12 highest-value latent item): seed registerTypes for (a) a Call returning primitive float/double/long + (b) raw Ldfld of a CLR-struct primitive field (the child-4 CLRType-owner escaping shape). Both producers were unseeded -> typed-arithmetic specialization no-oped -> plain integer op on float bits -> garbage. RE-AUDIT CONFIRMED both reproduce on HEAD fc2baa26 (17-for-17 disproven streak broken honestly). Fix = seeding-switch additions to TypeSpecializeNeoOpcodes (type knowable at JIT time, no marker needed) + a NeoClrPrimitiveTypeToIType helper. Raw Stfld DISPROVEN-in-scope (consumes a value, does not produce one feeding arithmetic).",
+      "prerequisites": [
+        "neo-valuetask-marshal"
+      ],
+      "dependsOn": [
+        "neo-valuetask-marshal"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 358/0 (354 + 4 probes: TC1 float + TC2 double via Call, TC3 mul+add + TC4 reg-reg via raw Ldfld); stash-toggle JITCompiler.cs ONLY -> 4/4 FAULT (DivByZero at deliberate 1/0 guards) -> pop -> 0/4 PASS (airtight); JIT dump confirms addi.r4/addi.r8/muli.r4/add.r4 now fire; Legacy-neutral (100% #if ENABLE_NEO_MODE, identical Legacy result with/without)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Seeding-correct + no-overfire(registerTypes-single-pass-risk-bounded) + additive-safe(71-added/0-removed) + stash-airtight all confirmed. M1 perf nit (GetMethod not hoisted, negligible), M2 CLR-callee-float probe coverage (accepted-known, worst-case byte-identical-to-HEAD no-regression), 3 Trivial. Pre-existing P1/P2 noted not introduced.",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-activator-createinstance-neo-redirect": {
-      "pipeline": "small-feature", "wave": 2, "scope": "Activator.CreateInstance on an IL type under Neo fell through to the broken autogen CreateInstance_*_Neo stub -> MissingMethodException. Root cause: AppDomain.cs:162-176 registers the hand-written CLRRedirections.CreateInstance/2/3 (ILType.Instantiate) on Legacy RedirectMap ONLY, not RedirectMapNeo. REFRAMED from the disproven neo-activator-createinstance-nre (the GetStaticFieldOffset NRE does NOT reproduce). Same defect class as child-6 (InitializeArrayNeo). Fix = Neo-signature equivalents + WriteNeoObjectResult helper + register on RedirectMapNeo (mirror child-6).",
-      "prerequisites": ["neo-raw-ldfld-stfld-clr-struct-seeding"], "dependsOn": ["neo-raw-ldfld-stfld-clr-struct-seeding"], "status": "done", "capability": "neo-dispatch",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 361/0 (358 + 3 probes: generic + Type + Type+object[]); stash-toggle CLRRedirections.cs+AppDomain.cs -> 3/3 FAULT (MissingMethodException via autogen CreateInstance_1_Neo) -> pop -> 0/3 PASS; ActivatorCreateInstanceWithArgsTestSimple PASSES; Legacy-neutral (361 ran/18 failed pre-existing set; 3 probes PASS under Legacy; RedirectMap untouched)",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "Activator.CreateInstance on an IL type under Neo fell through to the broken autogen CreateInstance_*_Neo stub -> MissingMethodException. Root cause: AppDomain.cs:162-176 registers the hand-written CLRRedirections.CreateInstance/2/3 (ILType.Instantiate) on Legacy RedirectMap ONLY, not RedirectMapNeo. REFRAMED from the disproven neo-activator-createinstance-nre (the GetStaticFieldOffset NRE does NOT reproduce). Same defect class as child-6 (InitializeArrayNeo). Fix = Neo-signature equivalents + WriteNeoObjectResult helper + register on RedirectMapNeo (mirror child-6).",
+      "prerequisites": [
+        "neo-raw-ldfld-stfld-clr-struct-seeding"
+      ],
+      "dependsOn": [
+        "neo-raw-ldfld-stfld-clr-struct-seeding"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 361/0 (358 + 3 probes: generic + Type + Type+object[]); stash-toggle CLRRedirections.cs+AppDomain.cs -> 3/3 FAULT (MissingMethodException via autogen CreateInstance_1_Neo) -> pop -> 0/3 PASS; ActivatorCreateInstanceWithArgsTestSimple PASSES; Legacy-neutral (361 ran/18 failed pre-existing set; 3 probes PASS under Legacy; RedirectMap untouched)",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Calling-convention-correct + IL/CLR-discrimination-matches-Legacy + generic-definition-precedence(TryGetRedirection)-confirmed + Legacy-RedirectMap-untouched all confirmed. M1 null-args-guard divergence (more robust, unreachable), M2 AllocValueType branches deferred (unreachable, documented); 2 Trivial. P1 instance-field ceq-null gap + P2 moot autogen stub noted out-of-scope.",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-ceq-null-instance-field": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (instance-field null-comparison, child-22's P1): the TERNARY form (field==null)?a:b lowers to a DIRECT brfalse.s (no ceq) which stays plain because Ldfld_Ref has NO registerTypes seeding case -> Brtrue/Brfalse specialization no-ops -> null instance field (-1 sentinel, !=0) reads truthy -> wrong branch. The INSTANCE-FIELD form of child-11's gap (child-11 seeded Ldsfeld static, DEFERRED Ldfld_Ref). Re-audit DISPROVED the framed mechanism (Ceq_Ref fires fine for the ceq form) and pinned the real direct-branch path. Fix = +5-line Ldfld_Ref seeding case (ObjectType, Operand4==0 guard excludes F-10 boxed-CLR-struct). ALSO UNBLOCKS child-22's ActivatorCreateInstanceWithArgsTest P1 for free (auto-property getter inlines to ldfld.ref).",
-      "prerequisites": ["neo-activator-createinstance-neo-redirect"], "dependsOn": ["neo-activator-createinstance-neo-redirect"], "status": "done", "capability": "neo-optimizer",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 365/0 (361 + 4 probes: TC1 ternary faulting + TC2/TC3 ceq controls + TC4 non-null); stash-toggle JITCompiler.cs -> TC1 FAULT (plain brfalse.s, DivByZero) -> pop -> PASS (brfalse.ref fires); child-11 Tr2/Tr5 canaries clean; BONUS ActivatorCreateInstanceWithArgsTest 1-fail-on-HEAD -> 2/0 PASS with fix; Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (instance-field null-comparison, child-22's P1): the TERNARY form (field==null)?a:b lowers to a DIRECT brfalse.s (no ceq) which stays plain because Ldfld_Ref has NO registerTypes seeding case -> Brtrue/Brfalse specialization no-ops -> null instance field (-1 sentinel, !=0) reads truthy -> wrong branch. The INSTANCE-FIELD form of child-11's gap (child-11 seeded Ldsfeld static, DEFERRED Ldfld_Ref). Re-audit DISPROVED the framed mechanism (Ceq_Ref fires fine for the ceq form) and pinned the real direct-branch path. Fix = +5-line Ldfld_Ref seeding case (ObjectType, Operand4==0 guard excludes F-10 boxed-CLR-struct). ALSO UNBLOCKS child-22's ActivatorCreateInstanceWithArgsTest P1 for free (auto-property getter inlines to ldfld.ref).",
+      "prerequisites": [
+        "neo-activator-createinstance-neo-redirect"
+      ],
+      "dependsOn": [
+        "neo-activator-createinstance-neo-redirect"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 365/0 (361 + 4 probes: TC1 ternary faulting + TC2/TC3 ceq controls + TC4 non-null); stash-toggle JITCompiler.cs -> TC1 FAULT (plain brfalse.s, DivByZero) -> pop -> PASS (brfalse.ref fires); child-11 Tr2/Tr5 canaries clean; BONUS ActivatorCreateInstanceWithArgsTest 1-fail-on-HEAD -> 2/0 PASS with fix; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Operand4-guard-correct (only F-10 marker reachable; ref fields leave it 0; F-10 flattens so exclusion correct) + no-overfire (Ldfld_Ref emitted only for non-prim non-IL-VT) + ObjectType-isNeoReferenceSlot + placement(heap-vs-inline)-clean + bonus-causal(stash-toggle) all confirmed. Trivial doc-accuracy nit (null=-1 sentinel not valid-index; fix still correct), Minor test-gap (no TC5 two-ref-field ceq.ref identity), O2 Ldfld_Ref_Inline F-10 edge latent out-of-scope.",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-raw-ldfld-array-element": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (silent corruption, child-19 deferred the Ldfld counterpart of its Stfld array-element fix): x = clrStructArray[i].field (ldelema; ldfld) silently corrupted -- the raw-Ldfld VT-owner branch read the ldelema byref (arrIdx, elementIdx) as flat struct bytes. Re-audit CONFIRMED + REFUTED the 'runtime detection suffices' hypothesis (constructible small-int-field + same-typed-array collision) -> a JIT marker is provably correct. Fix = NeoRawLdfldArrayElementByRefMarker 0x1 in Operand4 (stamped when ins.Previous==Ldelema) + a runtime array-element READ branch (Array.GetValue + f.GetValue + marshal) mirroring child-19's Stfld WRITE.",
-      "prerequisites": ["neo-ceq-null-instance-field"], "dependsOn": ["neo-ceq-null-instance-field"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 368/0 (365 + 3 probes: TC1 single-element + TC2 multi-index + TC3 host-built-array); stash-toggle 2 engine files -> 3/3 FAULT (DivByZero; a=3,b=1,s=4 = byref-as-struct-bytes) -> pop -> 368/0 (airtight); child-4/9/19/21/23/13 regression probes + NeoStep12/13/17 (102 VT) all PASS; read-back CORRECT (4259/100/7777 exact); Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (silent corruption, child-19 deferred the Ldfld counterpart of its Stfld array-element fix): x = clrStructArray[i].field (ldelema; ldfld) silently corrupted -- the raw-Ldfld VT-owner branch read the ldelema byref (arrIdx, elementIdx) as flat struct bytes. Re-audit CONFIRMED + REFUTED the 'runtime detection suffices' hypothesis (constructible small-int-field + same-typed-array collision) -> a JIT marker is provably correct. Fix = NeoRawLdfldArrayElementByRefMarker 0x1 in Operand4 (stamped when ins.Previous==Ldelema) + a runtime array-element READ branch (Array.GetValue + f.GetValue + marshal) mirroring child-19's Stfld WRITE.",
+      "prerequisites": [
+        "neo-ceq-null-instance-field"
+      ],
+      "dependsOn": [
+        "neo-ceq-null-instance-field"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 368/0 (365 + 3 probes: TC1 single-element + TC2 multi-index + TC3 host-built-array); stash-toggle 2 engine files -> 3/3 FAULT (DivByZero; a=3,b=1,s=4 = byref-as-struct-bytes) -> pop -> 368/0 (airtight); child-4/9/19/21/23/13 regression probes + NeoStep12/13/17 (102 VT) all PASS; read-back CORRECT (4259/100/7777 exact); Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Marker-reliable + Operand4-survives + runtime-read-correct + regression-green + TC3-7777-reachable all confirmed. M1 probes int-only (float/VT/ref not exercised; low risk shared marshalling), M2 array-read more permissive on ref-field structs (not a regression); T1 unaligned.-prefix theoretical gap (HEAD-faithful), T2/T3 cosmetic/pre-existing. Implementer caught+fixed a planner TC3 typo (1477->7777).",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-byref-array-element-marshal": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (highest-value of triage batch-2): ref arr[i] byref-param marshalling -- NeoMarshalByrefFieldToSlot (:508) lacked an Array branch; a byref to a CLR array element (ref byteArr[idx] passed to a CLR method) hit the Step-13 Area-4c NIE. ONE Array branch covers BOTH the forward call-arg deref (CopyNeoCallArguments) AND the post-call write-back (CopyNeoCallThisBack) -- the helper is the shared marshal invoked in both directions. Fix = decode (arrIdx,elementIdx), forward=Array.GetValue+WriteNeoValueType, write-back=ReadNeoValueType/mStack+Array.SetValue. Mirror child-19/24 Array patterns. No JIT/optimizer/object-model/binding change.",
-      "prerequisites": ["neo-raw-ldfld-array-element"], "dependsOn": ["neo-raw-ldfld-array-element"], "status": "done", "capability": "neo-byref",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 371/0 (368 + 3 probes: TC1 byte + TC2 int multi-index + TC3 VT twice-call); CLRBindingTest01 PASSES (was NIE); stash-toggle ILIntepreter.Neo.cs -> 3/3 FAULT (Area-4c NIE on forward deref) -> pop -> 371/0 (airtight); write-back persistence empirically proven (20->25 byte, 205 int sum, 6777 VT twice-call); Legacy-neutral (371/18 pre-existing set; 3 probes PASS under Legacy)",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (highest-value of triage batch-2): ref arr[i] byref-param marshalling -- NeoMarshalByrefFieldToSlot (:508) lacked an Array branch; a byref to a CLR array element (ref byteArr[idx] passed to a CLR method) hit the Step-13 Area-4c NIE. ONE Array branch covers BOTH the forward call-arg deref (CopyNeoCallArguments) AND the post-call write-back (CopyNeoCallThisBack) -- the helper is the shared marshal invoked in both directions. Fix = decode (arrIdx,elementIdx), forward=Array.GetValue+WriteNeoValueType, write-back=ReadNeoValueType/mStack+Array.SetValue. Mirror child-19/24 Array patterns. No JIT/optimizer/object-model/binding change.",
+      "prerequisites": [
+        "neo-raw-ldfld-array-element"
+      ],
+      "dependsOn": [
+        "neo-raw-ldfld-array-element"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 371/0 (368 + 3 probes: TC1 byte + TC2 int multi-index + TC3 VT twice-call); CLRBindingTest01 PASSES (was NIE); stash-toggle ILIntepreter.Neo.cs -> 3/3 FAULT (Area-4c NIE on forward deref) -> pop -> 371/0 (airtight); write-back persistence empirically proven (20->25 byte, 205 int sum, 6777 VT twice-call); Legacy-neutral (371/18 pre-existing set; 3 probes PASS under Legacy)",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major -- cleanest review yet). Both-directions-correct + byref-decode-correct + elemType-recovery-reliable + branch-exclusive + write-back-persistence-proven + regression-clean + build-server-cache-sane (3 ways) all confirmed. 1 Minor doc-only (tasks.md TC3 narrative lags), 2 Trivial (comment line-ref; redundant arms mirror sibling). R1-Shape-B ldobj-array-element read still NIEs (next child).",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-ldobj-array-element": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (triage batch-2 R1-Shape-B): ldobj/stobj on a CLR-struct array element (arr2[0] += TestVector3.One -> ldelema; ldobj; op_Addition; stobj) -- the ldobj VT arm (:5704) + stobj arm handled NeoIsClrObject but not Array. RUNTIME detection is SAFE here (operand is ALWAYS a byref, no flat-bytes-vs-byref ambiguity -- decisive contrast with child-24's raw-Ldfld which needed a marker). A read-modify-write += needs BOTH the ldobj READ and the stobj WRITE-back fixed. Fix = Array branches in both arms (decode (arrIdx,elementIdx), Array.GetValue/SetValue + ReadNeoValueType/WriteNeoValueType).",
-      "prerequisites": ["neo-byref-array-element-marshal"], "dependsOn": ["neo-byref-array-element-marshal"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 373/0 (371 + 2 probes: TC1 arr[0]+=One round-trip + TC2 element-index decode); UnitTest_10047 PROGRESSES (was ldobj NIE -> value assertion; residual = pre-existing float op_Addition bug out-of-scope); stash-toggle ILIntepreter.Neo.cs -> 2/2 FAULT (Owner-type-NeoArrElemIntProbe[] NIE) -> pop -> 373/0; sibling families (child-19/24/25) green; read-back CORRECT (302/307 int sums via host); Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (triage batch-2 R1-Shape-B): ldobj/stobj on a CLR-struct array element (arr2[0] += TestVector3.One -> ldelema; ldobj; op_Addition; stobj) -- the ldobj VT arm (:5704) + stobj arm handled NeoIsClrObject but not Array. RUNTIME detection is SAFE here (operand is ALWAYS a byref, no flat-bytes-vs-byref ambiguity -- decisive contrast with child-24's raw-Ldfld which needed a marker). A read-modify-write += needs BOTH the ldobj READ and the stobj WRITE-back fixed. Fix = Array branches in both arms (decode (arrIdx,elementIdx), Array.GetValue/SetValue + ReadNeoValueType/WriteNeoValueType).",
+      "prerequisites": [
+        "neo-byref-array-element-marshal"
+      ],
+      "dependsOn": [
+        "neo-byref-array-element-marshal"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 373/0 (371 + 2 probes: TC1 arr[0]+=One round-trip + TC2 element-index decode); UnitTest_10047 PROGRESSES (was ldobj NIE -> value assertion; residual = pre-existing float op_Addition bug out-of-scope); stash-toggle ILIntepreter.Neo.cs -> 2/2 FAULT (Owner-type-NeoArrElemIntProbe[] NIE) -> pop -> 373/0; sibling families (child-19/24/25) green; read-back CORRECT (302/307 int sums via host); Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Runtime-detection-safe (objIdx==-1-first + NeoIsClrObject-false-for-Array + ECMA-335-always-pointer + ldelema-rejects-reftype) + both-arms-correct + decode-offsets-correct + regression-clean all confirmed. M1 TC2 combined-sum invariant under uniform +=One (code correct, optional per-element hardening); T1/T2 trivial. Surfaced: plain a=arr[i] lowers to ldelem.any (separately broken, follow-up); pre-existing float ctor/op_Addition bug (candidate sibling).",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-raw-stfld-clr-object-vt-field": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (triage batch-2 R3, COMPLETES the sweep): raw Stfld on a CLR-struct field of a CLR reference object (obj.Struct.value=111 -> ldflda Struct; stfld value) hit the raw-Stfld VT-owner 'unrecognized byref shape' NIE. DIAGNOSIS: the ldflda-Struct(byref) offset half = FieldInfo.GetHashCode() (resolvable via Area-4d NeoReadClrObjectField/NeoWriteClrObjectField). FIX = a third objIdx>=0 branch: box/mutate/unbox one level up (read whole struct field -> SetValue inner field -> write back). Runtime-only ~15 lines, NO marker (VT-owner Stfld always byref).",
-      "prerequisites": ["neo-ldobj-array-element"], "dependsOn": ["neo-ldobj-array-element"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 375/0 (373 + 2 probes: TC1 single-write 111 + TC2 three-write-preservation 666); UnitTest_Struct2 PROGRESSES (line 103 fixed; line 104 += nested-ldflda gap out-of-scope); stash-toggle ILIntepreter.Neo.cs -> 2/2 FAULT (R3 NIE) -> pop -> 375/0; sibling families (child-4/9/19/24/25/26) green; field-preservation proven (666=111+222+333); Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (triage batch-2 R3, COMPLETES the sweep): raw Stfld on a CLR-struct field of a CLR reference object (obj.Struct.value=111 -> ldflda Struct; stfld value) hit the raw-Stfld VT-owner 'unrecognized byref shape' NIE. DIAGNOSIS: the ldflda-Struct(byref) offset half = FieldInfo.GetHashCode() (resolvable via Area-4d NeoReadClrObjectField/NeoWriteClrObjectField). FIX = a third objIdx>=0 branch: box/mutate/unbox one level up (read whole struct field -> SetValue inner field -> write back). Runtime-only ~15 lines, NO marker (VT-owner Stfld always byref).",
+      "prerequisites": [
+        "neo-ldobj-array-element"
+      ],
+      "dependsOn": [
+        "neo-ldobj-array-element"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 375/0 (373 + 2 probes: TC1 single-write 111 + TC2 three-write-preservation 666); UnitTest_Struct2 PROGRESSES (line 103 fixed; line 104 += nested-ldflda gap out-of-scope); stash-toggle ILIntepreter.Neo.cs -> 2/2 FAULT (R3 NIE) -> pop -> 375/0; sibling families (child-4/9/19/24/25/26) green; field-preservation proven (666=111+222+333); Legacy-neutral",
       "review": "APPROVE (reviewer!=implementer; 0 Blocker/Major). Diagnosis-correct (hash resolvable; box/mutate/unbox sound; same boxedStruct flows read->mutate->write-back; TC2=666) + runtime-detection-safe + regression-clean all confirmed. M1 pre-existing fieldInfoCache hash-collision theoretical (shared Area-4d foundation), M2 forward-looking for the F-10 IL-instance sibling (guard protects today). Surfaced out-of-scope: raw-Ldfld read sibling (needs marker), += nested-ldflda gap, IL-instance CLR-struct-field owner (F-10).",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-float-vtreturn-opaddition": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (child-26 surfaced, HIGHEST-value newly-surfaced): new TestVector3(float,float,float) and TestVector3.op_Addition both yielded ZERO when CALLED from IL. RE-AUDIT RECONCILED the suspicious claim: green smoke uses TestVector3.One (host-precomputed static via ldsfld, never calls the broken path); the bug manifests only on the call.redirect path. ROOT CAUSE = STALE COMMITTED auto gen binding stubs (ILRuntimeTest_TestFramework_TestVector3_Binding.cs, never regenerated post-Step-13b) -- NOT an engine/generator bug (both correct). Fix = hand-port 4 stale stubs to ReadNeoValueType/WriteNeoValueType + a public facade GetNeoValueTypeManagedSize (the generator referenced the internal Optimizer class -- a latent compile bug). Symptom 1 (struct newobj retDst=null) deferred as a distinct follow-up.",
-      "prerequisites": ["neo-raw-stfld-clr-object-vt-field"], "dependsOn": ["neo-raw-stfld-clr-object-vt-field"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 378/0 (375 + 3 probes: op_Addition=9 + op_Multiply=18 + child-26 arr[0]+=One=6); stash-toggle (revert ONLY the binding file to stale stubs) -> 3/3 FAULT (DivByZero) -> restore -> 3/3 PASS (proves stubs load-bearing); probe arithmetic host-side-asserted; Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (child-26 surfaced, HIGHEST-value newly-surfaced): new TestVector3(float,float,float) and TestVector3.op_Addition both yielded ZERO when CALLED from IL. RE-AUDIT RECONCILED the suspicious claim: green smoke uses TestVector3.One (host-precomputed static via ldsfld, never calls the broken path); the bug manifests only on the call.redirect path. ROOT CAUSE = STALE COMMITTED auto gen binding stubs (ILRuntimeTest_TestFramework_TestVector3_Binding.cs, never regenerated post-Step-13b) -- NOT an engine/generator bug (both correct). Fix = hand-port 4 stale stubs to ReadNeoValueType/WriteNeoValueType + a public facade GetNeoValueTypeManagedSize (the generator referenced the internal Optimizer class -- a latent compile bug). Symptom 1 (struct newobj retDst=null) deferred as a distinct follow-up.",
+      "prerequisites": [
+        "neo-raw-stfld-clr-object-vt-field"
+      ],
+      "dependsOn": [
+        "neo-raw-stfld-clr-object-vt-field"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 378/0 (375 + 3 probes: op_Addition=9 + op_Multiply=18 + child-26 arr[0]+=One=6); stash-toggle (revert ONLY the binding file to stale stubs) -> 3/3 FAULT (DivByZero) -> restore -> 3/3 PASS (proves stubs load-bearing); probe arithmetic host-side-asserted; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Root-cause-sound (stale stubs not engine) + generator-change-justified (Optimizer internal, facade load-bearing) + stubs-faithful-to-template all confirmed. F1 get_One2/Ctor stubs not directly exercised (coverage gap, stash-toggle proves operators), F2 Ctor return-write dead on current path (correct by template, fires post-symptom-1).",
       "shipped": "commit+push 2026-07-13"
     },
     "neo-raw-ldfld-clr-object-vt-field": {
-      "pipeline": "small-feature", "wave": 2, "scope": "CORRECTNESS (child-27 READ sibling, COMPLETES the write/read pair): x = obj.Struct.field (ldflda Struct; ldfld field) silently corrupted -- the raw-Ldfld IsValueType arm reinterpreted the byref (objIdx,structFieldHash) as flat struct bytes (HEAD: o.S.a returned 4 = owner mStack index, not 111). A JIT marker is MANDATORY (raw-Ldfld owner is flat-bytes-OR-byref; no runtime discriminator -- the same split as child-24). Fix = DISTINCT bit NeoRawLdfldClrObjectFieldByRefMarker 0x2 (not reusing child-24's 0x1; mutually exclusive by CIL predecessor) + a runtime else-if (NeoReadClrObjectField boxes whole struct -> f.GetValue inner field). COMPLETES the write/read asymmetry for both array-element (19/24) and CLR-object-struct-field (27/29) shapes.",
-      "prerequisites": ["neo-float-vtreturn-opaddition"], "dependsOn": ["neo-float-vtreturn-opaddition"], "status": "done", "capability": "neo-value-types",
-      "completedDate": "2026-07-13", "smoke": "NeoStep 380/0 (378 + 2 probes: TC1 single-field 111 + TC2 per-field 111/222/333); stash-toggle 2 engine files -> both FAULT (DivByZero) -> pop -> 380/0; read-back CORRECT (exact per-field); sibling families (child-4/9/19/24/21/27/28 + NeoStep12/13/17) green; Legacy-neutral",
+      "pipeline": "small-feature",
+      "wave": 2,
+      "scope": "CORRECTNESS (child-27 READ sibling, COMPLETES the write/read pair): x = obj.Struct.field (ldflda Struct; ldfld field) silently corrupted -- the raw-Ldfld IsValueType arm reinterpreted the byref (objIdx,structFieldHash) as flat struct bytes (HEAD: o.S.a returned 4 = owner mStack index, not 111). A JIT marker is MANDATORY (raw-Ldfld owner is flat-bytes-OR-byref; no runtime discriminator -- the same split as child-24). Fix = DISTINCT bit NeoRawLdfldClrObjectFieldByRefMarker 0x2 (not reusing child-24's 0x1; mutually exclusive by CIL predecessor) + a runtime else-if (NeoReadClrObjectField boxes whole struct -> f.GetValue inner field). COMPLETES the write/read asymmetry for both array-element (19/24) and CLR-object-struct-field (27/29) shapes.",
+      "prerequisites": [
+        "neo-float-vtreturn-opaddition"
+      ],
+      "dependsOn": [
+        "neo-float-vtreturn-opaddition"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-13",
+      "smoke": "NeoStep 380/0 (378 + 2 probes: TC1 single-field 111 + TC2 per-field 111/222/333); stash-toggle 2 engine files -> both FAULT (DivByZero) -> pop -> 380/0; read-back CORRECT (exact per-field); sibling families (child-4/9/19/24/21/27/28 + NeoStep12/13/17) green; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Marker-mandatory (no runtime discriminator; collision constructible on both axes) + 0x2-collision-free (audited every Operand4 write; child-24 0x1 byte-untouched) + branch-correct + regression-clean all confirmed. M1 doc/prose (probe stricter than described), T1/T2 trivial.",
+      "shipped": "commit+push 2026-07-13"
+    },
+    "neo-delegate-adapter-clr-cast": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C1: IL delegate (MethodDelegateAdapter/FunctionDelegateAdapter) crossing to CLR must convert via CheckCLRTypes; Neo omitted it at Stsfld + NeoWriteClrObjectField + 41 stale autogen binding sites -> ~32 InvalidCastException. Fix = CheckCLRTypes at the 3 boundaries + hand-port 41 stale binding sites (child-28 stale-binding class).",
+      "prerequisites": [
+        "neo-raw-ldfld-clr-object-vt-field"
+      ],
+      "dependsOn": [
+        "neo-raw-ldfld-clr-object-vt-field"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-13",
+      "smoke": "FULL SMOKE 189->153 (-36); C1 delegate-cast cluster ~32->0; InvalidCastException 56->40; stash-toggle airtight; NeoStep 380/0 unchanged; Legacy-neutral",
+      "review": "APPROVE-WITH-FINDINGS (reviewer!=implementer; 0 Blocker/Major). Fix-B byte-fidelity CONFIRMED (41 sites match generator, 0 deviations). M1 perf (Fix C double GetField, non-blocking), T1/T2 trivial.",
       "shipped": "commit+push 2026-07-13"
     }
   },
   "runnableFrontier": [],
-  "completedChildren": ["neo-jit-bogus-opcode", "neo-ldtoken", "neo-clr-static-fields", "neo-raw-stfld-ldfld", "neo-bare-nie", "neo-clr-vt-reffields-binder", "neo-misc-opcodes", "neo-clr-static-vt-field", "neo-il-instance-clr-base-field", "neo-clr-object-field-il-path", "neo-brtrue-on-reference", "neo-ceq-null-sentinel", "neo-il-static-ref-field-readback", "neo-overhaul-eh-table-remap", "neo-ldind-stind-byref-clr-struct", "neo-addi-on-float", "neo-clr-static-vt-slot-overflow", "neo-il-enum-getenumvalues", "neo-raw-stfld-array-element", "neo-valuetask-marshal", "neo-raw-ldfld-stfld-clr-struct-seeding", "neo-activator-createinstance-neo-redirect", "neo-ceq-null-instance-field", "neo-raw-ldfld-array-element", "neo-byref-array-element-marshal", "neo-ldobj-array-element", "neo-raw-stfld-clr-object-vt-field", "neo-float-vtreturn-opaddition", "neo-raw-ldfld-clr-object-vt-field"],
+  "completedChildren": [
+    "neo-jit-bogus-opcode",
+    "neo-ldtoken",
+    "neo-clr-static-fields",
+    "neo-raw-stfld-ldfld",
+    "neo-bare-nie",
+    "neo-clr-vt-reffields-binder",
+    "neo-misc-opcodes",
+    "neo-clr-static-vt-field",
+    "neo-il-instance-clr-base-field",
+    "neo-clr-object-field-il-path",
+    "neo-brtrue-on-reference",
+    "neo-ceq-null-sentinel",
+    "neo-il-static-ref-field-readback",
+    "neo-overhaul-eh-table-remap",
+    "neo-ldind-stind-byref-clr-struct",
+    "neo-addi-on-float",
+    "neo-clr-static-vt-slot-overflow",
+    "neo-il-enum-getenumvalues",
+    "neo-raw-stfld-array-element",
+    "neo-valuetask-marshal",
+    "neo-raw-ldfld-stfld-clr-struct-seeding",
+    "neo-activator-createinstance-neo-redirect",
+    "neo-ceq-null-instance-field",
+    "neo-raw-ldfld-array-element",
+    "neo-byref-array-element-marshal",
+    "neo-ldobj-array-element",
+    "neo-raw-stfld-clr-object-vt-field",
+    "neo-float-vtreturn-opaddition",
+    "neo-raw-ldfld-clr-object-vt-field",
+    "neo-delegate-adapter-clr-cast"
+  ],
   "surfacedFollowups": [
-    { "id": "neo-runtimehelpers-initializearray-neo", "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.", "source": "child 2 review", "resolvedBy": "neo-clr-vt-reffields-binder" },
-    { "id": "neo-activator-createinstance-nre", "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate. REFRAMED+RESOLVED 2026-07-13 by child 22 (neo-activator-createinstance-neo-redirect): the GetStaticFieldOffset NRE does NOT reproduce; the real gap was Activator.CreateInstance on IL types falling through to the broken autogen stub under Neo (MissingMethodException) -- fixed by registering CreateInstance/2/3 Neo equivalents on RedirectMapNeo.", "source": "child 2", "status": "resolved", "resolvedBy": "neo-activator-createinstance-neo-redirect" },
-    { "id": "neo-optimizer-dead-expr-operand4", "scope": "Optimizer.Neo.cs:1218 `op.Operand4 == 1;` is a dead no-assignment expression (likely intended `=`). Pre-existing latent bug. Trivial fix.", "source": "child 2 re-review TRIVIAL-A" },
-    { "id": "neo-brtrue-on-reference", "scope": "PAIRED CORRECTNESS (child-3 F3+F4, latent, masked): brtrue/brfalse tests low-int32 !=0 but a null reference is a non-zero mStack index (IL-static) / -1 (CLR-static Ldsfld) -> the Roslyn delegate-cache `ldsfld cache; brtrue` pattern misclassifies null as truthy. F3 = the IL-static Stsfld/Ldsfld arms ALSO read raw DstOffset (same bug child-3 fixed for CLR). Masked by F3 + ceq lowering. Fix F3 (IL-static runtime offset) + F4 (brtrue null-sentinel) TOGETHER. Reviewer confirmed child-3's no-global-lowering scoping is correct (fixes target without unmasking).", "source": "child 3 review F3+F4" },
-    { "id": "neo-il-instance-clr-base-field", "scope": "An IL instance accessing a field declared on a CLR base type (TestCls..ctor, 10 full-smoke hits). Legacy handles it (Register.cs:3113); Neo raw-Stfld/Ldfld handler defers via tagged NIE. Real parity gap. Follow-up to child 4.", "source": "child 4 review M2" },
-    { "id": "neo-clr-vt-refcount-stobjldobj", "scope": "Child-5 F1: the Stobj/Ldobj arm computes refCount=0 for CLR structs (doesn't consult ValueTypeBinder, unlike AllocateNeoCallParamSlot:1592). Post-child-5 the size is correct so the copy proceeds -> a CLR struct WITH managed ref fields copied via stobj/ldobj has untracked refs (latent missed-GC-root). Wire the binder's managedCount or guard ref-field CLR structs. Related to neo-clr-vt-reffields-binder. UNREACHABLE 2026-07-13 (triage batch-1): a ref-field CLR struct NIEs at the ctor CLRMethod.Invoke:393 (Step-13 Area-4b) BEFORE materializing; the only non-NIE path (method return) copies the GC pointer inside the CopyBlock'd primitive bytes with it -- no root lost. No child.", "source": "child 5 review F1", "status": "unreachable" },
-    { "id": "neo-ldind-stind-byref-clr-struct", "scope": "UNMASKED by child 8 (pre-existing): now that ldsfld TestVector3.One succeeds, TestValueTypeBinding.Test00 reaches ldloca+ldflda+ldind.r4/stind.r4 on a CLR struct local and AV-crashes in ExecuteNeo -- a pre-existing latent bug in the ldind/stind-byref-into-CLR-struct site (Test00 was NIE-failing on HEAD, red->red, not a regression). Candidate follow-up child.", "source": "child 8 review F1" },
-    { "id": "neo-ceq-null-sentinel", "scope": "CHILD 12 (the ceq form of the null-comparison gap, sibling of child-11 brtrue): TestStaticFieldInstance/RegisterVMTest04 use ldsfld;ldnull;ceq;brfalse (NOT the direct ldsfld;brtrue child-11 fixed). Neo ceq compares the raw mStack index N vs ldnull's -1 as INTEGERS -> never equal for an IL-static null -> init skipped -> NRE. The runtime ceq/beq ref-vs-ldnull-sentinel needs the same null-deref treatment as Brtrue_Ref.", "source": "child 11", "priority": "HIGH-correctness" },
-    { "id": "neo-il-static-field-roundtrip", "scope": "Surfaced by child 11: an IL-static field runtime round-trip (write+read) returns garbage on BOTH HEAD and FIXED -- a separate IL-static field-storage gap (F3 operand-offset is correct but doesn't reach it). DISPROVEN 2026-07-13 (triage batch-1): child-13 closed it -- SimpleTest.TestStaticFieldInstance + fresh primitive/reference round-trip probes all PASS on HEAD. No child.", "source": "child 11", "status": "disproven" },
-    { "id": "neo-legacy-ilruntime-type-getenumvalues-dispatch", "scope": "Child-18 re-review: under Legacy the ILRuntimeType.GetEnumValues() override is NOT dispatched (Legacy returns Cecil declaration order for an IL enum, not the framework's unsigned-binary-value sort). Pre-existing. The child-18 TC4 (negative-member enum) is Neo-scoped -- it fails under Legacy (NeoStep-under-Legacy 17->18, TC4 the known Neo-scoped addition, no existing Legacy test regresses). Fixing = a Legacy typeof-dispatch investigation.", "source": "child 18 re-review" },
-    { "id": "neo-raw-ldfld-stfld-clr-struct-seeding", "scope": "Child-16 sibling: raw Ldfld/Stfld of a CLR-struct field (child-4 escaping shape) + a Call returning a primitive float are also unseeded in the registerTypes type-specializer -> same float-corruption class as addi-on-float. Latent (not confirmed active in the smoke). RESOLVED by child 21 (neo-raw-ldfld-stfld-clr-struct-seeding): re-audit CONFIRMED both Call-returning-float + raw-Ldfld-CLR-struct reproduce; seeding-switch fix shipped.", "source": "child 16", "resolvedBy": "neo-raw-ldfld-stfld-clr-struct-seeding" },
-    { "id": "neo-ceq-null-instance-field", "scope": "SURFACED by child 22 (review P1 + implementer finding): an INSTANCE field/local `== null` lowered to ceq reads FALSE on HEAD (a null ref is encoded as a valid mStack index pointing to null, not the -1 sentinel; plain Ceq compares index-vs-(-1) -> not-equal -> `refField == null` FALSE -> `ref.ToString()` on null -> NRE 'Neo callvirt this is null'). Proven separate from Activator via a plain `new DiagData()` + `field == null` ternary reproducing IDENTICALLY. This is the INSTANCE-field form of the null-comparison gap (child-11 fixed brtrue for static-ref; child-12 fixed `ldsfld;ldnull;ceq` for static-ref via Ceq_Ref; this is `ldfld.ref <instance field>; ldnull; ceq` -- Ceq_Ref is NOT firing, meaning the instance-field load or its temp is NOT seeding registerTypes as a reference). Fires for ANY IL instance. Re-audit WHY Ceq_Ref doesn't fire (hypotheses: a temp local not marked LocalIsReference; or an unseeded-producer class like child-21). HIGHEST-VALUE remaining correctness item.", "source": "child 22 review P1", "priority": "HIGH-correctness", "status": "resolved", "resolvedBy": "neo-ceq-null-instance-field (child 23); ALSO closed child-22's ActivatorCreateInstanceWithArgsTest P1 for free (auto-property getter inlines to ldfld.ref)" },
-    { "id": "neo-float-ctor-opaddition-vtreturn", "scope": "SURFACED by child 26 (out-of-scope there): new TestVector3(float,float,float) yields a ZERO struct AND TestVector3.op_Addition's float VT-return doesn't write back -- blocks a float-field += probe. HIGHEST-value newly-surfaced (TestVector3 pervasive). RESOLVED 2026-07-13 by child 28 (neo-float-vtreturn-opaddition): re-audit RECONCILED the suspicious claim (green smoke uses .One host-precomputed static via ldsfld, never the broken call path); root cause = STALE committed autogen binding stubs (never regenerated post-Step-13b), NOT engine/generator. Fix = hand-port 4 stubs + a generator facade. Symptom 1 (struct newobj retDst=null) split off as neo-clr-struct-newobj-retdest-null below.", "source": "child 26", "priority": "HIGH-reaudit", "status": "resolved", "resolvedBy": "neo-float-vtreturn-opaddition" },
-    { "id": "neo-clr-struct-newobj-retdest-null", "scope": "SURFACED by child 28 (symptom 1, deferred): a CLR struct newobj lowers to initobj; ldloca; push(this byref); call.redirect.ctor with retDst=- (null) -> the runtime passes retDst=null (ILIntepreter.Neo.cs ~:3079) -> the ctor's write-to-retDst no-ops. The Ctor_0_Neo stub is now ported (child 28) so the stub-side write is correct, but the result has nowhere to land on the autogen newobj path until the retDst-null contract is fixed. The other half of the original framed gap.", "source": "child 28", "priority": "MEDIUM" },
-    { "id": "neo-raw-ldfld-clr-object-vt-field", "scope": "SURFACED by child 27 (out-of-scope): the READ sibling x = obj.Struct.value -- silent flat-bytes-reinterpret corruption (the ldflda-Struct byref offset half = field hash, read as flat struct bytes). Needs a JIT marker (child-24 lineage; child-27 pinned the encoding for the Stfld side). RESOLVED 2026-07-13 by child 29 (neo-raw-ldfld-clr-object-vt-field): distinct marker bit 0x2 + runtime read branch; COMPLETES the write/read pair + the write/read asymmetry for both the array-element and CLR-object-struct-field shapes.", "source": "child 27", "priority": "MEDIUM", "status": "resolved", "resolvedBy": "neo-raw-ldfld-clr-object-vt-field" },
-    { "id": "neo-nested-ldflda-compound-assign", "scope": "SURFACED by child 27 (out-of-scope): obj.Struct.value += 111 lowers to ldflda Struct; ldflda value; ldind.i4; add; stind.i4 -- the inner ldflda-on-byref gap. Where UnitTest_Struct2 now fails (line 104). Distinct from both raw-Stfld write (child 27) and raw-Ldfld read.", "source": "child 27", "priority": "MEDIUM" },
-    { "id": "neo-ldelem-any-clr-struct-array", "scope": "SURFACED by child 26 (out-of-scope): a PLAIN a = arr[i] on a CLR-struct array (NOT +=) lowers to ldelem.any (not ldobj) and returns garbage. Separate from the ldobj path child 26 fixed.", "source": "child 26", "priority": "MEDIUM" },
-    { "id": "neo-il-instance-clr-struct-field-f10", "scope": "SURFACED by child 27 (out-of-scope, deferred): IL-instance CLR-struct-field owner -- the F-10 ManagedObjects-storage sibling. child-27 deferred it with a tagged NIE (honest, not silent).", "source": "child 27", "priority": "LOW" },
-    { "id": "neo-step19-delegates", "scope": "BLOCKER for triage-batch-2 R1-Shape-A (DelegateExtTest02: Action<int> a += obj.IntTest -- delegate Combine/invoke unimplemented). The CLAUDE.md next major step beyond the overhaul latent cleanup. Not a latent follow-up -- a major feature step.", "source": "triage batch-2 R1-A", "priority": "MAJOR-step" }
+    {
+      "id": "neo-runtimehelpers-initializearray-neo",
+      "scope": "RESOLVED by child 6 (neo-clr-vt-reffields-binder) -- added the Neo RedirectionNeo + Cecil-InitialValue blob sourcing.",
+      "source": "child 2 review",
+      "resolvedBy": "neo-clr-vt-reffields-binder",
+      "status": "resolved"
+    },
+    {
+      "id": "neo-activator-createinstance-nre",
+      "scope": "Pre-existing Activator NRE (System_Activator_Binding.CreateInstance_0_Neo -> ILType.GetStaticFieldOffset), unmasked (typeof no longer NIEs ~60x so reflection tests progress further). Candidate. REFRAMED+RESOLVED 2026-07-13 by child 22 (neo-activator-createinstance-neo-redirect): the GetStaticFieldOffset NRE does NOT reproduce; the real gap was Activator.CreateInstance on IL types falling through to the broken autogen stub under Neo (MissingMethodException) -- fixed by registering CreateInstance/2/3 Neo equivalents on RedirectMapNeo.",
+      "source": "child 2",
+      "status": "resolved",
+      "resolvedBy": "neo-activator-createinstance-neo-redirect"
+    },
+    {
+      "id": "neo-optimizer-dead-expr-operand4",
+      "scope": "MISREAD confirmed 2026-07-13 by code read: op.Operand4==1 at Optimizer.Neo.cs:249 and :1231-1234 is the tail of \"bool hasConstrained = ... && op.Operand4 == 1;\" (a boolean assignment), NOT a dead expression. Not a bug.",
+      "source": "child 2 re-review TRIVIAL-A",
+      "priority": "TRIVIAL-verify",
+      "status": "disproven"
+    },
+    {
+      "id": "neo-brtrue-on-reference",
+      "scope": "PAIRED CORRECTNESS (child-3 F3+F4, latent, masked): brtrue/brfalse tests low-int32 !=0 but a null reference is a non-zero mStack index (IL-static) / -1 (CLR-static Ldsfld) -> the Roslyn delegate-cache `ldsfld cache; brtrue` pattern misclassifies null as truthy. F3 = the IL-static Stsfld/Ldsfld arms ALSO read raw DstOffset (same bug child-3 fixed for CLR). Masked by F3 + ceq lowering. Fix F3 (IL-static runtime offset) + F4 (brtrue null-sentinel) TOGETHER. Reviewer confirmed child-3's no-global-lowering scoping is correct (fixes target without unmasking).",
+      "source": "child 3 review F3+F4",
+      "status": "resolved",
+      "resolvedBy": "neo-brtrue-on-reference"
+    },
+    {
+      "id": "neo-il-instance-clr-base-field",
+      "scope": "An IL instance accessing a field declared on a CLR base type (TestCls..ctor, 10 full-smoke hits). Legacy handles it (Register.cs:3113); Neo raw-Stfld/Ldfld handler defers via tagged NIE. Real parity gap. Follow-up to child 4.",
+      "source": "child 4 review M2",
+      "status": "resolved",
+      "resolvedBy": "neo-il-instance-clr-base-field"
+    },
+    {
+      "id": "neo-clr-vt-refcount-stobjldobj",
+      "scope": "Child-5 F1: the Stobj/Ldobj arm computes refCount=0 for CLR structs (doesn't consult ValueTypeBinder, unlike AllocateNeoCallParamSlot:1592). Post-child-5 the size is correct so the copy proceeds -> a CLR struct WITH managed ref fields copied via stobj/ldobj has untracked refs (latent missed-GC-root). Wire the binder's managedCount or guard ref-field CLR structs. Related to neo-clr-vt-reffields-binder. UNREACHABLE 2026-07-13 (triage batch-1): a ref-field CLR struct NIEs at the ctor CLRMethod.Invoke:393 (Step-13 Area-4b) BEFORE materializing; the only non-NIE path (method return) copies the GC pointer inside the CopyBlock'd primitive bytes with it -- no root lost. No child.",
+      "source": "child 5 review F1",
+      "status": "unreachable"
+    },
+    {
+      "id": "neo-ldind-stind-byref-clr-struct",
+      "scope": "UNMASKED by child 8 (pre-existing): now that ldsfld TestVector3.One succeeds, TestValueTypeBinding.Test00 reaches ldloca+ldflda+ldind.r4/stind.r4 on a CLR struct local and AV-crashes in ExecuteNeo -- a pre-existing latent bug in the ldind/stind-byref-into-CLR-struct site (Test00 was NIE-failing on HEAD, red->red, not a regression). Candidate follow-up child.",
+      "source": "child 8 review F1",
+      "status": "resolved",
+      "resolvedBy": "neo-ldind-stind-byref-clr-struct"
+    },
+    {
+      "id": "neo-ceq-null-sentinel",
+      "scope": "CHILD 12 (the ceq form of the null-comparison gap, sibling of child-11 brtrue): TestStaticFieldInstance/RegisterVMTest04 use ldsfld;ldnull;ceq;brfalse (NOT the direct ldsfld;brtrue child-11 fixed). Neo ceq compares the raw mStack index N vs ldnull's -1 as INTEGERS -> never equal for an IL-static null -> init skipped -> NRE. The runtime ceq/beq ref-vs-ldnull-sentinel needs the same null-deref treatment as Brtrue_Ref.",
+      "source": "child 11",
+      "priority": "HIGH-correctness",
+      "status": "resolved",
+      "resolvedBy": "neo-ceq-null-sentinel"
+    },
+    {
+      "id": "neo-il-static-field-roundtrip",
+      "scope": "Surfaced by child 11: an IL-static field runtime round-trip (write+read) returns garbage on BOTH HEAD and FIXED -- a separate IL-static field-storage gap (F3 operand-offset is correct but doesn't reach it). DISPROVEN 2026-07-13 (triage batch-1): child-13 closed it -- SimpleTest.TestStaticFieldInstance + fresh primitive/reference round-trip probes all PASS on HEAD. No child.",
+      "source": "child 11",
+      "status": "disproven"
+    },
+    {
+      "id": "neo-legacy-ilruntime-type-getenumvalues-dispatch",
+      "scope": "Child-18 re-review: under Legacy the ILRuntimeType.GetEnumValues() override is NOT dispatched (Legacy returns Cecil declaration order for an IL enum, not the framework's unsigned-binary-value sort). Pre-existing. The child-18 TC4 (negative-member enum) is Neo-scoped -- it fails under Legacy (NeoStep-under-Legacy 17->18, TC4 the known Neo-scoped addition, no existing Legacy test regresses). Fixing = a Legacy typeof-dispatch investigation.",
+      "source": "child 18 re-review"
+    },
+    {
+      "id": "neo-raw-ldfld-stfld-clr-struct-seeding",
+      "scope": "Child-16 sibling: raw Ldfld/Stfld of a CLR-struct field (child-4 escaping shape) + a Call returning a primitive float are also unseeded in the registerTypes type-specializer -> same float-corruption class as addi-on-float. Latent (not confirmed active in the smoke). RESOLVED by child 21 (neo-raw-ldfld-stfld-clr-struct-seeding): re-audit CONFIRMED both Call-returning-float + raw-Ldfld-CLR-struct reproduce; seeding-switch fix shipped.",
+      "source": "child 16",
+      "resolvedBy": "neo-raw-ldfld-stfld-clr-struct-seeding",
+      "status": "resolved"
+    },
+    {
+      "id": "neo-ceq-null-instance-field",
+      "scope": "SURFACED by child 22 (review P1 + implementer finding): an INSTANCE field/local `== null` lowered to ceq reads FALSE on HEAD (a null ref is encoded as a valid mStack index pointing to null, not the -1 sentinel; plain Ceq compares index-vs-(-1) -> not-equal -> `refField == null` FALSE -> `ref.ToString()` on null -> NRE 'Neo callvirt this is null'). Proven separate from Activator via a plain `new DiagData()` + `field == null` ternary reproducing IDENTICALLY. This is the INSTANCE-field form of the null-comparison gap (child-11 fixed brtrue for static-ref; child-12 fixed `ldsfld;ldnull;ceq` for static-ref via Ceq_Ref; this is `ldfld.ref <instance field>; ldnull; ceq` -- Ceq_Ref is NOT firing, meaning the instance-field load or its temp is NOT seeding registerTypes as a reference). Fires for ANY IL instance. Re-audit WHY Ceq_Ref doesn't fire (hypotheses: a temp local not marked LocalIsReference; or an unseeded-producer class like child-21). HIGHEST-VALUE remaining correctness item.",
+      "source": "child 22 review P1",
+      "priority": "HIGH-correctness",
+      "status": "resolved",
+      "resolvedBy": "neo-ceq-null-instance-field (child 23); ALSO closed child-22's ActivatorCreateInstanceWithArgsTest P1 for free (auto-property getter inlines to ldfld.ref)"
+    },
+    {
+      "id": "neo-float-ctor-opaddition-vtreturn",
+      "scope": "SURFACED by child 26 (out-of-scope there): new TestVector3(float,float,float) yields a ZERO struct AND TestVector3.op_Addition's float VT-return doesn't write back -- blocks a float-field += probe. HIGHEST-value newly-surfaced (TestVector3 pervasive). RESOLVED 2026-07-13 by child 28 (neo-float-vtreturn-opaddition): re-audit RECONCILED the suspicious claim (green smoke uses .One host-precomputed static via ldsfld, never the broken call path); root cause = STALE committed autogen binding stubs (never regenerated post-Step-13b), NOT engine/generator. Fix = hand-port 4 stubs + a generator facade. Symptom 1 (struct newobj retDst=null) split off as neo-clr-struct-newobj-retdest-null below.",
+      "source": "child 26",
+      "priority": "HIGH-reaudit",
+      "status": "resolved",
+      "resolvedBy": "neo-float-vtreturn-opaddition"
+    },
+    {
+      "id": "neo-clr-struct-newobj-retdest-null",
+      "scope": "SURFACED by child 28 (symptom 1, deferred): a CLR struct newobj lowers to initobj; ldloca; push(this byref); call.redirect.ctor with retDst=- (null) -> the runtime passes retDst=null (ILIntepreter.Neo.cs ~:3079) -> the ctor's write-to-retDst no-ops. The Ctor_0_Neo stub is now ported (child 28) so the stub-side write is correct, but the result has nowhere to land on the autogen newobj path until the retDst-null contract is fixed. The other half of the original framed gap.",
+      "source": "child 28",
+      "priority": "MEDIUM"
+    },
+    {
+      "id": "neo-raw-ldfld-clr-object-vt-field",
+      "scope": "SURFACED by child 27 (out-of-scope): the READ sibling x = obj.Struct.value -- silent flat-bytes-reinterpret corruption (the ldflda-Struct byref offset half = field hash, read as flat struct bytes). Needs a JIT marker (child-24 lineage; child-27 pinned the encoding for the Stfld side). RESOLVED 2026-07-13 by child 29 (neo-raw-ldfld-clr-object-vt-field): distinct marker bit 0x2 + runtime read branch; COMPLETES the write/read pair + the write/read asymmetry for both the array-element and CLR-object-struct-field shapes.",
+      "source": "child 27",
+      "priority": "MEDIUM",
+      "status": "resolved",
+      "resolvedBy": "neo-raw-ldfld-clr-object-vt-field"
+    },
+    {
+      "id": "neo-nested-ldflda-compound-assign",
+      "scope": "SURFACED by child 27 (out-of-scope): obj.Struct.value += 111 lowers to ldflda Struct; ldflda value; ldind.i4; add; stind.i4 -- the inner ldflda-on-byref gap. Where UnitTest_Struct2 now fails (line 104). Distinct from both raw-Stfld write (child 27) and raw-Ldfld read.",
+      "source": "child 27",
+      "priority": "MEDIUM"
+    },
+    {
+      "id": "neo-ldelem-any-clr-struct-array",
+      "scope": "SURFACED by child 26 (out-of-scope): a PLAIN a = arr[i] on a CLR-struct array (NOT +=) lowers to ldelem.any (not ldobj) and returns garbage. Separate from the ldobj path child 26 fixed.",
+      "source": "child 26",
+      "priority": "MEDIUM"
+    },
+    {
+      "id": "neo-il-instance-clr-struct-field-f10",
+      "scope": "SURFACED by child 27 (out-of-scope, deferred): IL-instance CLR-struct-field owner -- the F-10 ManagedObjects-storage sibling. child-27 deferred it with a tagged NIE (honest, not silent).",
+      "source": "child 27",
+      "priority": "LOW"
+    },
+    {
+      "id": "neo-step19-delegates",
+      "scope": "RE-DIAGNOSED 2026-07-13: originally misdiagnosed as \"whole Step 19 not done\" -- FALSE (Step 19 delegate mainline shipped 2026-07-06, ldftn/ldvirtftn/delegate-newobj/Combine/Remove all implemented). The real failure is DelegateExtTest02 (Action<int> a += obj.IntTest): delegate invoke stuffs a boxed System.Int32 into the receiver slot -> NIE \"Owner type: System.Int32\" at a ldfld.i4 arm. Root cause NOT yet pinned -- needs a fresh reproducer + JIT dump. This is a delegate-invoke EDGE bug, NOT a missing step.",
+      "source": "triage batch-2 R1-A",
+      "priority": "MEDIUM",
+      "status": "needs-reaudit"
+    }
   ],
   "interruptedChildren": [],
   "escalatedChildren": [],
   "housekeeping": {
-    "unarchived_stragglers_in_rasen_changes": ["neo-async-execctx-capture (done, in completion-portfolio)", "neo-async-multi-await (done, in completion-portfolio)", "neo-clrstruct-sm-field-layout (DISPROVEN; not in any portfolio; archive as disproven)"],
+    "unarchived_stragglers_in_rasen_changes": [
+      "neo-async-execctx-capture (done, in completion-portfolio)",
+      "neo-async-multi-await (done, in completion-portfolio)",
+      "neo-clrstruct-sm-field-layout (DISPROVEN; not in any portfolio; archive as disproven)"
+    ],
     "note": "archive these 3 after the first overhaul child ships (or in parallel); they are cosmetic, non-blocking."
   },
   "planner": null,
-  "sessionHandoff": { "path": "handoff/lead-13.md", "n": 13, "pct": 0.24, "afterStage": "neo-overhaul lead-12 latent follow-ups DONE (7 children 21-27 shipped; 2 triage batches winnowed; triage sweeps COMPLETE)", "at": "2026-07-13", "head": "2fbcef2c", "baseline": "NeoStep 375/0 (354 lead-12 baseline + 21 new probes). 7 correctness children: float-seeding Call/raw-Ldfld (21), Activator CreateInstance Neo redirect (22), Ldfld_Ref seeding + bonus child-22 P1 (23), raw-Ldfld array element JIT marker (24), ref-arr[i] byref marshal (25), ldobj/stobj array element (26), raw-Stfld CLR-object VT field (27). Full Neo smoke now COMPLETES CLEANLY (902 ran/192 failed -- no more pre-crash; NIE counts exhaustive). See lead-13.md.", "note": "The lead-12 latent follow-up list driven to completion. The 17-for-17 disproven streak ENDED (child 21 broke it; 7 of the next 8 candidates were REAL). Remaining = a NEW wave of freshly-surfaced candidates (float-ctor/op_Addition VT-return; raw-Ldfld-read-CLR-object-field; ldelem.any CLR-struct-array; += nested-ldflda; F-10 IL-instance CLR-struct-field) + Step 19 (delegates) + L1 (Legacy GetEnumValues, low value) + housekeeping (archive the 27 children + 3 stragglers). KEY LESSONS: re-audit every framed gap (paid off BOTH ways -- child 21/22/26/27 real, child-23 mechanism wrong); marker-vs-runtime-detection is per-opcode (ambiguous owner needs a JIT marker; an unambiguous always-byref owner = runtime-safe)." },
-  "notes": "Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push. Serial-by-shared-interpreter/JIT-files. Build/test: dotnet build ILRuntimeTestCLI -c Debug_Neo --no-incremental + dotnet build TestCases -c Debug; run: dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- TestCases/bin/Debug/netstandard2.1/TestCases.dll HotfixAOT/Patched/HotfixAOT.patch true [filter]. NeoStep smoke must stay green (301/0/0 baseline at lead-11)."
+  "sessionHandoff": {
+    "path": "handoff/lead-13.md",
+    "n": 13,
+    "pct": 0.24,
+    "afterStage": "neo-overhaul lead-12 latent follow-ups DONE (7 children 21-27 shipped; 2 triage batches winnowed; triage sweeps COMPLETE)",
+    "at": "2026-07-13",
+    "head": "2fbcef2c",
+    "baseline": "NeoStep 375/0 (354 lead-12 baseline + 21 new probes). 7 correctness children: float-seeding Call/raw-Ldfld (21), Activator CreateInstance Neo redirect (22), Ldfld_Ref seeding + bonus child-22 P1 (23), raw-Ldfld array element JIT marker (24), ref-arr[i] byref marshal (25), ldobj/stobj array element (26), raw-Stfld CLR-object VT field (27). Full Neo smoke now COMPLETES CLEANLY (902 ran/192 failed -- no more pre-crash; NIE counts exhaustive). See lead-13.md.",
+    "note": "The lead-12 latent follow-up list driven to completion. The 17-for-17 disproven streak ENDED (child 21 broke it; 7 of the next 8 candidates were REAL). Remaining = a NEW wave of freshly-surfaced candidates (float-ctor/op_Addition VT-return; raw-Ldfld-read-CLR-object-field; ldelem.any CLR-struct-array; += nested-ldflda; F-10 IL-instance CLR-struct-field) + Step 19 (delegates) + L1 (Legacy GetEnumValues, low value) + housekeeping (archive the 27 children + 3 stragglers). KEY LESSONS: re-audit every framed gap (paid off BOTH ways -- child 21/22/26/27 real, child-23 mechanism wrong); marker-vs-runtime-detection is per-opcode (ambiguous owner needs a JIT marker; an unambiguous always-byref owner = runtime-safe)."
+  },
+  "notes": "Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push. Serial-by-shared-interpreter/JIT-files. Build/test: dotnet build ILRuntimeTestCLI -c Debug_Neo --no-incremental + dotnet build TestCases -c Debug; run: dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- TestCases/bin/Debug/netstandard2.1/TestCases.dll HotfixAOT/Patched/HotfixAOT.patch true [filter]. NeoStep smoke must stay green (301/0/0 baseline at lead-11).",
+  "wave2": {
+    "started": "2026-07-13",
+    "fullSmokeStart": 189,
+    "fullSmokeAfterC1": 153,
+    "groundingReport": "handoff/fullsmoke-ground-2026-07-13.md",
+    "rootCausePlan": "handoff/wave2-rootcause-plan.md",
+    "remainingClusters": [
+      "C4 callvirt this null / GetType VTable ~20",
+      "C2 ILType->CLR cast ~14",
+      "C12 runtime Type ~10",
+      "C10/C11 VT/array index ~21",
+      "C9 Hotfix not-bound (audit) ~10",
+      "C5 ILTypeInstance ctor ~7",
+      "C16 NRE sub-clusters ~25",
+      "C8 async ~4",
+      "C7 LowerNeoOffsets Push ~3",
+      "C6/C13/C14/C3 + AV"
+    ]
+  }
 }

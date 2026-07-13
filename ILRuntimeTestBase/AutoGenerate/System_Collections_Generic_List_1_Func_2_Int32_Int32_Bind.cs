@@ -60,7 +60,7 @@ namespace ILRuntime.Runtime.Generated
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
             System.Collections.Generic.List<System.Func<System.Int32, System.Int32>> instance_of_this_method = (System.Collections.Generic.List<System.Func<System.Int32, System.Int32>>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
-            System.Func<System.Int32, System.Int32> @item = (System.Func<System.Int32, System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<System.Int32, System.Int32> @item = (System.Func<System.Int32, System.Int32>)typeof(System.Func<System.Int32, System.Int32>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             instance_of_this_method.Add(@item);
         }
 #else

@@ -4603,6 +4603,19 @@ namespace ILRuntime.Runtime.Intepreter
                                             // ref-slot mStack index.
                                             int srcRefIdx = *(int*)srcSlot;
                                             value = srcRefIdx >= 0 ? mStack[srcRefIdx] : null;
+                                            // C1 (neo-delegate-adapter-clr-cast): an IL delegate
+                                            // arrives as a MethodDelegateAdapter/FunctionDelegateAdapter
+                                            // (an ILTypeInstance subclass); a CLR delegate FIELD expects
+                                            // the real CLR delegate. Convert via CheckCLRTypes(ft) --
+                                            // mirrors Legacy ExecuteR Stsfld (Register.cs:3308)
+                                            // f.FieldType.CheckCLRTypes(...) and the autogen Legacy
+                                            // AssignFromStack_* setter (typeof(T).CheckCLRTypes(...,
+                                            // IsDelegate)). CheckCLRTypes is total: a real Delegate
+                                            // passes through (obj is Delegate short-circuit), an adapter
+                                            // is converted via GetConvertor, an ILTypeInstance for a
+                                            // CLR-base field unwraps to CLRInstance, a matching object
+                                            // is returned as-is. Neo-only path.
+                                            value = ft.CheckCLRTypes(value);
                                         }
                                         ct.SetStaticFieldValue(sIdx, value);
                                     }
@@ -6608,6 +6621,19 @@ namespace ILRuntime.Runtime.Intepreter
             var ct = appdomain.GetType(target.GetType()) as CLRType;
             if (ct == null)
                 throw new NotImplementedException("Step 13 Area 4d: CLR-object field write on a non-CLR-resolvable target. Type: " + target.GetType().FullName);
+            // C1 (neo-delegate-adapter-clr-cast): an IL delegate arrives as a
+            // MethodDelegateAdapter/FunctionDelegateAdapter (an ILTypeInstance
+            // subclass); a CLR delegate INSTANCE field/property expects the real
+            // CLR delegate. Convert via CheckCLRTypes(fieldType) -- mirrors Legacy
+            // (Register.cs Stfld CLR branch applies f.FieldType.CheckCLRTypes) and
+            // Fix A for static fields. CheckCLRTypes is total: a real Delegate or a
+            // matching object passes through; an adapter is converted via
+            // GetConvertor; an ILTypeInstance for a CLR-base field unwraps to
+            // CLRInstance. Resolved field type may be null only if GetField misses
+            // (then leave value untouched, preserving prior behavior). Neo-only.
+            var f = ct.GetField(fieldHash);
+            if (f != null)
+                value = f.FieldType.CheckCLRTypes(value);
             object tmp = target;
             ct.SetFieldValue(fieldHash, ref tmp, value);
         }

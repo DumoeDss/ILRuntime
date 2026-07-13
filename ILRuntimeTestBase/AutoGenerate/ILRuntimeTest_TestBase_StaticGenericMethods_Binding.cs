@@ -247,7 +247,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Action @action = (System.Action)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action @action = (System.Action)typeof(System.Action).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod(@action);
         }
 #else
@@ -273,7 +273,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Action<ILRuntimeTest.TestBase.ExtensionClass> @action = (System.Action<ILRuntimeTest.TestBase.ExtensionClass>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Action<ILRuntimeTest.TestBase.ExtensionClass> @action = (System.Action<ILRuntimeTest.TestBase.ExtensionClass>)typeof(System.Action<ILRuntimeTest.TestBase.ExtensionClass>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod(@action);
         }
 #else
@@ -299,7 +299,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<System.Int32> @func = (System.Func<System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<System.Int32> @func = (System.Func<System.Int32>)typeof(System.Func<System.Int32>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod<System.Int32>(@func);
         }
 #else
@@ -325,7 +325,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Int32> @action = (System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Int32>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Int32> @action = (System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Int32>)typeof(System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Int32>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod<System.Int32>(@action);
         }
 #else
@@ -351,7 +351,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<System.Threading.Tasks.Task> @func = (System.Func<System.Threading.Tasks.Task>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<System.Threading.Tasks.Task> @func = (System.Func<System.Threading.Tasks.Task>)typeof(System.Func<System.Threading.Tasks.Task>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod(@func);
         }
 #else
@@ -377,7 +377,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task> @func = (System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task> @func = (System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task>)typeof(System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod(@func);
         }
 #else
@@ -403,7 +403,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<System.Threading.Tasks.Task<System.Int32>> @func = (System.Func<System.Threading.Tasks.Task<System.Int32>>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<System.Threading.Tasks.Task<System.Int32>> @func = (System.Func<System.Threading.Tasks.Task<System.Int32>>)typeof(System.Func<System.Threading.Tasks.Task<System.Int32>>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod<System.Int32>(@func);
         }
 #else
@@ -429,7 +429,7 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task<System.Int32>> @func = (System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task<System.Int32>>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
+            System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task<System.Int32>> @func = (System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task<System.Int32>>)typeof(System.Func<ILRuntimeTest.TestBase.ExtensionClass, System.Threading.Tasks.Task<System.Int32>>).CheckCLRTypes(ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack), (ILRuntime.CLR.Utils.Extensions.TypeFlags)8);
             ILRuntimeTest.TestBase.StaticGenericMethods.StaticMethod<System.Int32>(@func);
         }
 #else
