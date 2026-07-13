@@ -213,6 +213,17 @@ namespace ILRuntimeTest.TestFramework
             };
         }
 
+        // ---- neo-stelem-any-vt-element host read-back helper. The READ-BACK
+        //      happens on the CLR (host) side (arr[i].X + arr[i].Y + arr[i].Z),
+        //      so the probe verifies the Neo `stelem.any TestVector3` WRITE landed
+        //      the correct struct bytes into the array element WITHOUT depending
+        //      on Neo Ldelem or Neo float arithmetic (the pre-existing float bugs).
+        //      Sums the X/Y/Z of elements i and j. ----
+        public static int SumTestVector3ArrayElems(TestVector3[] arr, int i, int j)
+        {
+            return (int)(arr[i].X + arr[i].Y + arr[i].Z + arr[j].X + arr[j].Y + arr[j].Z);
+        }
+
         // ---- neo-raw-stfld-clr-object-vt-field host read-back helper. The
         //      READ-BACK happens on the CLR (host) side (o.S.a + o.S.b + o.S.c),
         //      so the probe verifies the Neo `owner.S.field = x` raw Stfld WRITE

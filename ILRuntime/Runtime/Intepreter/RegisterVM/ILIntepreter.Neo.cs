@@ -5551,13 +5551,46 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        // CLR object array: the value reaching Stelem_Ref /
-                                        // Stelem_Any into an object[] is a reference (C#
-                                        // boxes value types before storing into object[]),
-                                        // so read its mStack object and Array.SetValue it.
-                                        int vIdx = *(int*)(frameBase + ip->Operand4);
-                                        object vObj = vIdx >= 0 ? mStack[vIdx] : null;
-                                        sa.SetValue(vObj, si);
+                                        // CLR array that is NOT an ILTypeInstance[]: could be a
+                                        // reference-element array (object[]/string[]/class[]) OR a
+                                        // value-type-element CLR array (TestVector3[], or float[]/
+                                        // int[] reached via `stelem.any !T` on a generic T[]). The
+                                        // two element kinds have DIFFERENT value representations
+                                        // under the Neo object model:
+                                        //   * reference element  -> value slot holds an mStack index;
+                                        //   * value-type element -> value slot holds FLAT MANAGED
+                                        //     BYTES of the struct/primitive (NOT an mStack index).
+                                        // Reading the first int of a value-type slot as an mStack
+                                        // index yields the struct's first field bit-pattern (e.g.
+                                        // 1.0f = 0x3F800000) -> ArgumentOutOfRangeException at
+                                        // mStack[garbage]. Discriminate by the runtime element type.
+                                        Type stelemElemType = sa.GetType().GetElementType();
+                                        if (stelemElemType != null && stelemElemType.IsValueType)
+                                        {
+                                            // Value-type element: read the flat bytes at ip->Operand4
+                                            // into a boxed object and Array.SetValue it (SetValue
+                                            // unboxes value types). Mirrors the Stobj CLR-value-type-
+                                            // array-element WRITE arm (child-26, Stobj :5959) and the
+                                            // byref-array write-back (child-25). primitive element
+                                            // types (float/int/...) are handled by the SAME reader
+                                            // (Unsafe.ReadUnaligned<T> + Box) -- `stelem.any !T` on a
+                                            // float[] lands here, not in Stelem_R4.
+                                            int stelemCur = ip->Operand4;
+                                            object stelemBoxed = ILIntepreter.ReadNeoValueType(
+                                                stelemElemType, frameBase, ref stelemCur,
+                                                Optimizer.GetNeoValueTypeManagedSize(stelemElemType));
+                                            sa.SetValue(stelemBoxed, si);
+                                        }
+                                        else
+                                        {
+                                            // Reference element: the value reaching Stelem_Ref /
+                                            // Stelem_Any into an object[] is a reference (C# boxes
+                                            // value types before storing into object[]), so read its
+                                            // mStack object and Array.SetValue it.
+                                            int vIdx = *(int*)(frameBase + ip->Operand4);
+                                            object vObj = vIdx >= 0 ? mStack[vIdx] : null;
+                                            sa.SetValue(vObj, si);
+                                        }
                                     }
                                 }
                                 break;

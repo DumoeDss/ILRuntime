@@ -646,6 +646,23 @@
       "smoke": "FULL SMOKE 133->122 (-11); all 10 C12 green; stash-toggle airtight; NeoStep 380/0; Legacy-neutral",
       "review": "APPROVE-WITH-FINDINGS (0 Blocker/Major). 3 delegate twins byte-match Legacy; EnumToObject IL-enum branch faithful. Minor-1 benign divergence on non-IL branches.",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-array-vt-index-oob": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C10 (PARTIAL, multi-rooted): Stelem_Any on CLR value-type-element array read flat-bytes first int as mStack index -> OOB. Fix=VT-vs-ref discriminate (child-26 Stobj pattern). Fixes largest sub-cluster (4); 5 distinct roots reported as follow-ups.",
+      "prerequisites": [
+        "neo-ilruntimetype-runtime-bridge"
+      ],
+      "dependsOn": [
+        "neo-ilruntimetype-runtime-bridge"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 122->118 (-4); ArrayTest05/UnitTest_10035/TestValueTypeBinding.Test03/TestUsingNested green; stash-toggle airtight; NeoStep 382/0 (+2 probes); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author delta-review; multi-root honesty)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -682,7 +699,8 @@
     "neo-delegate-adapter-clr-cast",
     "neo-callvirt-gettype-vtable",
     "neo-iltype-cast-clr-base",
-    "neo-ilruntimetype-runtime-bridge"
+    "neo-ilruntimetype-runtime-bridge",
+    "neo-array-vt-index-oob"
   ],
   "surfacedFollowups": [
     {
@@ -857,6 +875,7 @@
     ],
     "fullSmokeAfterC4": 140,
     "fullSmokeAfterC2": 133,
-    "fullSmokeAfterC12": 122
+    "fullSmokeAfterC12": 122,
+    "fullSmokeAfterC10": 118
   }
 }
