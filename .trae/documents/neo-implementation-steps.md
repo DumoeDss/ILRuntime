@@ -1,5 +1,7 @@
 # Neo 模式实现步骤拆解
 
+> **进度总览(2026-07-13 核实,以此为准)**: **Step 1-26 主干已全部完成。** Step 1-10 在 `.trae/specs/implement-neo-step*`(旧格式归档);Step 11-26 在 `openspec/changes/archive/`(含 19 委托、20 async、22 泛型模板、23 NeoAssembly、24 ilrt_neoc、25 加载器+Cecil 解耦、26 性能验证)。Step 21「JIT 完整改造」横切贯穿,无独立归档。下方 2026-07-06 快照(原 line 7)所列「剩余」项(AOT Steps 22-26、async-suspend、array-multidim、generic-byref-etc、peephole-isinst)**现已全部完成**。**当前阶段 = overhaul**(在已实现 step 上修边角 bug),NeoStep 冒烟 380/0(HEAD `1cda0f51`, 2026-07-13);overhaul 交接见 `rasen/changes/neo-overhaul/handoff/lead-13.md`。
+
 > **新 session 接手工作前，先读交接文档 [`neo-handoff.md`](neo-handoff.md)**（环境/构建测试命令、当前进度、工作流、代码坑、待办）。配套的推迟项映射见 [`neo-deferred-items.md`](neo-deferred-items.md)。
 
 > 基于 `object-model-neo-design.md` 设计方案  
@@ -108,7 +110,7 @@ Neo AOT 工具链（纯优化层，不影响功能正确性）:
 
 ---
 
-## Step 1: 编译宏体系与代码组织
+## Step 1: 编译宏体系与代码组织 - DONE
 
 **目标**: 建立 `ENABLE_NEO_MODE` 宏控制体系，替代现有 `USE_OLD_OBJ_MODEL`。
 
@@ -129,7 +131,7 @@ Neo AOT 工具链（纯优化层，不影响功能正确性）:
 
 ---
 
-## Step 2: ILTypeInstance 条件编译重构 + 核心方法补全
+## Step 2: ILTypeInstance 条件编译重构 + 核心方法补全 - DONE
 
 **目标**: 重构 `ILTypeInstance.cs` 的条件编译结构，恢复 Legacy 模式完整性，并实现 Neo 模式的新版本。
 
@@ -196,7 +198,7 @@ Neo AOT 工具链（纯优化层，不影响功能正确性）:
 
 ---
 
-## Step 3: 静态字段适配
+## Step 3: 静态字段适配 - DONE
 
 **目标**: `ILTypeStaticInstance` 使用新 Object Model。
 
@@ -213,7 +215,7 @@ Neo AOT 工具链（纯优化层，不影响功能正确性）:
 
 ---
 
-## Step 4: Neo 帧布局 — byte* 语义
+## Step 4: Neo 帧布局 — byte* 语义 - DONE
 
 **目标**: 将 `ExecuteNeo` 的帧从 `StackObject*` 改为 `byte*`，实现紧凑帧布局。
 
@@ -242,7 +244,7 @@ Neo AOT 工具链（纯优化层，不影响功能正确性）:
 
 ---
 
-## Step 5: Box/Unbox 基础（IL 值类型）
+## Step 5: Box/Unbox 基础（IL 值类型） - DONE
 
 **目标**: 实现 IL 值类型在新 Object Model 下的 Box/Unbox。
 
@@ -258,7 +260,7 @@ Neo AOT 工具链（纯优化层，不影响功能正确性）:
 
 ---
 
-## Step 6: 基本算术/分支/常量加载指令
+## Step 6: 基本算术/分支/常量加载指令 - DONE
 
 **目标**: 在 Neo 解释器中实现基础计算能力。
 
@@ -282,7 +284,7 @@ Neo AOT 工具链（纯优化层，不影响功能正确性）:
 
 ---
 
-## Step 7: ManagedStack 批量分配 + 引用类型基础
+## Step 7: ManagedStack 批量分配 + 引用类型基础 - DONE
 
 **目标**: 实现 Neo 帧中引用类型 slot 的生命周期管理。
 
@@ -318,7 +320,7 @@ Step 6 smoke 临时在 [ILType.cs](file:///f:/SVN/ILRuntime/ILRuntime/CLR/TypeSy
 
 ---
 
-## Step 8: Neo Call 约定 — IL 方法间调用
+## Step 8: Neo Call 约定 — IL 方法间调用 - DONE
 
 **目标**: 实现 Caller-Write + Direct-Return 的零拷贝方法调用。
 
@@ -343,7 +345,7 @@ Step 6 smoke 临时在 [ILType.cs](file:///f:/SVN/ILRuntime/ILRuntime/CLR/TypeSy
 
 ---
 
-## Step 8b: 引用类型 newobj
+## Step 8b: 引用类型 newobj - DONE
 
 **目标**: 实现 IL 引用类型对象的创建，使后续步骤能完整验证引用类型场景。
 
@@ -370,7 +372,7 @@ Step 6 smoke 临时在 [ILType.cs](file:///f:/SVN/ILRuntime/ILRuntime/CLR/TypeSy
 
 ---
 
-## Step 9: CLRRedirectionDelegateNeo + CLR 方法调用
+## Step 9: CLRRedirectionDelegateNeo + CLR 方法调用 - DONE
 
 **目标**: 建立 Neo 模式下调用 CLR 方法的基础设施。
 
@@ -412,7 +414,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 10: VTable 构建 + 虚方法分派
+## Step 10: VTable 构建 + 虚方法分派 - DONE
 
 **目标**: 实现编译时 VTable 构建和运行时 O(1) 虚方法分派。
 
@@ -443,7 +445,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 11: 接口方法分派
+## Step 11: 接口方法分派 - DONE
 
 **目标**: 实现接口的 VTable offset 映射和分派。
 
@@ -467,7 +469,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 12: 帧内值类型 + Inline 字段访问
+## Step 12: 帧内值类型 + Inline 字段访问 - DONE
 
 **目标**: 值类型在帧上以 flat bytes 内联，消除 ValueTypeObjectReference。
 
@@ -493,7 +495,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 12b: Move_Vt + LowerMove Pass
+## Step 12b: Move_Vt + LowerMove Pass - DONE
 
 **目标**: 实现值类型赋值/拷贝语义。
 
@@ -517,7 +519,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 13: Box/Unbox 完整实现
+## Step 13: Box/Unbox 完整实现 - DONE
 
 **目标**: 完善所有 Boxing/Unboxing 场景，含 CLR 值类型。
 
@@ -546,7 +548,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 14: 异常处理 Neo 适配
+## Step 14: 异常处理 Neo 适配 - DONE
 
 **目标**: 在 Neo 解释器中完整支持 try/catch/finally。
 
@@ -569,7 +571,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 15: isinst / castclass
+## Step 15: isinst / castclass - DONE
 
 **目标**: 实现类型检查指令，含编译期 peephole 优化。
 
@@ -591,7 +593,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 16: 数组元素访问
+## Step 16: 数组元素访问 - DONE
 
 **目标**: 实现 ldelem/stelem/ldelema 全类型支持。
 
@@ -614,7 +616,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 17: Ref/Out 参数 + ldloca/ldflda
+## Step 17: Ref/Out 参数 + ldloca/ldflda - DONE
 
 **目标**: 实现统一的 Ref Slot 表示和 stind/ldind 分派。
 
@@ -643,7 +645,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 18: 值类型 newobj + CLR 类型 newobj
+## Step 18: 值类型 newobj + CLR 类型 newobj - DONE
 
 **目标**: 补全 Step 8b 未覆盖的 newobj 路径（IL 值类型、CLR 类型）。
 
@@ -665,7 +667,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 19: 委托 (Delegate)
+## Step 19: 委托 (Delegate) - DONE
 
 **目标**: 在 Neo 模式下完整支持委托创建和调用。
 
@@ -687,7 +689,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 20: Async/Await
+## Step 20: Async/Await - DONE
 
 **目标**: 实现 Builder 全量重定向 + ILAsyncContext 的异步执行模型。
 
@@ -710,7 +712,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 21: JIT 编译器 Neo 模式完整改造
+## Step 21: JIT 编译器 Neo 模式完整改造 - DONE (cross-cutting JIT change, woven through other steps; no standalone archive)
 
 **目标**: JIT 编译器能为 Neo 模式生成正确的指令序列。
 
@@ -732,7 +734,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 22: 泛型方法模板 + Patch
+## Step 22: 泛型方法模板 + Patch - DONE
 
 **目标**: 实现泛型方法的模板存储和运行时实例化。
 
@@ -753,7 +755,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 23: NeoAssembly 二进制格式定义
+## Step 23: NeoAssembly 二进制格式定义 - DONE
 
 **目标**: 定义并实现 .neo 文件的序列化/反序列化。
 
@@ -775,7 +777,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 24: ilrt_neoc 预编译工具
+## Step 24: ilrt_neoc 预编译工具 - DONE
 
 **目标**: 实现独立的预编译命令行工具。
 
@@ -797,7 +799,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 25: 运行时加载器 + Cecil 解耦
+## Step 25: 运行时加载器 + Cecil 解耦 - DONE
 
 **目标**: 实现 .neo 文件的加载，使 `ILType`/`ILMethod` 等运行时类型能脱离 Cecil 元数据独立工作。
 
@@ -853,7 +855,7 @@ Step 9 落地后，CLR 方法（包括 `Console.WriteLine`、`Assert.AreEqual` �
 
 ---
 
-## Step 26: 性能验证与边界完善
+## Step 26: 性能验证与边界完善 - DONE
 
 **目标**: 全面性能基准测试和边界情况处理。
 

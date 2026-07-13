@@ -1,5 +1,17 @@
 # Neo Overhaul — Handoff Document
 
+> **PROGRESS UPDATE (2026-07-13) — supersedes the 2026-07-09 progress/baseline text below.** All
+> 26 roadmap steps are now COMPLETE (Step 1-10 in `.trae/specs/`, Step 11-26 in
+> `openspec/changes/archive/` — including Step 19 delegates, Step 20 async, Step 22-26 AOT/tooling;
+> Step 21 is a cross-cutting JIT change woven through the others). `ldftn`/delegates/async/etc. are
+> IMPLEMENTED. The Neo full smoke now COMPLETES (~902 ran / 192 failed, no pre-crash). **Current phase
+> = overhaul**: fixing edge-case bugs and uncovered instruction shapes on top of the implemented
+> steps, NOT advancing new steps. NeoStep smoke = **380/0** green; HEAD = `1cda0f51` (2026-07-13).
+> The authoritative overhaul handoff is `rasen/changes/neo-overhaul/handoff/lead-13.md` (latest
+> session: 9 correctness children 21-29; its `surfacedFollowups` are the current frontier). The
+> env/build/code-map sections below remain accurate; only the progress/baseline numbers and the
+> old completion-portfolio/lead-3 pointer are outdated.
+
 > **Read this FIRST when continuing the ILRuntime Neo work.**
 > Companion to `neo-implementation-steps.md` (the 26-step roadmap) and
 > `neo-deferred-items.md` (the deferred-items resolution map).
@@ -7,7 +19,8 @@
 > Authoritative current state lives in this file + `neo-deferred-items.md` +
 > the `openspec/specs/` capability specs + `openspec/changes/archive/`, and the
 > portfolio run state in
-> `openspec/changes/neo-completion-portfolio/{planning-context.md,portfolio-run.json}`.
+> `rasen/changes/neo-overhaul/{planning-context.md,portfolio-run.json}` (the completion-portfolio is
+> CLOSED; the latest session handoff is `rasen/changes/neo-overhaul/handoff/lead-13.md`).
 
 This doc captures everything a fresh session needs to pick up the Neo overhaul:
 the environment, what's done, the workflow that's been working, the non-obvious
