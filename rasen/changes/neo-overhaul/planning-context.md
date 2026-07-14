@@ -1174,3 +1174,36 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   -2; UnitTest_10027 + 1 transitive callee unblock). Legacy-neutral: `Optimizer.Neo.cs` is
   `#if ENABLE_NEO_MODE`-gated (file-level). Files: `Optimizer.Neo.cs` (1 file, ~30 added / 0 removed;
   the `isNeoNewobjShape` definition + 10 site substitutions). Capability = `neo-optimizer`.
+
+## Child F-10 DONE (neo-il-instance-clr-struct-field-f10, 2026-07-14) -- durable findings
+- **Root cause (the C7-unmasked StructTest7 NIE):** an IL instance's CLR-struct field is stored as a
+  reference slot holding the BOXED struct at `ManagedObjects[ReferenceOffset]` (NOT flat Primitives
+  bytes). `ldflda <clrStructField>` on the IL instance produces the F-10 byref `(objIdx, ReferenceOffset
+  | NeoF10ByrefOffsetFlag)` (ldflda `clrStructFieldMarker` branch, `ILIntepreter.Neo.cs:2092-2106`).
+  The raw `Stfld`/`Ldfld` value-type-owner arm (:4601 Stfld / :4364 Ldfld) NIE'd whenever
+  `mStack[objIdx]` was an ILTypeInstance. Fix = route to a box/mutate/unbox ONE LEVEL UP via the IL
+  instance's ManagedObjects (read boxed struct, `FieldInfo.SetValue` the leaf, write back; Activator
+  seed on null slot). Interpreter-only, Neo-gated. The IL-instance-storage sibling of child-27's heap-
+  CLR-object-field fix (which used NeoReadClrObjectField/NeoWriteClrObjectField -- WRONG here, those
+  re-resolve the OWNER's CLRType and treat `off` as a field hash on the IL instance).
+- **SOUNDNESS RULE (load-bearing, nearly slipped past): for a byref `(objIdx, off)` whose `off` can be
+  a FieldInfo.GetHashCode(), NEVER use `(off & NeoF10ByrefOffsetFlag) != 0` as the FIRST discriminator.**
+  The struct-field hash is a full 32-bit value and can have bit `0x40000000` set by chance. An initial
+  flag-first draft regressed the 4 child-27/29 probes `NeoStepRaw(Ldfld|Stfld)ClrObjVtField` (their
+  NeoClrObjVtFieldOwner struct-field hash carries the flag bit) -> InvalidCast `NeoClrObjVtFieldOwner`
+  to `CrossBindingAdaptorType`. The TYPE check (`target is ILTypeInstance || CrossBindingAdaptorType`)
+  MUST come first; the flag is only a secondary carrier. This is what the Stobj arm (:6199, type-first
+  via GetNeoILInstance after excluding CLR-object/Array) and `NeoMarshalByrefFieldToSlot` (:470,
+  `target is ILTypeInstance` first) ALREADY do -- mirror them. The full NeoStep smoke (not just the
+  name-filter) caught the regression; always run it after touching a broad owner-dispatch arm.
+- **UnitTest_10051 residual is NOT F-10 (do NOT re-attribute):** it progresses PAST the F-10 NIE (the
+  SetPos WRITE now works) but still fails `list[0].V2.x.RawValue == 999`. A CONTROL
+  `new Fixed64Vector2(555,0).x.RawValue` faults with NO F-10 involvement -- reading a struct field's
+  PROPERTY via `.x.RawValue` is a SEPARATE pre-existing Neo gap (constrained-callvirt / nested-struct-
+  field-property read). UnitTest_10051 PASSES under Legacy (so does StructTest7). Candidate follow-up:
+  `neo-struct-field-property-read` (same family as the nested-ldflda-on-byref gap child-27 surfaced).
+- **Verify:** full smoke **74 -> 73** (StructTest7 flipped; F-10 NIE count 0; child-27/29 probes
+  intact). NeoStep **388 -> 391/0** (+3 F-10 probes: Stfld-write+Ldfld_Ref-read, raw-Ldfld-field-of-
+  field float read, null-slot seed). Legacy-neutral (probes + StructTest7 + UnitTest_10051 all PASS
+  under plain Debug+useRegister=true). Files: `ILIntepreter.Neo.cs` (raw Stfld + raw Ldfld VT-owner
+  arms), new `TestCases/NeoStepIlInstanceClrStructFieldTest.cs`. Capability = `neo-value-types`.

@@ -4361,9 +4361,36 @@ namespace ILRuntime.Runtime.Intepreter
                                                 if (target == null)
                                                     throw new NullReferenceException();
                                                 if (target is ILTypeInstance || target is CrossBindingAdaptorType)
-                                                    throw new NotImplementedException("Neo raw Ldfld: byref owner is an IL instance whose CLR-struct field uses F-10 ManagedObjects storage (deferred; sibling of the heap-CLR-object-field read). Field " + f.Name + " on " + ct.FullName);
-                                                object boxedStruct = NeoReadClrObjectField(AppDomain, target, off);
-                                                fldVal = f.GetValue(boxedStruct);
+                                                {
+                                                    // neo-il-instance-clr-struct-field-f10 (READ): the
+                                                    // symmetric read of the Stfld F-10 arm. An IL
+                                                    // instance reached here is the F-10 shape -- the
+                                                    // byref is (objIdx, ReferenceOffset | flag); the
+                                                    // boxed CLR struct lives at the IL instance's
+                                                    // ManagedObjects[ReferenceOffset]. Reflection-read
+                                                    // the leaf field off the boxed struct (do NOT route
+                                                    // through NeoReadClrObjectField -- the owner is an
+                                                    // IL instance, the struct is an IL reference slot).
+                                                    // A null slot yields the field's default via a
+                                                    // seeded default struct (read-only; no write-back).
+                                                    // The existing dest marshalling below handles fldVal.
+                                                    //
+                                                    // CRITICAL (soundness): target-TYPE check first,
+                                                    // NOT the F-10 flag -- see the Stfld F-10 arm: a
+                                                    // CLR-object owner's byref offset is the struct
+                                                    // FieldInfo hash, which can have the flag bit set.
+                                                    ILTypeInstance il = target as ILTypeInstance ?? ((CrossBindingAdaptorType)target).ILInstance;
+                                                    int f10RefOff = off & ~JITCompiler.NeoF10ByrefOffsetFlag;
+                                                    object boxedStruct = il.ManagedObjects[f10RefOff];
+                                                    if (boxedStruct == null)
+                                                        boxedStruct = System.Activator.CreateInstance(ct.TypeForCLR);
+                                                    fldVal = f.GetValue(boxedStruct);
+                                                }
+                                                else
+                                                {
+                                                    object boxedStruct = NeoReadClrObjectField(AppDomain, target, off);
+                                                    fldVal = f.GetValue(boxedStruct);
+                                                }
                                             }
                                         }
                                         else
@@ -4598,10 +4625,53 @@ namespace ILRuntime.Runtime.Intepreter
                                             if (target == null)
                                                 throw new NullReferenceException();
                                             if (target is ILTypeInstance || target is CrossBindingAdaptorType)
-                                                throw new NotImplementedException("Neo raw Stfld: CLR value-type owner is an IL instance whose CLR-struct field uses F-10 ManagedObjects storage (deferred; sibling of the heap-CLR-object-field fix). Field " + f.Name + " on " + ct.FullName);
-                                            object boxedStruct = NeoReadClrObjectField(AppDomain, target, off);
-                                            f.SetValue(boxedStruct, value);
-                                            NeoWriteClrObjectField(AppDomain, target, off, boxedStruct);
+                                            {
+                                                // neo-il-instance-clr-struct-field-f10: IL-INSTANCE
+                                                // owner. An IL instance reached here is the F-10 shape
+                                                // (a CLR-struct field of the IL instance, stored as a
+                                                // reference slot holding the BOXED CLR struct at
+                                                // ManagedObjects[ReferenceOffset]); the ldflda F-10
+                                                // branch (ILIntepreter.Neo.cs:2092-2106) produced the
+                                                // byref (objIdx, ReferenceOffset |
+                                                // NeoF10ByrefOffsetFlag). This is the IL-instance-
+                                                // storage sibling of child-27's heap-CLR-object-field
+                                                // fix. Do NOT route through
+                                                // NeoReadClrObjectField/NeoWriteClrObjectField (those
+                                                // re-resolve the OWNER's CLRType and would treat `off`
+                                                // as a field hash on the IL instance). Box/mutate/unbox
+                                                // ONE LEVEL UP via ManagedObjects: read the boxed
+                                                // struct at refOff, reflection-write the leaf field,
+                                                // write the mutated struct back. `value` is already
+                                                // boxed by field category above; FieldInfo.SetValue on
+                                                // a boxed value type mutates it in place (the write-
+                                                // back is required for the null-seeded-default case).
+                                                // A null slot is seeded with a default struct.
+                                                //
+                                                // CRITICAL (soundness): the target-TYPE check MUST
+                                                // precede any F-10-flag test. The CLR-OBJECT owner's
+                                                // byref offset is the struct FieldInfo.GetHashCode()
+                                                // (child-27), which can have the flag bit (0x40000000)
+                                                // set by chance -- testing the flag first would mis-
+                                                // route a CLR object into this branch (InvalidCast).
+                                                // Mirror the Stobj arm (:6199) /
+                                                // NeoMarshalByrefFieldToSlot (:470): type-first,
+                                                // flag-second. Here the type check alone is the
+                                                // discriminator (an IL instance in this arm is always
+                                                // F-10); `off & ~flag` recovers the ReferenceOffset.
+                                                ILTypeInstance il = target as ILTypeInstance ?? ((CrossBindingAdaptorType)target).ILInstance;
+                                                int f10RefOff = off & ~JITCompiler.NeoF10ByrefOffsetFlag;
+                                                object boxedStruct = il.ManagedObjects[f10RefOff];
+                                                if (boxedStruct == null)
+                                                    boxedStruct = System.Activator.CreateInstance(ct.TypeForCLR);
+                                                f.SetValue(boxedStruct, value);
+                                                il.ManagedObjects[f10RefOff] = boxedStruct;
+                                            }
+                                            else
+                                            {
+                                                object boxedStruct = NeoReadClrObjectField(AppDomain, target, off);
+                                                f.SetValue(boxedStruct, value);
+                                                NeoWriteClrObjectField(AppDomain, target, off, boxedStruct);
+                                            }
                                         }
                                         else
                                             throw new NotImplementedException("Neo raw Stfld: unrecognized CLR value-type owner byref shape (objIdx=" + objIdx + "). Field " + f.Name + " on " + ct.FullName);

@@ -884,6 +884,23 @@
       "smoke": "FULL SMOKE 80->74 (-6); UnitTest_10039/10048/10050 + UnitTest_10036/10037 + bonus TestCLREnum.Test06 (AV UnitTest_10037 also fixed); 0 regression; NeoStep 388/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; stale-stub + IL-static CLR-VT; remaining 9 C11 distinct roots reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-il-instance-clr-struct-field-f10": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 F-10 (child-27/29 deferred, now done): an IL instance CLR-struct field is a boxed struct in ManagedObjects[refOff]. ldflda produces F-10 byref (objIdx,refOff|flag); leaf Stfld/Ldfld VT-owner arm NIE on ILTypeInstance owner. Fix = box/mutate/unbox via ManagedObjects + symmetric Ldfld byref. Key: type-check before F-10-flag (FieldInfo.GetHashCode can collide flag bit). F-10 NIE eliminated. StructTest7 green; UnitTest_10051 progresses to nested-struct-property read gap.",
+      "prerequisites": [
+        "neo-vt-binding-misc"
+      ],
+      "dependsOn": [
+        "neo-vt-binding-misc"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 74->73 (-1, StructTest7); F-10 NIE count 0; stash-equiv airtight; NeoStep 391/0 (+3 probes, 0 regression); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; type-first soundness; child-27/29 probes intact; UnitTest_10051 distinct residual reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -934,7 +951,8 @@
     "neo-nre-cluster-subclusters",
     "neo-nre-residual-sites",
     "neo-callvirt-this-null-residual",
-    "neo-vt-binding-misc"
+    "neo-vt-binding-misc",
+    "neo-il-instance-clr-struct-field-f10"
   ],
   "surfacedFollowups": [
     {
@@ -1123,6 +1141,7 @@
     "fullSmokeAfterC16": 89,
     "fullSmokeAfterNreResidual": 86,
     "fullSmokeAfterC4residual": 80,
-    "fullSmokeAfterC11": 74
+    "fullSmokeAfterC11": 74,
+    "fullSmokeAfterF10": 73
   }
 }
