@@ -833,6 +833,23 @@
       "smoke": "FULL SMOKE 95->89 (-6); GCTest.TestDicEnumerator + GenericTest + InheritanceTest24 + Test05.TestForEachTry/TestReturn + UnitTest_10034; stash-toggle airtight; NeoStep 388/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; stale-stub class; 6 flipped, 4 progressed reported; remaining NRE sub-clusters + 33 stale-TODO files reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-nre-residual-sites": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 residual NRE (largest sub-cluster): self-referential static VA field (struct Vector3{static Vector3 one}). ILType.InitializeFields read instance totals during the field loop (still -1 sentinel) -> negative static offset -> StaticTotalPrimitiveSize=-1 -> Primitives=null -> NRE in .cctor Stsfeld + Ldsfeld IL-VT static. Fix = ILType.InitializeFields post-loop static-offset pass (after instance totals finalize). No engine change.",
+      "prerequisites": [
+        "neo-nre-cluster-subclusters"
+      ],
+      "dependsOn": [
+        "neo-nre-cluster-subclusters"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 89->86 (-3); StructTest4 + UnitTest_10025 + Vector3.get_One (spans Ldsfeld+Stsfeld); stash-toggle airtight; NeoStep 388/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; self-ref static VA field root pinned; remaining NRE sub-clusters reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -880,7 +897,8 @@
     "neo-clr-struct-newobj-retdest-null",
     "neo-callvirt-clr-struct-arg",
     "neo-enum-cluster-residual",
-    "neo-nre-cluster-subclusters"
+    "neo-nre-cluster-subclusters",
+    "neo-nre-residual-sites"
   ],
   "surfacedFollowups": [
     {
@@ -1066,6 +1084,7 @@
     "fullSmokeAfterC7": 101,
     "fullSmokeAfterNewobj": 101,
     "fullSmokeAfterC3": 95,
-    "fullSmokeAfterC16": 89
+    "fullSmokeAfterC16": 89,
+    "fullSmokeAfterNreResidual": 86
   }
 }

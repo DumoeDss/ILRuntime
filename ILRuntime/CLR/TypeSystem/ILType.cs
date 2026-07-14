@@ -2941,49 +2941,17 @@ namespace ILRuntime.CLR.TypeSystem
                         }
                         staticFieldReferences[idxStatic] = fr;
                         staticFieldDefinitions[idxStatic] = field;
-#if ENABLE_NEO_MODE
-                        var staticFieldType = staticFieldTypes[idxStatic];
-                        // Step 25 CLR-adaptor (A2 field-init-NRE closure, static
-                        // sibling): same null-fieldType guard as the instance-
-                        // field path below -- a static field whose type fails to
-                        // resolve yields null here, and staticFieldType.IsPrimitive
-                        // would NRE. Throw TypeLoadException (mirroring :1505/:1568/
-                        // :1593) so the NeoCompiler.CompileCore pre-filter skips the
-                        // type gracefully. Neo-only (Legacy byte-identical).
-                        if (staticFieldType == null)
-                            throw new TypeLoadException("Cannot resolve static field type '" + field.FieldType.FullName + "' for type '" + FullName + "'");
-                        if (staticFieldType.IsPrimitive)
-                        {
-                            staticFieldOffsets[idxStatic] = new ILTypeFieldOffset()
-                            {
-                                PrimitiveOffset = staticPrimitiveOffset,
-                                ReferenceOffset = staticReferenceOffset
-                            };
-                            staticPrimitiveOffset += AppDomain.GetPrimitiveSize(staticFieldType);
-                        }
-                        else
-                        {
-                            if (staticFieldType.IsValueType && staticFieldType is ILType sit)
-                            {
-                                staticFieldOffsets[idxStatic] = new ILTypeFieldOffset()
-                                {
-                                    PrimitiveOffset = staticPrimitiveOffset,
-                                    ReferenceOffset = staticReferenceOffset
-                                };
-                                staticPrimitiveOffset += sit.TotalPrimitiveSize;
-                                staticReferenceOffset += sit.TotalReferenceCount;
-                            }
-                            else
-                            {
-                                staticFieldOffsets[idxStatic] = new ILTypeFieldOffset()
-                                {
-                                    PrimitiveOffset = staticPrimitiveOffset,
-                                    ReferenceOffset = staticReferenceOffset
-                                };
-                                staticReferenceOffset++;
-                            }
-                        }
-#endif
+                        // Neo static-field OFFSET computation is DEFERRED to a post-
+                        // loop pass below: a self-referential static value-type field
+                        // (e.g. `struct Vector3 { static Vector3 one; }`) reads
+                        // sit.TotalPrimitiveSize/TotalReferenceCount with sit == this
+                        // while this type's OWN instance totals are still the -1
+                        // sentinels (not finalized until after the loop). Reading them
+                        // inline corrupted the static accumulators (staticPrimitiveOffset
+                        // went negative -> StaticTotalPrimitiveSize == -1 -> the Neo
+                        // ILTypeStaticInstance ctor sized Primitives as null -> NRE in
+                        // the .cctor Stsfld). Computing offsets after the instance
+                        // totals are finalized makes sit==this read the correct size.
                         idxStatic++;
                     }
                 }
@@ -3090,6 +3058,40 @@ namespace ILRuntime.CLR.TypeSystem
             // type it is the max over its instance fields (rarely needed, but
             // harmless). 1 is the floor for an empty struct.
             naturalAlignment = maxFieldAlignment < 1 ? 1 : maxFieldAlignment;
+#endif
+
+#if ENABLE_NEO_MODE
+            // Neo static-field offset pass (deferred from the field loop above).
+            // Runs AFTER the instance totals (totalPrimitiveSize/totalReferenceCnt)
+            // are finalized, so a self-referential static value-type field (sit ==
+            // this) reads this.TotalPrimitiveSize/TotalReferenceCount correctly
+            // instead of the -1 sentinel. staticFieldOffsets was allocated up-front
+            // (sized to definition.Fields.Count) and is Array.Resize'd to idxStatic
+            // below. Mirrors the instance-field offset pass above. Neo-only; Legacy
+            // is byte-identical (compiles out).
+            if (staticFieldOffsets != null)
+            {
+                for (int s = 0; s < idxStatic; s++)
+                {
+                    var sft = staticFieldTypes[s];
+                    if (sft == null)
+                        throw new TypeLoadException("Cannot resolve static field type '" + staticFieldDefinitions[s].FieldType.FullName + "' for type '" + FullName + "'");
+                    staticFieldOffsets[s] = new ILTypeFieldOffset()
+                    {
+                        PrimitiveOffset = staticPrimitiveOffset,
+                        ReferenceOffset = staticReferenceOffset
+                    };
+                    if (sft.IsPrimitive)
+                        staticPrimitiveOffset += AppDomain.GetPrimitiveSize(sft);
+                    else if (sft.IsValueType && sft is ILType svt)
+                    {
+                        staticPrimitiveOffset += svt.TotalPrimitiveSize;
+                        staticReferenceOffset += svt.TotalReferenceCount;
+                    }
+                    else
+                        staticReferenceOffset++;
+                }
+            }
 #endif
 
             if ( staticFieldTypes != null )
