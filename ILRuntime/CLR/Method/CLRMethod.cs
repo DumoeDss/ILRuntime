@@ -591,7 +591,30 @@ namespace ILRuntime.CLR.Method
                 }
                 else
                 {
-                    if (t == typeof(int) || t.IsEnum) { param[i] = ILIntepreter.ReadNeoInt32(targetBase, ref curPrim); }
+                    if (t == typeof(int)) { param[i] = ILIntepreter.ReadNeoInt32(targetBase, ref curPrim); }
+                    else if (t.IsEnum)
+                    {
+                        // neo-autogen-binding-invoke (cluster D): a CLR enum param is
+                        // stored in the callee param region as its underlying Int32
+                        // flat bytes (AllocateNeoCallParamSlot sizes an enum via
+                        // GetPrimitiveSize). For a BYREF (ref/out) enum param this
+                        // reflection fallback hands `param[i]` to MethodBase.Invoke,
+                        // whose CheckValue requires the boxed value to BE the enum
+                        // type against the `EnumType&` parameter -- a boxed Int32 is
+                        // rejected ("Object of type 'System.Int32' cannot be converted
+                        // to type 'EnumType&'"). Box it as the enum via Enum.ToObject
+                        // (mirrors Legacy's StackObject.ToObject which routes enums
+                        // through CheckCLRTypes/Enum.ToObject). The post-call write-
+                        // back (:675 et.IsEnum arm) flattens the (possibly-mutated)
+                        // boxed enum back to its Int32 bytes via WriteNeoValueType, so
+                        // the round-trip is correct. A BY-VALUE enum param keeps the
+                        // Int32 box (byte-identical to HEAD; the autogen redirect path
+                        // owns by-value enums). byRefSlotOff[i] >= 0 selects byref.
+                        int enumUnderlying = ILIntepreter.ReadNeoInt32(targetBase, ref curPrim);
+                        param[i] = (byRefSlotOff != null && i < byRefSlotOff.Length && byRefSlotOff[i] >= 0)
+                            ? Enum.ToObject(t, enumUnderlying)
+                            : (object)enumUnderlying;
+                    }
                     else if (t == typeof(long)) { param[i] = ILIntepreter.ReadNeoInt64(targetBase, ref curPrim); }
                     else if (t == typeof(float)) { param[i] = ILIntepreter.ReadNeoFloat(targetBase, ref curPrim); }
                     else if (t == typeof(double)) { param[i] = ILIntepreter.ReadNeoDouble(targetBase, ref curPrim); }

@@ -1020,6 +1020,23 @@
       "smoke": "FULL SMOKE 60->55 (-5); GenericMethodTest9/15 + GenericStaticMethodTest19 + InheritanceTest06/18; stash-toggle airtight; NeoStep 397/0 (+3 probes); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; fresh grounding; unbox.any ref-type; RefOutNull2 progressed to stobj T cluster G)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-autogen-binding-invoke": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-60 cluster D (PARTIAL, multi-rooted 8/6-roots). Largest clean root = byref-enum marshal: CLRMethod.Invoke(byte*) read byref enum underlying Int32 + boxed as Int32 -> CheckValue rejected Int32->EnumType&. Fix = byref enum param box as enum via Enum.ToObject (by-value unchanged). 7 distinct deep roots reported (JIT generic-method CLRBindingTest07/08, IL-struct boxing StructTest11, boxed-struct-interface MyTest.Test, reflection SetValue ReflectionTest06, ILRuntimeType-vs-framework ReflectionTest10/TestGenericMethod2).",
+      "prerequisites": [
+        "neo-recluster-60"
+      ],
+      "dependsOn": [
+        "neo-recluster-60"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 55->54 (-1, UnitTest_RefCLREnum); stash-toggle airtight; NeoStep 398/0 (+1 probe); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; byref-enum box; multi-root honesty)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1078,7 +1095,8 @@
     "neo-typed-opcode-reach-executer",
     "neo-float-arith-residual",
     "neo-callvirt-il-target-residual",
-    "neo-recluster-60"
+    "neo-recluster-60",
+    "neo-autogen-binding-invoke"
   ],
   "surfacedFollowups": [
     {
@@ -1275,6 +1293,7 @@
     "fullSmokeAfterTypedOp": 65,
     "fullSmokeAfterFloatArith": 63,
     "fullSmokeAfterCvilt": 60,
-    "fullSmokeAfterRecluster60": 55
+    "fullSmokeAfterRecluster60": 55,
+    "fullSmokeAfterDbinding": 54
   }
 }
