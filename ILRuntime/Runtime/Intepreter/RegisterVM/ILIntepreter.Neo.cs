@@ -2909,13 +2909,25 @@ namespace ILRuntime.Runtime.Intepreter
                                 *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + ip->SrcOffset) ^ ip->OperandLong;
                                 break;
                             case OpCodeREnum.Shli_I8:
-                                *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + ip->SrcOffset) << (int)ip->OperandLong;
+                                // D2 (neo-long-literal-widened-temp): a long shift's
+                                // count is ALWAYS an int32 in CIL (`ldc.i4 N; shl`), so
+                                // the ELDC fold (Optimizer.Utils.ReplaceRegisterWith
+                                // Constant) stores it in ip->Operand (the Ldc_I4 case),
+                                // NOT OperandLong. The int Shli arm reads ip->Operand;
+                                // the _I8 arms must too -- reading (int)ip->OperandLong
+                                // yielded 0 (OperandLong is disjoint from Operand @8 vs
+                                // @12), so every `long << constant` silently became a
+                                // no-op shift. (The _I8 ARITHMETIC ops Addi_I8/etc. are
+                                // unaffected: their immediates come from ldc.i8 / a
+                                // conv.i8-folded long constant, which the fold stores in
+                                // OperandLong.)
+                                *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + ip->SrcOffset) << ip->Operand;
                                 break;
                             case OpCodeREnum.Shri_I8:
-                                *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + ip->SrcOffset) >> (int)ip->OperandLong;
+                                *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + ip->SrcOffset) >> ip->Operand;
                                 break;
                             case OpCodeREnum.Shri_Un_I8:
-                                *(long*)(frameBase + ip->DstOffset) = (long)(*(ulong*)(frameBase + ip->SrcOffset) >> (int)ip->OperandLong);
+                                *(long*)(frameBase + ip->DstOffset) = (long)(*(ulong*)(frameBase + ip->SrcOffset) >> ip->Operand);
                                 break;
                             case OpCodeREnum.Addi_R4:
                                 *(float*)(frameBase + ip->DstOffset) = *(float*)(frameBase + ip->SrcOffset) + ip->OperandFloat;
@@ -7643,7 +7655,7 @@ namespace ILRuntime.Runtime.Intepreter
                         return (ulong)*(double*)(frameBase + offset);
                     case NeoPrimitiveTypeTag.I4:
                     default:
-                        return (ulong)*(int*)(frameBase + offset);
+                        return (ulong)*(uint*)(frameBase + offset);
                 }
             }
         }

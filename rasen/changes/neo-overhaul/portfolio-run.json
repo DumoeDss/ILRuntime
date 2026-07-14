@@ -1173,6 +1173,23 @@
       "smoke": "FULL SMOKE 34->33 (-1, DelegateTest36); NeoStep 398/0; Legacy-neutral; ConvertChangeType reverted (deeper typeof-genericparam bug)",
       "review": "APPROVE (LEAD non-author; mechanical surface exhausted; D1-D11 deep table)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-long-literal-widened-temp": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 D2: conv.u8 sign-extended int32 (ReadConvU8 (ulong)*(int*) should zero-extend (ulong)*(uint*); ECMA III.4.6). Plus 2nd latent bug: Shli_I8/Shri_I8 read shift count from OperandLong(@12) but ELDC fold stores int32 shift in Operand(@8) -> long<<constant shifted by 0. Fix both.",
+      "prerequisites": [
+        "neo-remaining-34-batch"
+      ],
+      "dependsOn": [
+        "neo-remaining-34-batch"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 33->32 (-1, UnitTest_1020); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; conv.u8 zero-extend; shift-count Operand field; 2nd latent self-caught)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1240,7 +1257,8 @@
     "neo-interface-callvirt-cluster-c",
     "neo-recluster-38",
     "neo-constrained-callvirt-residual",
-    "neo-remaining-34-batch"
+    "neo-remaining-34-batch",
+    "neo-long-literal-widened-temp"
   ],
   "surfacedFollowups": [
     {
@@ -1446,6 +1464,7 @@
     "fullSmokeAfterClusterC": 38,
     "fullSmokeAfterR38": 35,
     "fullSmokeAfterConstrained": 34,
-    "fullSmokeAfterR34batch": 33
+    "fullSmokeAfterR34batch": 33,
+    "fullSmokeAfterD2": 32
   }
 }
