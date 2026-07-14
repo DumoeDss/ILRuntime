@@ -520,47 +520,50 @@ namespace ILRuntime.CLR.TypeSystem
                 List<string> slotKeys = new List<string>();
                 Dictionary<string, int> slotMap = new Dictionary<string, int>();
 
-                if (!IsValueType && !IsInterface)
+                if (!IsInterface)
                 {
-                    IType baseForVTable = BaseType;
-                    if (baseForVTable is ILType baseILType)
+                    if (!IsValueType)
                     {
-                        var baseTable = baseILType.NeoVTable;
-                        for (int i = 0; i < baseTable.Length; i++)
+                        IType baseForVTable = BaseType;
+                        if (baseForVTable is ILType baseILType)
                         {
-                            slots.Add(baseTable[i]);
-                            string key = baseILType.neoVTableSlotKeys[i];
-                            slotKeys.Add(key);
-                            if (!slotMap.ContainsKey(key))
-                                slotMap.Add(key, i);
-                        }
-                    }
-                    else
-                    {
-                        if (baseForVTable == null)
-                            baseForVTable = appdomain.ObjectType;
-                        AddNeoBaseVirtualSlots(baseForVTable, slots, slotKeys, slotMap);
-                    }
-
-                    HashSet<ILMethod> added = new HashSet<ILMethod>();
-                    foreach (var pair in methods)
-                    {
-                        foreach (var method in pair.Value)
-                        {
-                            if (!added.Add(method) || !IsNeoVTableCandidate(method))
-                                continue;
-
-                            int slot = FindNeoOverrideSlot(method, slotMap);
-                            string key = method.SignatureString;
-                            if (slot >= 0)
+                            var baseTable = baseILType.NeoVTable;
+                            for (int i = 0; i < baseTable.Length; i++)
                             {
-                                slots[slot] = method;
-                                slotMap[key] = slot;
-                                slotKeys[slot] = key;
+                                slots.Add(baseTable[i]);
+                                string key = baseILType.neoVTableSlotKeys[i];
+                                slotKeys.Add(key);
+                                if (!slotMap.ContainsKey(key))
+                                    slotMap.Add(key, i);
                             }
-                            else
+                        }
+                        else
+                        {
+                            if (baseForVTable == null)
+                                baseForVTable = appdomain.ObjectType;
+                            AddNeoBaseVirtualSlots(baseForVTable, slots, slotKeys, slotMap);
+                        }
+
+                        HashSet<ILMethod> added = new HashSet<ILMethod>();
+                        foreach (var pair in methods)
+                        {
+                            foreach (var method in pair.Value)
                             {
-                                AddNeoVTableSlot(method, key, slots, slotKeys, slotMap);
+                                if (!added.Add(method) || !IsNeoVTableCandidate(method))
+                                    continue;
+
+                                int slot = FindNeoOverrideSlot(method, slotMap);
+                                string key = method.SignatureString;
+                                if (slot >= 0)
+                                {
+                                    slots[slot] = method;
+                                    slotMap[key] = slot;
+                                    slotKeys[slot] = key;
+                                }
+                                else
+                                {
+                                    AddNeoVTableSlot(method, key, slots, slotKeys, slotMap);
+                                }
                             }
                         }
                     }
@@ -571,6 +574,14 @@ namespace ILRuntime.CLR.TypeSystem
                     // produces non-virtual methods that IsNeoVTableCandidate rejects,
                     // but they ARE the dispatch target of an interface callvirt, so
                     // the interface offset map must be able to land on them.
+                    // This MUST also run for value types: a boxed struct dispatched
+                    // through an interface callvirt (the C# `constrained. T;
+                    // callvirt IFace.M` lowering for `T : IFace`) needs the struct's
+                    // interface-implementor methods in the VTable. Previously the
+                    // whole build was gated on !IsValueType, leaving a struct's
+                    // neoVTableSlots empty and its interface offset map unable to
+                    // resolve any slot (structs have no base virtual slots to
+                    // inherit, so only this pass populates their VTable).
                     EnsureNeoInterfaceImplementorSlots(slots, slotKeys, slotMap);
                 }
 
@@ -649,9 +660,12 @@ namespace ILRuntime.CLR.TypeSystem
             }
         }
 
-        // Find an instance method declared on THIS type that matches the given
-        // interface method by SignatureString (name + generic count + param
-        // fullnames + return fullname). Returns null if none.
+        // Find an instance method declared on THIS type that implements the given
+        // interface method. Matches by SignatureString for the C# implicit impl
+        // (a method with the same name + signature), then falls back to the
+        // explicit-interface-impl dotted name (`void IFace.M()` compiles to a
+        // method named `<InterfaceFullName>.<M>`), mirroring Legacy
+        // GetVirtualMethod's dotted-name fallback. Returns null if none.
         IMethod FindNeoImplementingMethod(IMethod ifaceMethod)
         {
             if (ifaceMethod == null || methods == null)
@@ -667,6 +681,34 @@ namespace ILRuntime.CLR.TypeSystem
                         continue;
                     if (m.SignatureString == key)
                         return m;
+                }
+            }
+            // Explicit interface implementation fallback. C# `void IFace.Method()`
+            // compiles to a method whose Name is `<InterfaceFullNameForNested>.
+            // <Method>` (e.g. `TestCases.InterfaceTest2.TestVirtual`). Its
+            // SignatureString is identical to the interface method's except the
+            // leading Name segment is the dotted form. Rebuild the key with the
+            // dotted name (preserving the interface method's exact param/return
+            // encoding) and match again.
+            IType ifaceType = ifaceMethod.DeclearingType;
+            if (ifaceType is ILType ifaceILType)
+            {
+                int bar = key.IndexOf('|');
+                if (bar >= 0)
+                {
+                    string dottedKey = string.Format("{0}.{1}", ifaceILType.FullNameForNested, ifaceMethod.Name) + key.Substring(bar);
+                    foreach (var pair in methods)
+                    {
+                        if (pair.Value == null)
+                            continue;
+                        foreach (var m in pair.Value)
+                        {
+                            if (m == null || m.IsStatic || m.IsConstructor)
+                                continue;
+                            if (m.SignatureString == dottedKey)
+                                return m;
+                        }
+                    }
                 }
             }
             return null;

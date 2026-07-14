@@ -1442,8 +1442,31 @@ namespace ILRuntime.Runtime.Intepreter
         static IMethod ResolveNeoCallvirtInterfaceTarget(OpCodeR* ip, IMethod declaredMethod, byte* targetBase, AutoList mStack)
         {
             object thisObj = ReadNeoCallThis(ip, targetBase, mStack);
-            if (!(thisObj is ILTypeInstance instance))
+            // A CrossBindingAdaptor `this` (an IL type that inherits a CLR base,
+            // retrieved through a CLR collection / API which marshals it to its
+            // CLRInstance adaptor) wraps the real ILTypeInstance. Unwrap it so
+            // interface dispatch resolves against the implementing IL type. The
+            // call `this` is then remapped to the ILInstance (below) so an IL
+            // method target receives an ILTypeInstance this. Mirrors Legacy,
+            // which stores the ILInstance directly.
+            ILTypeInstance instance;
+            bool thisIsAdaptor = false;
+            if (thisObj is CrossBindingAdaptorType adaptor)
+            {
+                instance = adaptor.ILInstance;
+                thisIsAdaptor = true;
+            }
+            else if (thisObj is ILTypeInstance direct)
+            {
+                instance = direct;
+            }
+            else
+            {
                 throw new InvalidOperationException(string.Format("Neo Callvirt_Interface requires ILTypeInstance this (CLR object through an interface is out of scope for Step 11), got {0}.", thisObj.GetType().FullName));
+            }
+
+            if (instance == null || instance.Type == null)
+                throw new InvalidOperationException(string.Format("Neo Callvirt_Interface: this has no IL type ({0}).", thisObj.GetType().FullName));
 
             ILType runtimeType = instance.Type;
             IType ifaceType = declaredMethod != null ? declaredMethod.DeclearingType : null;
@@ -1462,6 +1485,17 @@ namespace ILRuntime.Runtime.Intepreter
             if (actual == null)
                 throw new MissingMethodException(string.Format("Neo Callvirt_Interface: interface slot is null on {0} (interface {1}, slot {2} -> class slot {3}).",
                     runtimeType.FullName, ifaceType.FullName, ifaceMethodSlot, classSlot));
+
+            // Remap the call `this` from the adaptor to the wrapped ILInstance
+            // when the target is an IL method (an IL method needs an
+            // ILTypeInstance this; the CLR adaptor is not). A CLRMethod target
+            // keeps the adaptor this (CLR dispatch on the CLR object).
+            if (thisIsAdaptor && actual is ILMethod)
+            {
+                int thisArgOff = (int)((uint)ip->Operand4 >> 16);
+                mStack.Add(instance);
+                *(int*)(targetBase + thisArgOff) = mStack.Count - 1;
+            }
 
             return actual;
         }

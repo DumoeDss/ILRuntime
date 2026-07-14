@@ -1105,6 +1105,23 @@
       "smoke": "FULL SMOKE 46->42 (-4); HotfixBasicTestCases.Test03/Test07 + HotfixTestGenericTestCases.Test02 + HotfixTestInheritanceTestCases.Test03; NeoStep 398/0; Legacy Hotfix 14/0",
       "review": "APPROVE (LEAD non-author; Neo-eval-stack bridge; 2 deep residuals reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-interface-callvirt-cluster-c": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-60 cluster C (4 tests, 3 roots). RC1: structs never built Neo VTable (!IsValueType gate -> empty slots -> interface not found). RC2: explicit interface impl (IFace.M) needs dotted-name matching (Legacy has it). RC3: CLR CrossBindingAdaptor this rejected as non-ILTypeInstance. Fix = BuildNeoVTable structs + dotted-name fallback + adaptor unwrap.",
+      "prerequisites": [
+        "neo-hotfix-patched-il-execute"
+      ],
+      "dependsOn": [
+        "neo-hotfix-patched-il-execute"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 42->38 (-4, all 4 C-cluster); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; 3 roots pinned Neo-vs-Legacy; struct VTable gap + dotted-name + adaptor unwrap)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1168,7 +1185,8 @@
     "neo-jit-generic-method-specialization",
     "neo-raw-ldfld-stfld-cluster-e",
     "neo-ldind-stobj-cluster-g",
-    "neo-hotfix-patched-il-execute"
+    "neo-hotfix-patched-il-execute",
+    "neo-interface-callvirt-cluster-c"
   ],
   "surfacedFollowups": [
     {
@@ -1370,6 +1388,7 @@
     "fullSmokeAfterJitGen": 51,
     "fullSmokeAfterClusterE": 48,
     "fullSmokeAfterClusterG": 46,
-    "fullSmokeAfterClusterH": 42
+    "fullSmokeAfterClusterH": 42,
+    "fullSmokeAfterClusterC": 38
   }
 }
