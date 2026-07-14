@@ -4393,6 +4393,43 @@ namespace ILRuntime.Runtime.Intepreter
                                                 }
                                             }
                                         }
+                                        else if ((ip->Operand4 & JITCompiler.NeoRawLdfldBoxedRefOwnerMarker) != 0)
+                                        {
+                                            // neo-raw-ldfld-boxed-ref-owner: the owner is a CLR value
+                                            // type PARAMETER (ldarg'd). Under the Neo calling
+                                            // convention such a param is laid out as a BOXED REFERENCE
+                                            // when the CALLER passes it (AllocateSlotForType
+                                            // Size=4/RefCount=1; the delegate callback path
+                                            // NeoInvokeSub boxes it, the canonical trigger being a
+                                            // `v => v.field` lambda). BUT an in-method `starg` that
+                                            // reassigns the param from a flat-bytes source (e.g.
+                                            // `arg = TestVector3.One2; arg.X` -- ldsfld uses
+                                            // WriteNeoValueType) overwrites the slot with FLAT MANAGED
+                                            // BYTES. The untyped frame cannot know which at JIT time,
+                                            // so distinguish at runtime: if the slot's first int is a
+                                            // valid mStack index of a boxed struct of the declaring
+                                            // type, dereference + reflection-read; otherwise fall
+                                            // through to the flat-bytes read (the starg case). The
+                                            // strict `ct.TypeForCLR.IsInstanceOfType` guard makes a
+                                            // flat-bytes struct's first field false-positive only if it
+                                            // is a small int indexing a SAME-typed boxed struct in
+                                            // mStack (a float field's bits are huge -> out of range ->
+                                            // no false positive; an int field indexing a different type
+                                            // is rejected by the type check).
+                                            int objIdx = *(int*)(frameBase + ownerOff);
+                                            object target = (objIdx >= 0 && objIdx < mStack.Count) ? mStack[objIdx] : null;
+                                            if (target != null && ct.TypeForCLR.IsInstanceOfType(target))
+                                            {
+                                                fldVal = f.GetValue(target);
+                                            }
+                                            else
+                                            {
+                                                int ownerSz = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
+                                                int cur = ownerOff;
+                                                object boxedOwner = ILIntepreter.ReadNeoValueType(ct.TypeForCLR, frameBase, ref cur, ownerSz);
+                                                fldVal = f.GetValue(boxedOwner);
+                                            }
+                                        }
                                         else
                                         {
                                             // CLR value-type owner loaded by value: the owner slot

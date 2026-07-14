@@ -162,6 +162,38 @@ namespace ILRuntimeTest.TestFramework
             return list[0];
         }
 
+        // ---- neo-delegate-vt-float-return host helpers. A CLR host invokes an
+        //      IL delegate backing a `v => ...` lambda -- the CLR->IL delegate
+        //      callback path (DelegateAdapter.NeoInvokeSub, Step-19 territory).
+        //      These isolate the struct-param-IN and float-return-OUT marshalling
+        //      from IL-side ldfld / conv.i4 read bugs: the host invokes the
+        //      selector and does all arithmetic / comparison in CLR. ----
+
+        // Invoke sel(v) and return the raw int bit-pattern of the float result
+        // (so the IL probe inspects the corruption signature without an IL-side
+        // float compare). Correct v.X for (5,6,7) = 5.0f = 0x40A00000; the 4E-45
+        // corruption = 0x00000003.
+        public static int HostInvokeVTFloatBits(Func<TestVector3, float> sel, TestVector3 v)
+        {
+            return System.BitConverter.SingleToInt32Bits(sel(v));
+        }
+
+        // Control: primitive param + primitive return (known-good baseline).
+        public static int HostInvokeIntInt(Func<int, int> sel, int v)
+        {
+            return sel(v);
+        }
+
+        // Mirror of Enumerable.Sum / DelegateTest24: host sums sel over the list.
+        // Returns 1 iff the sum == 6, else 0.
+        public static int HostCheckSelectorSum6(List<TestVector3> list, Func<TestVector3, float> sel)
+        {
+            if (list == null) return 0;
+            float sum = 0;
+            for (int i = 0; i < list.Count; i++) sum += sel(list[i]);
+            return sum == 6f ? 1 : 0;
+        }
+
         // K2 (return side): a CLR struct RETURN value. The reflection return
         // path (InvokeNeoClrMethod) must write the struct's flat bytes into the
         // caller's dest local. Returns a known struct; the IL caller checks it

@@ -24,11 +24,13 @@ namespace TestCases
     // shape (which needed the int-struct sidestep) now works with TestVector3 (op_Addition is
     // the link the int sidestep avoided).
     //
-    // OUT OF SCOPE (documented follow-up): `new TestVector3(float,float,float)` still yields
-    // zero -- the optimizer rewrites a CLR struct newobj to `initobj; ldloca; push(this byref);
-    // call.redirect .ctor` with dest=`-` (retDst=null), so the ctor result has nowhere to land
-    // (the generator emits a write-to-retDst that no-ops on null). That is a distinct
-    // optimizer/redirect contract gap, not the regular-call VT-return path fixed here.
+    // OUT OF SCOPE (documented follow-up): `new TestVector3(float,float,float)` into a LOCAL
+    // was FIXED by `neo-clr-struct-newobj-retdest-null` (the autogen Ctor_0_Neo `!isNewObj`
+    // branch now skips the in-frame `this` struct and writes the constructed struct to the
+    // `this` slot; the Call_Redirect arm now calls CopyNeoCallThisBack). The REMAINING gap is
+    // the `callvirt.clr` struct-ARG marshalling to a CLR-generic instance method
+    // (`List<TestVector3>.Add(new TestVector3(...))` delivers a zero struct to the host) -- a
+    // separate path from both the regular-call VT-return fixed here AND the ctor newobj.
     public class NeoStepFloatVtReturnTest
     {
         // TC1 op_Addition VT-return: One+One -> (2,2,2); Sum(c, One)=(2+2+2)+3=9. (One is

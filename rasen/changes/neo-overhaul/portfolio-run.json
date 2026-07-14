@@ -918,6 +918,23 @@
       "smoke": "FULL SMOKE 73->71 (-2, StructTest3/14); no regression possible; NeoStep 391/0 (NeoStep12/13 VT intact); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; JIT-time discriminator pattern child-15/24/29 lineage; Operand@8 dead-field reuse verified)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-delegate-vt-float-return": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: DelegateTest24 cascade bottom. CLR value-type PARAM = boxed ref / LOCAL = flat bytes asymmetry. v=>v.X ldfld on a boxed-ref param slot reinterpreted the mStack index as field X (4E-45 bit-reinterpret). delegate callback (NeoInvokeSub) was correct; defect in raw-Ldfld READ. Fix = raw-Ldfld boxed-ref-param marker 0x4 (stamp when prev is ldarg) + runtime type-check + flat-bytes fallback (starg can overwrite param slot). DelegateTest24 green.",
+      "prerequisites": [
+        "neo-stfld-value-inframe-owner"
+      ],
+      "dependsOn": [
+        "neo-stfld-value-inframe-owner"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 71->70 (-1, DelegateTest24 4E-45->6); stash-toggle airtight; NeoStep 394/0 (+3 probes, starg regression caught+fixed); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; VT-param-vs-local asymmetry pinned; raw-Ldfld marker namespace {0x1,0x2,0x4}; starg regression self-caught)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -970,7 +987,8 @@
     "neo-callvirt-this-null-residual",
     "neo-vt-binding-misc",
     "neo-il-instance-clr-struct-field-f10",
-    "neo-stfld-value-inframe-owner"
+    "neo-stfld-value-inframe-owner",
+    "neo-delegate-vt-float-return"
   ],
   "surfacedFollowups": [
     {
@@ -1161,6 +1179,7 @@
     "fullSmokeAfterC4residual": 80,
     "fullSmokeAfterC11": 74,
     "fullSmokeAfterF10": 73,
-    "fullSmokeAfterStfldValue": 71
+    "fullSmokeAfterStfldValue": 71,
+    "fullSmokeAfterDvtfr": 70
   }
 }

@@ -240,6 +240,26 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // The marker survives LowerNeoOffsets / TypeSpecializeNeoOpcodes (same
         // argument as 0x1: the raw-Ldfld case does not touch Operand4).
         public const int NeoRawLdfldClrObjectFieldByRefMarker = 0x2;
+        // neo-raw-ldfld-boxed-ref-owner: a raw Ldfld whose owner is a CLR value
+        // type stored as a BOXED REFERENCE -- the Neo calling convention lays out
+        // a CLR value-type PARAMETER as Size=4/RefCount=1 (an mStack index of the
+        // boxed struct; see AllocateSlotForType's `else` branch), NOT flat managed
+        // bytes like a CLR value-type LOCAL (AllocateLocalStackSpaces). So
+        // `ldarg <clrStructParam>; ldfld <field>` -- the canonical shape of a
+        // delegate lambda `v => v.field` whose v is a CLR struct -- presents the
+        // raw-Ldfld IsValueType arm with an owner slot holding an mStack index,
+        // which the flat-bytes ReadNeoValueType path would reinterpret as the
+        // struct's first field (silent corruption: `v.X` returns *(float*)&index).
+        // The untyped Neo frame cannot distinguish a flat-bytes local owner from
+        // this boxed-ref param owner at runtime (same constructible collision as
+        // 0x1/0x2), so mark the shape at JIT time. Stamped when `ins.Previous` is
+        // an `ldarg` (the param load) -- mutually exclusive with the 0x1 Ldelema
+        // and 0x2 Ldflda markers (one CIL predecessor per instruction). Bit 0x4
+        // of the raw-Ldfld Operand4 (disjoint from 0x1/0x2; survives all passes:
+        // LowerNeoOffsets raw-Ldfld does not touch Operand4, the push-deletion
+        // remap never decrements a 0x4, TypeSpecializeNeoOpcodes reads only
+        // OperandLong/Register1).
+        public const int NeoRawLdfldBoxedRefOwnerMarker = 0x4;
         // The runtime byref offset-half flag for an F-10 byref (set by the
         // Ldflda arm): the offset half carries (ReferenceOffset | this flag) so
         // the consumer arms can distinguish "this offset is a ManagedObjects
@@ -1646,6 +1666,26 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case OpCodeREnum.Ldfld_R4_Inline:
                 case OpCodeREnum.Ldfld_R8_Inline:
                 case OpCodeREnum.Ldfld_Ref_Inline:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        // neo-raw-ldfld-boxed-ref-owner: true for any CIL `ldarg` variant (the
+        // param load). Used to detect `ldarg <clrStructParam>; ldfld <field>`
+        // (a delegate lambda reading a CLR-struct param's field), where the owner
+        // is a boxed reference, not flat bytes.
+        static bool IsLdargCode(Mono.Cecil.Cil.Code code)
+        {
+            switch (code)
+            {
+                case Mono.Cecil.Cil.Code.Ldarg:
+                case Mono.Cecil.Cil.Code.Ldarg_0:
+                case Mono.Cecil.Cil.Code.Ldarg_1:
+                case Mono.Cecil.Cil.Code.Ldarg_2:
+                case Mono.Cecil.Cil.Code.Ldarg_3:
+                case Mono.Cecil.Cil.Code.Ldarg_S:
                     return true;
                 default:
                     return false;
@@ -3207,6 +3247,12 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             // a rare edge that skips the marker (fails safe).
                             else if (ins.Previous != null && ins.Previous.OpCode.Code == Code.Ldflda)
                                 op.Operand4 |= NeoRawLdfldClrObjectFieldByRefMarker;
+                            // neo-raw-ldfld-boxed-ref-owner: the owner is a CLR
+                            // value-type PARAMETER loaded by `ldarg` -- stored as
+                            // a boxed reference (mStack index), NOT flat bytes.
+                            // Mutually exclusive with 0x1/0x2 (one CIL predecessor).
+                            else if (ins.Previous != null && IsLdargCode(ins.Previous.OpCode.Code))
+                                op.Operand4 |= NeoRawLdfldBoxedRefOwnerMarker;
                         }
                     }
                     break;
