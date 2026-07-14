@@ -246,6 +246,26 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // ref-slot index" from a Primitives byte offset. Bit 30 (avoids the sign
         // bit so the offset stays a positive int); ReferenceOffsets are tiny.
         public const int NeoF10ByrefOffsetFlag = unchecked((int)0x40000000);
+        // neo-stfld-value-inframe-owner: Stfld_Value / Ldfld_Value (Step 12b
+        // whole-IL-VT field store/load) have NO _Inline opcode -- the typed
+        // scalar arms get a distinct _Inline opcode via the rewrite above, but
+        // the Value variants are deliberately excluded (whole-VT copy), so the
+        // SAME plain opcode reaches ExecuteNeo for both a heap ILTypeInstance
+        // owner (slot holds an mStack index) and an IN-FRAME IL-struct owner
+        // (a value-type LOCAL or value-type `this`, whose flat bytes sit
+        // directly in the frame at DstOffset/SrcOffset). The runtime arm must
+        // distinguish these; the untyped Neo frame cannot (a small in-frame
+        // struct's first int field can coincidentally be a valid mStack index
+        // pointing to an ILTypeInstance -- the same constructible collision as
+        // the raw-Ldfld markers above), so the owner representation is resolved
+        // at JIT time. Operand (@8 = the declaring-type hash) is DEAD for the
+        // Value variants (neither LowerNeoOffsets nor the ExecuteNeo arm reads
+        // it), so it is repurposed as the discriminator. Stamped unconditionally
+        // for every Value variant in TypeSpecializeNeoOpcodes from the owner
+        // register's dataflow type (both arms -- a heap type-hash could
+        // otherwise collide with the marker value).
+        public const int NeoValueFieldInFrameOwnerMarker = 1;
+        public const int NeoValueFieldHeapOwnerMarker = 0;
         Enviorment.AppDomain appdomain;
         ILType declaringType;
         ILMethod method;
@@ -881,6 +901,20 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         else
                             SetRegisterType(registerTypes, op.Register1, FieldTypeForInlineLdfld(op.Code));
                     }
+                }
+                // Stfld_Value / Ldfld_Value in-frame-owner discriminator (Step
+                // 12b). These whole-IL-VT field opcodes have no _Inline form,
+                // so the same opcode reaches ExecuteNeo for both a heap
+                // ILTypeInstance owner and an in-frame IL-struct owner. Stamp
+                // the discriminator into Operand (@8 = dead declaring-type hash)
+                // from the owner register's dataflow type -- the SAME
+                // registerTypes signal the typed _Inline rewrite above keys on.
+                if (op.Code == OpCodeREnum.Stfld_Value || op.Code == OpCodeREnum.Ldfld_Value)
+                {
+                    short svOwnerReg = op.Code == OpCodeREnum.Ldfld_Value ? op.Register2 : op.Register1;
+                    IType svOwnerType = GetRegisterType(registerTypes, svOwnerReg);
+                    bool svOwnerInFrame = svOwnerType is ILType svt && svt.IsValueType && !svt.IsEnum;
+                    op.Operand = svOwnerInFrame ? NeoValueFieldInFrameOwnerMarker : NeoValueFieldHeapOwnerMarker;
                 }
                 switch (op.Code)
                 {

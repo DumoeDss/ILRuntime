@@ -4801,9 +4801,6 @@ namespace ILRuntime.Runtime.Intepreter
                             // design). ----
                             case OpCodeREnum.Stfld_Value:
                                 {
-                                    // DstOffset = owner slot (mStack index of the heap
-                                    // ILTypeInstance); SrcOffset = source in-frame VT region.
-                                    ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->DstOffset));
                                     var ftFld = AppDomain.GetType(ip->Operand4) as ILType;
                                     if (ftFld == null)
                                         throw new NotImplementedException("neo-stfld-value: field type not resolved (Operand4=" + ip->Operand4 + ")");
@@ -4811,39 +4808,78 @@ namespace ILRuntime.Runtime.Intepreter
                                     int fldRefOff = ip->Operand3;
                                     int fldPrimSize = ftFld.TotalPrimitiveSize;
                                     int fldRefCount = ftFld.TotalReferenceCount;
-                                    if (fldPrimSize > 0)
+                                    if (ip->Operand == JITCompiler.NeoValueFieldInFrameOwnerMarker)
                                     {
-                                        ref byte dstP = ref ins.Primitives[fldPrimOff];
-                                        Unsafe.CopyBlock(ref dstP, ref *(frameBase + ip->SrcOffset), (uint)fldPrimSize);
-                                    }
-                                    if (fldRefCount > 0)
-                                    {
-                                        // Recover the in-frame source VT's ref-run base via
-                                        // the localInfos scan (R2). A scan-miss (a non-direct-
-                                        // local source) is an exotic shape; fail LOUD (tagged
-                                        // NIE) instead of silently dropping the ref copy.
-                                        int srcRefBase = -1;
-                                        if (localInfos != null)
+                                        // In-frame owner (an IL-struct LOCAL or an IL-struct
+                                        // `this`): DstOffset is the owning VT's flat-byte
+                                        // offset in the frame (NOT an mStack index). Write the
+                                        // field's primitive region directly into the owner's
+                                        // bytes, mirroring Stfld_*_Inline. The ref-region (if
+                                        // any) is copied via the localInfos ref-run scan for
+                                        // BOTH the owner and the source (R2 pattern; a scan
+                                        // miss for a non-direct-local is an exotic shape ->
+                                        // tagged NIE, mirroring the heap arm).
+                                        if (fldPrimSize > 0)
                                         {
-                                            for (int li = 0; li < localInfos.Length; li++)
-                                                if (localInfos[li].Offset == ip->SrcOffset)
-                                                { srcRefBase = localInfos[li].RefOffset; break; }
+                                            ref byte dstP = ref *(frameBase + ip->DstOffset + fldPrimOff);
+                                            Unsafe.CopyBlock(ref dstP, ref *(frameBase + ip->SrcOffset), (uint)fldPrimSize);
                                         }
-                                        if (srcRefBase < 0)
-                                            throw new NotImplementedException(
-                                                "Step 12b: stfld.value of an IL-VT field WITH reference fields from a non-direct-local value is deferred (ref-region base recovery; follow-up)");
-                                        var dstRefs = ins.ManagedObjects;
-                                        int srcBase = frameRefBase + srcRefBase;
-                                        for (int i = 0; i < fldRefCount; i++)
-                                            dstRefs[fldRefOff + i] = mStack[srcBase + i];
+                                        if (fldRefCount > 0)
+                                        {
+                                            int ownerRefBase = -1, srcRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                {
+                                                    if (localInfos[li].Offset == ip->DstOffset) ownerRefBase = localInfos[li].RefOffset;
+                                                    if (localInfos[li].Offset == ip->SrcOffset) srcRefBase = localInfos[li].RefOffset;
+                                                }
+                                            }
+                                            if (ownerRefBase < 0 || srcRefBase < 0)
+                                                throw new NotImplementedException(
+                                                    "Step 12b: stfld.value of an IL-VT field WITH reference fields on an in-frame owner from/to a non-direct-local is deferred (ref-region base recovery; follow-up)");
+                                            int dstBase = frameRefBase + ownerRefBase + fldRefOff;
+                                            int srcBase = frameRefBase + srcRefBase;
+                                            for (int i = 0; i < fldRefCount; i++)
+                                                mStack[dstBase + i] = mStack[srcBase + i];
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // Heap owner: DstOffset = owner slot (mStack index of
+                                        // the heap ILTypeInstance); SrcOffset = source VT.
+                                        ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->DstOffset));
+                                        if (fldPrimSize > 0)
+                                        {
+                                            ref byte dstP = ref ins.Primitives[fldPrimOff];
+                                            Unsafe.CopyBlock(ref dstP, ref *(frameBase + ip->SrcOffset), (uint)fldPrimSize);
+                                        }
+                                        if (fldRefCount > 0)
+                                        {
+                                            // Recover the in-frame source VT's ref-run base via
+                                            // the localInfos scan (R2). A scan-miss (a non-direct-
+                                            // local source) is an exotic shape; fail LOUD (tagged
+                                            // NIE) instead of silently dropping the ref copy.
+                                            int srcRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                    if (localInfos[li].Offset == ip->SrcOffset)
+                                                    { srcRefBase = localInfos[li].RefOffset; break; }
+                                            }
+                                            if (srcRefBase < 0)
+                                                throw new NotImplementedException(
+                                                    "Step 12b: stfld.value of an IL-VT field WITH reference fields from a non-direct-local value is deferred (ref-region base recovery; follow-up)");
+                                            var dstRefs = ins.ManagedObjects;
+                                            int srcBase = frameRefBase + srcRefBase;
+                                            for (int i = 0; i < fldRefCount; i++)
+                                                dstRefs[fldRefOff + i] = mStack[srcBase + i];
+                                        }
                                     }
                                 }
                                 break;
                             case OpCodeREnum.Ldfld_Value:
                                 {
-                                    // DstOffset = dest in-frame VT region; SrcOffset = owner
-                                    // slot (mStack index of the heap ILTypeInstance).
-                                    ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
                                     var ftFld = AppDomain.GetType(ip->Operand4) as ILType;
                                     if (ftFld == null)
                                         throw new NotImplementedException("neo-ldfld-value: field type not resolved (Operand4=" + ip->Operand4 + ")");
@@ -4851,29 +4887,69 @@ namespace ILRuntime.Runtime.Intepreter
                                     int fldRefOff = ip->Operand3;
                                     int fldPrimSize = ftFld.TotalPrimitiveSize;
                                     int fldRefCount = ftFld.TotalReferenceCount;
-                                    if (fldPrimSize > 0)
+                                    if (ip->Operand == JITCompiler.NeoValueFieldInFrameOwnerMarker)
                                     {
-                                        ref byte srcP = ref ins.Primitives[fldPrimOff];
-                                        Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)fldPrimSize);
-                                    }
-                                    if (fldRefCount > 0)
-                                    {
-                                        // Recover the in-frame dest VT's ref-run base via the
-                                        // localInfos scan (R2); mirror the Stobj/Ldobj arms.
-                                        int dstRefBase = -1;
-                                        if (localInfos != null)
+                                        // In-frame owner: SrcOffset = owning VT flat-byte
+                                        // offset; DstOffset = dest temp. Read the field's
+                                        // primitive region directly from the owner's bytes,
+                                        // mirroring Ldfld_*_Inline. The ref-region (if any) is
+                                        // copied via the localInfos ref-run scan for BOTH the
+                                        // owner (source) and the dest (R2; tagged NIE on miss).
+                                        if (fldPrimSize > 0)
                                         {
-                                            for (int li = 0; li < localInfos.Length; li++)
-                                                if (localInfos[li].Offset == ip->DstOffset)
-                                                { dstRefBase = localInfos[li].RefOffset; break; }
+                                            ref byte srcP = ref *(frameBase + ip->SrcOffset + fldPrimOff);
+                                            Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)fldPrimSize);
                                         }
-                                        if (dstRefBase < 0)
-                                            throw new NotImplementedException(
-                                                "Step 12b: ldfld.value of an IL-VT field WITH reference fields into a non-direct-local dest is deferred (ref-region base recovery; follow-up)");
-                                        var srcRefs = ins.ManagedObjects;
-                                        int dstBase = frameRefBase + dstRefBase;
-                                        for (int i = 0; i < fldRefCount; i++)
-                                            mStack[dstBase + i] = srcRefs[fldRefOff + i];
+                                        if (fldRefCount > 0)
+                                        {
+                                            int ownerRefBase = -1, dstRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                {
+                                                    if (localInfos[li].Offset == ip->SrcOffset) ownerRefBase = localInfos[li].RefOffset;
+                                                    if (localInfos[li].Offset == ip->DstOffset) dstRefBase = localInfos[li].RefOffset;
+                                                }
+                                            }
+                                            if (ownerRefBase < 0 || dstRefBase < 0)
+                                                throw new NotImplementedException(
+                                                    "Step 12b: ldfld.value of an IL-VT field WITH reference fields from an in-frame owner into a non-direct-local dest is deferred (ref-region base recovery; follow-up)");
+                                            int srcBase = frameRefBase + ownerRefBase + fldRefOff;
+                                            int dstBase = frameRefBase + dstRefBase;
+                                            for (int i = 0; i < fldRefCount; i++)
+                                                mStack[dstBase + i] = mStack[srcBase + i];
+                                        }
+                                    }
+                                    else
+                                    {
+                                        // Heap owner: DstOffset = dest in-frame VT region;
+                                        // SrcOffset = owner slot (mStack index of the heap
+                                        // ILTypeInstance).
+                                        ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
+                                        if (fldPrimSize > 0)
+                                        {
+                                            ref byte srcP = ref ins.Primitives[fldPrimOff];
+                                            Unsafe.CopyBlock(ref *(frameBase + ip->DstOffset), ref srcP, (uint)fldPrimSize);
+                                        }
+                                        if (fldRefCount > 0)
+                                        {
+                                            // Recover the in-frame dest VT's ref-run base via the
+                                            // localInfos scan (R2); mirror the Stobj/Ldobj arms.
+                                            int dstRefBase = -1;
+                                            if (localInfos != null)
+                                            {
+                                                for (int li = 0; li < localInfos.Length; li++)
+                                                    if (localInfos[li].Offset == ip->DstOffset)
+                                                    { dstRefBase = localInfos[li].RefOffset; break; }
+                                            }
+                                            if (dstRefBase < 0)
+                                                throw new NotImplementedException(
+                                                    "Step 12b: ldfld.value of an IL-VT field WITH reference fields into a non-direct-local dest is deferred (ref-region base recovery; follow-up)");
+                                            var srcRefs = ins.ManagedObjects;
+                                            int dstBase = frameRefBase + dstRefBase;
+                                            for (int i = 0; i < fldRefCount; i++)
+                                                mStack[dstBase + i] = srcRefs[fldRefOff + i];
+                                        }
                                     }
                                 }
                                 break;

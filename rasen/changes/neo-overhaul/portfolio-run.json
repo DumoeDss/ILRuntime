@@ -901,6 +901,23 @@
       "smoke": "FULL SMOKE 74->73 (-1, StructTest7); F-10 NIE count 0; stash-equiv airtight; NeoStep 391/0 (+3 probes, 0 regression); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; type-first soundness; child-27/29 probes intact; UnitTest_10051 distinct residual reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-stfld-value-inframe-owner": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: Stfld_Value/Ldfld_Value (whole-IL-VT field) have no _Inline form. JIT emits plain heap-owner opcode for an in-frame IL-struct owner (local/this, flat bytes) -> runtime read first bytes as mStack index -> NRE. Fix = JIT marker (registerTypes signal, Operand@8 dead field repurposed) + runtime branch (in-frame mirror _Inline CopyBlock; heap byte-identical). StructTest3/14.",
+      "prerequisites": [
+        "neo-il-instance-clr-struct-field-f10"
+      ],
+      "dependsOn": [
+        "neo-il-instance-clr-struct-field-f10"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 73->71 (-2, StructTest3/14); no regression possible; NeoStep 391/0 (NeoStep12/13 VT intact); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; JIT-time discriminator pattern child-15/24/29 lineage; Operand@8 dead-field reuse verified)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -952,7 +969,8 @@
     "neo-nre-residual-sites",
     "neo-callvirt-this-null-residual",
     "neo-vt-binding-misc",
-    "neo-il-instance-clr-struct-field-f10"
+    "neo-il-instance-clr-struct-field-f10",
+    "neo-stfld-value-inframe-owner"
   ],
   "surfacedFollowups": [
     {
@@ -1142,6 +1160,7 @@
     "fullSmokeAfterNreResidual": 86,
     "fullSmokeAfterC4residual": 80,
     "fullSmokeAfterC11": 74,
-    "fullSmokeAfterF10": 73
+    "fullSmokeAfterF10": 73,
+    "fullSmokeAfterStfldValue": 71
   }
 }
