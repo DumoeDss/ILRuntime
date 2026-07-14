@@ -850,6 +850,23 @@
       "smoke": "FULL SMOKE 89->86 (-3); StructTest4 + UnitTest_10025 + Vector3.get_One (spans Ldsfeld+Stsfeld); stash-toggle airtight; NeoStep 388/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; self-ref static VA field root pinned; remaining NRE sub-clusters reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-callvirt-this-null-residual": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C4-residual: 4 this==null tests, 3 distinct upstream null producers. (a) ReflectionTest04/19: Type.GetType(string) no Neo redirect -> GetTypeNeo twin (missing-twin class). (b) StaticTest03: stale TryGetValue_1_Neo out-param write-back (Area-4c). (c) DelegateTest43: ldflda static-field byref write-back gap (NOT fixed, child-7 lineage). Fix = GetTypeNeo + route byref-param CLR calls to reflection (Area-4c write-back) + async exemption (ref-field-struct declaring types keep hand-written redirects; load-bearing -- without it 22 NeoStep20 regress).",
+      "prerequisites": [
+        "neo-nre-residual-sites"
+      ],
+      "dependsOn": [
+        "neo-nre-residual-sites"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 86->80 (-6); 3 targets + 3 bonus byref-stale (ArrayBindTest/UnitTest_OutTest/UnitTest_Out2); stash-toggle airtight; NeoStep 388/0 (async exemption load-bearing); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; multi-root; async exemption proven; DelegateTest43 distinct deeper root reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -898,7 +915,8 @@
     "neo-callvirt-clr-struct-arg",
     "neo-enum-cluster-residual",
     "neo-nre-cluster-subclusters",
-    "neo-nre-residual-sites"
+    "neo-nre-residual-sites",
+    "neo-callvirt-this-null-residual"
   ],
   "surfacedFollowups": [
     {
@@ -1085,6 +1103,7 @@
     "fullSmokeAfterNewobj": 101,
     "fullSmokeAfterC3": 95,
     "fullSmokeAfterC16": 89,
-    "fullSmokeAfterNreResidual": 86
+    "fullSmokeAfterNreResidual": 86,
+    "fullSmokeAfterC4residual": 80
   }
 }

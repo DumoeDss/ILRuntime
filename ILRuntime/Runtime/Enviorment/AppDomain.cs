@@ -199,6 +199,13 @@ namespace ILRuntime.Runtime.Enviorment
                 if (i.Name == "GetType" && i.IsStatic)
                 {
                     RegisterCLRMethodRedirection(i, CLRRedirections.GetType);
+#if ENABLE_NEO_MODE
+                    // C4-residual (neo-callvirt-this-null): Neo dispatch consults
+                    // RedirectMapNeo exclusively. Without this entry the host
+                    // System.Type.GetType ran and could not resolve an IL type name
+                    // -> null -> callvirt this is null on the following GetMethod.
+                    RegisterCLRMethodRedirectionNeo(i, CLRRedirections.GetTypeNeo);
+#endif
                 }
                 if (i.Name == "Equals" && i.GetParameters()[0].ParameterType == typeof(Type))
                 {

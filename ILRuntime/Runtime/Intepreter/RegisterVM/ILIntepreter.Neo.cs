@@ -1245,7 +1245,23 @@ namespace ILRuntime.Runtime.Intepreter
             // redirect (or reflection fallback) reads them with a direct cast.
             ProjectNeoClrCallRefArgs(clrMethod, isNewobj, targetBase, mStack);
             var redirectNeo = clrMethod.RedirectionNeo;
-            if (redirectNeo != null)
+            // C4-residual (neo-callvirt-this-null): a byref-param (ref/out) method
+            // is routed through the reflection path below (clrMethod.Invoke), which
+            // owns the Area-4c byref write-back. The autogen _Neo stub for a byref
+            // method may be a STALE checked-in stub (generated before the Area-4c
+            // generator fix) that reads the byref param + calls the real method but
+            // NEVER writes the mutated value back to the caller's frame -> the
+            // caller's local stays null -> a following callvirt throws "Neo
+            // callvirt this is null" (StaticTest.UnitTest_StaticTest03: a stale
+            // Dictionary.TryGetValue_Neo left the out-param null). The reflection
+            // path is the authoritative write-back path (it is the existing
+            // fallback when no redirect is registered), so routing byref calls
+            // there is correct regardless of stub staleness. EXEMPT: when the
+            // declaring type is a CLR value type WITH reference fields
+            // (ReflectionCannotHandleThis -- the async builders), reflection NIEs
+            // on the ref-field struct `this`; those have hand-written Neo
+            // redirects they depend on, so keep the redirect for them.
+            if (redirectNeo != null && (!clrMethod.HasByRefParameter || clrMethod.ReflectionCannotHandleThis))
             {
                 // The Neo Redirection owns the dest write for both call and
                 // newobj (the redirect delegate allocates/stores the result).

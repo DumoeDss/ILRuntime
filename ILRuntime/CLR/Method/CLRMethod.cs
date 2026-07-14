@@ -249,11 +249,76 @@ namespace ILRuntime.CLR.Method
             }
         }
 
+        bool? hasByRefParameter;
+        // C4-residual (neo-callvirt-this-null): true if any formal param is byref
+        // (ref/out). Used by InvokeNeoClrMethod to route such calls through the
+        // reflection path (CLRMethod.Invoke), which owns the Area-4c byref
+        // write-back. The autogen Neo redirect (_Neo stub) for a byref method may
+        // be a STALE checked-in stub (generated before the Area-4c generator fix)
+        // that reads the byref param + calls the real method but NEVER writes the
+        // mutated value back to the caller's frame -> the caller's local stays
+        // null -> a following callvirt on it throws "Neo callvirt this is null"
+        // (e.g. Dictionary.TryGetValue out-param -> StaticTest.UnitTest_StaticTest03).
+        // The reflection path is the authoritative write-back path; routing byref
+        // calls there is correct regardless of stub staleness (it is the existing
+        // fallback when no redirect is registered). Lazily cached (one-time scan).
+        public bool HasByRefParameter
+        {
+            get
+            {
+                if (!hasByRefParameter.HasValue)
+                {
+                    bool any = false;
+                    var ps = ParametersCLR;
+                    if (ps != null)
+                    {
+                        for (int i = 0; i < ps.Length; i++)
+                        {
+                            if (ps[i].ParameterType.IsByRef) { any = true; break; }
+                        }
+                    }
+                    hasByRefParameter = any;
+                }
+                return hasByRefParameter.Value;
+            }
+        }
+
         public IType ReturnType
         {
             get;
             private set;
         }
+
+        bool? reflectionCannotHandleThis;
+#if ENABLE_NEO_MODE
+        // C4-residual (neo-callvirt-this-null): true when the declaring type is a
+        // CLR value type WITH reference fields. The reflection fallback
+        // (CLRMethod.Invoke) cannot read/write such a struct `this` (no Neo
+        // flat-bytes binder mapping for GC refs -> the Step-13 Area-4b NIE), so a
+        // byref call on it (notably the async builder methods:
+        // AsyncTaskMethodBuilder/AsyncVoidMethodBuilder/AsyncValueTaskMethodBuilder,
+        // which are ref-field structs invoked byref) MUST keep its hand-written Neo
+        // redirect. InvokeNeoClrMessage uses this to exempt those redirects from
+        // the byref->reflection routing. Lazily cached. (For a static method on a
+        // ref-field struct this is over-conservative -- it keeps the redirect --
+        // but that is no worse than HEAD and avoids a regression.)
+        public bool ReflectionCannotHandleThis
+        {
+            get
+            {
+                if (!reflectionCannotHandleThis.HasValue)
+                {
+                    bool cannot = false;
+                    var dt = DeclearingType as CLRType;
+                    if (dt != null && dt.TypeForCLR.IsValueType && !dt.TypeForCLR.IsPrimitive && !dt.TypeForCLR.IsEnum
+                        && NeoClrStructHasReferenceField(dt.TypeForCLR))
+                        cannot = true;
+                    reflectionCannotHandleThis = cannot;
+                }
+                return reflectionCannotHandleThis.Value;
+            }
+        }
+#endif
 
         string signatureString;
         public string SignatureString

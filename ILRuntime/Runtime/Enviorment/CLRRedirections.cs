@@ -783,6 +783,34 @@ namespace ILRuntime.Runtime.Enviorment
             WriteNeoObjectResult(mStack, retDst, retRefBase, result);
         }
 
+        // C4-residual (neo-callvirt-this-null): Neo redirect for the STATIC
+        // System.Type.GetType(string[, bool, bool]) overloads. Mirrors the Legacy
+        // CLRRedirections.GetType (CLRRedirections.cs:138). Under Neo the Legacy
+        // redirect (registered on RedirectMap only at AppDomain.cs:201) never runs
+        // -- Neo dispatch consults RedirectMapNeo exclusively (child-2/6/22). With
+        // no Neo entry the call fell through to the host System.Type.GetType,
+        // which cannot resolve an IL type name -> returned null -> the IL code then
+        // did `t.GetMethod(...)` on a null `this` -> "Neo callvirt this is null"
+        // at ResolveNeoCallvirtCLRTarget (ReflectionTest04/19). Param 0 (DECLARATION
+        // order under the Neo cursor) is the fullname string for every overload;
+        // the extra bool params (throwOnError / ignoreCase) are ignored (we return
+        // the Neo null sentinel when the type is not found, matching the
+        // throwOnError=false behavior). Registered on RedirectMapNeo in the
+        // AppDomain ctor (first-registered-wins preempts any autogen stub).
+        public unsafe static void GetTypeNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            string fullname = (string)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            object result = null;
+            if (fullname != null)
+            {
+                var t = intp.AppDomain.GetType(fullname);
+                if (t != null)
+                    result = t.ReflectionType;
+            }
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
         // C12 (neo-ilruntimetype-runtime-bridge): Neo redirect for
         // Delegate.CreateDelegate(Type, MethodInfo). Mirrors the Legacy
         // DelegateCreateDelegate (CLRRedirections.cs:1607). Under Neo the
