@@ -544,7 +544,21 @@ namespace ILRuntime.Runtime.Enviorment
                 // Write the result to the StackObject stack at ebp so every typed
                 // reader (which reads `esp`) sees it; mirror the Legacy arm's
                 // trailing `esp--` so esp points AT the result slot.
-                StackObject* newEsp = ILIntepreter.PushObject(ebp, mStack, result, true);
+                //
+                // isBox MUST be false: the typed readers (ReadFloat/ReadInteger/
+                // ReadLong/ReadDouble, dispatched by ReadResult<T> per the return
+                // type) read the value INLINE from `esp->Value`
+                // (e.g. ReadFloat is `*(float*)&esp->Value`). The Legacy ExecuteR
+                // arm leaves a primitive return INLINE (ObjectType=Float, Value=
+                // float bits). PushObject(isBox=true) would instead store
+                // ObjectType=Object + Value=mStack index for EVERY value (incl.
+                // primitives), so ReadFloat would reinterpret the mStack index
+                // (e.g. 3) as a float -> a garbage denormal (3E-45). isBox=false
+                // routes primitives through UnboxObject, which writes them inline
+                // (matching Legacy); references / value types are pushed as Object
+                // slots identically to isBox=true (PushObject's !isBox branch only
+                // diverges for primitives/enums). See neo-float-arith-residual.
+                StackObject* newEsp = ILIntepreter.PushObject(ebp, mStack, result, false);
                 esp = newEsp - 1;
             }
             else

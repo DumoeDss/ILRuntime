@@ -969,6 +969,23 @@
       "smoke": "FULL SMOKE 69->65 (-4); typed-opcode cluster 6->0; 8 Hotfix protected via ExecuteR fallback (hybrid); stash-toggle airtight; NeoStep 394/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; hybrid guard sound; 8-Hotfix-regression caught+avoided; InheritanceTest07/16 distinct float bug surfaced)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-float-arith-residual": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: InheritanceTest07/16 arg1+1.2f 3E-45. DISPROVEN float-producer framing (runtime diag: conv/add/ret all 12.2f correct). Real = InvocationContext.InvokeNeo PushObject(isBox:true) stored primitive as mStack index; cross-binding ReadFloat reads inline (*(float*)&esp->Value) -> bit-reinterpret. Fix = isBox:false (primitive inline, matches ExecuteR). Route asymmetry: reflection route (ToObject deref) unaffected; cross-binding route (typed readers inline) broken.",
+      "prerequisites": [
+        "neo-typed-opcode-reach-executer"
+      ],
+      "dependsOn": [
+        "neo-typed-opcode-reach-executer"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 65->63 (-2, InheritanceTest07/16); stash-toggle airtight; NeoStep 394/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; runtime-diag-pinned; isBox:false contract; route asymmetry explained)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1024,7 +1041,8 @@
     "neo-stfld-value-inframe-owner",
     "neo-delegate-vt-float-return",
     "neo-c10-list-index-residual",
-    "neo-typed-opcode-reach-executer"
+    "neo-typed-opcode-reach-executer",
+    "neo-float-arith-residual"
   ],
   "surfacedFollowups": [
     {
@@ -1218,6 +1236,7 @@
     "fullSmokeAfterStfldValue": 71,
     "fullSmokeAfterDvtfr": 70,
     "fullSmokeAfterC10res": 69,
-    "fullSmokeAfterTypedOp": 65
+    "fullSmokeAfterTypedOp": 65,
+    "fullSmokeAfterFloatArith": 63
   }
 }
