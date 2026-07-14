@@ -952,6 +952,23 @@
       "smoke": "FULL SMOKE 70->69 (-1, StructTest8); StructTest11 distinct Bug 2 handed off; NeoStep 394/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; Initobj/Ldobj seeding; Bug 2 handoff detailed; NEW cluster surfaced: Neo typed opcodes reach ExecuteR)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-typed-opcode-reach-executer": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 NEW cluster: InvocationContext.Invoke() hardcoded ExecuteR (Legacy) -> reflection/cross-binding IL methods (Neo typed opcodes) hit Not-supported-opcode. Fix = hybrid Neo branch in InvocationContext.Invoke (CanInvokeNeo guard rejects ctor/byref/binder-VT to avoid 8 Hotfix regressions; InvokeNeo via intp.Run). Typed-opcode cluster 6->0 (4 fixed: JsonTest1/ReflectionTest09/11/23; InheritanceTest07/16 downstream float bug).",
+      "prerequisites": [
+        "neo-c10-list-index-residual"
+      ],
+      "dependsOn": [
+        "neo-c10-list-index-residual"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 69->65 (-4); typed-opcode cluster 6->0; 8 Hotfix protected via ExecuteR fallback (hybrid); stash-toggle airtight; NeoStep 394/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; hybrid guard sound; 8-Hotfix-regression caught+avoided; InheritanceTest07/16 distinct float bug surfaced)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1006,7 +1023,8 @@
     "neo-il-instance-clr-struct-field-f10",
     "neo-stfld-value-inframe-owner",
     "neo-delegate-vt-float-return",
-    "neo-c10-list-index-residual"
+    "neo-c10-list-index-residual",
+    "neo-typed-opcode-reach-executer"
   ],
   "surfacedFollowups": [
     {
@@ -1199,6 +1217,7 @@
     "fullSmokeAfterF10": 73,
     "fullSmokeAfterStfldValue": 71,
     "fullSmokeAfterDvtfr": 70,
-    "fullSmokeAfterC10res": 69
+    "fullSmokeAfterC10res": 69,
+    "fullSmokeAfterTypedOp": 65
   }
 }

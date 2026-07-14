@@ -453,6 +453,20 @@ namespace ILRuntime.Runtime.Enviorment
             var cnt = method.HasThis ? method.ParameterCount + 1 : method.ParameterCount;
             if (cnt != paramCnt)
                 throw new ArgumentException("Argument count mismatch");
+#if ENABLE_NEO_MODE
+            if (CanInvokeNeo())
+            {
+                InvokeNeo();
+                return;
+            }
+            // Else fall through to the Legacy arm: the Neo re-entry path does not
+            // yet faithfully marshal ctors (HasThis=false, `this` as param 0),
+            // byref (StackObjectReference) or binder value-type args
+            // (ValueTypeObjectReference). The IL method body in those cases still
+            // runs on Legacy ExecuteR exactly as before this change -- no
+            // regression -- and the typed-opcode methods among them remain a
+            // follow-up (the byref/value-type Neo marshalling sub-problem).
+#endif
             bool unhandledException;
             if (useRegister)
                 esp = intp.ExecuteR(method, esp, out unhandledException);
@@ -460,6 +474,83 @@ namespace ILRuntime.Runtime.Enviorment
                 esp = intp.Execute(method, esp, out unhandledException);
             esp--;
         }
+
+#if ENABLE_NEO_MODE
+        // The Neo re-entry path is only correct for the "simple" arg shape:
+        // instance/static methods (not ctors) whose pushed args are all
+        // primitives or plain references (no byref, no binder value type). The
+        // arg slots live in the LAST `paramCnt` StackObjects before `esp`
+        // (mirrors ExecuteR's `r = LocalVarPointer - ParameterCount`, `r--` for
+        // HasThis) -- byref/value-type conventions interleave extra storage
+        // slots before them, which is exactly what this guard rejects.
+        unsafe bool CanInvokeNeo()
+        {
+            if (!useRegister)
+                return false; // non-register body: keep the IL Execute arm
+            if (method.IsConstructor)
+                return false; // ctor frames are built by newobj, not Run
+            StackObject* p = esp - paramCnt;
+            for (int i = 0; i < paramCnt; i++)
+            {
+                var ot = (p + i)->ObjectType;
+                if (ot == ObjectTypes.StackObjectReference ||
+                    ot == ObjectTypes.ValueTypeObjectReference)
+                    return false;
+            }
+            return true;
+        }
+
+        unsafe void InvokeNeo()
+        {
+            // Under Neo the IL method body is JIT'd to Neo typed opcodes
+            // (Ldfld_I4 / Addi_R4 / Muli_R4 / Add_I8 / ...). The Legacy ExecuteR
+            // does not recognize them and throws "Not supported opcode {Muli_R4/..}"
+            // when an IL method is reached via a CLR->IL callback
+            // (CrossBindingFunctionInfo / CrossBindingMethodInfo for inheritance
+            // overrides) or a reflection invoke (ILRuntimePropertyInfo.GetValue
+            // via PropertyInfo.GetValue). Re-enter the IL method through the Neo
+            // `Run` machinery -- the proven CLR->IL re-entry point already used by
+            // ILRuntimeMethodInfo.Invoke (AppDomain.Invoke -> Run -> ExecuteNeo) --
+            // then place the result back onto the StackObject stack so the typed
+            // readers (ReadInteger / ReadObject / ...), which dereference `esp`,
+            // keep working unchanged.
+
+            // The args occupy the LAST `paramCnt` slots before `esp` (the slot
+            // order ExecuteR reads via r = LocalVarPointer - ParameterCount).
+            object instance = null;
+            int pCnt = method.ParameterCount;
+            object[] args = new object[pCnt];
+            {
+                StackObject* p = esp - paramCnt;
+                int slot = 0;
+                if (method.HasThis)
+                {
+                    instance = StackObject.ToObject(p, domain, mStack);
+                    slot = 1;
+                }
+                for (int i = 0; i < pCnt; i++)
+                {
+                    args[i] = StackObject.ToObject(p + slot + i, domain, mStack);
+                }
+            }
+
+            // Neo re-entry: Run builds the Neo frame at StackBase (== ebp),
+            // marshals instance/args via DelegateAdapter.WriteNeoCallSlot, runs
+            // ExecuteNeo, and returns the (boxed) result with type discrimination.
+            object result = intp.Run(method, instance, args);
+
+            if (hasReturn)
+            {
+                // Write the result to the StackObject stack at ebp so every typed
+                // reader (which reads `esp`) sees it; mirror the Legacy arm's
+                // trailing `esp--` so esp points AT the result slot.
+                StackObject* newEsp = ILIntepreter.PushObject(ebp, mStack, result, true);
+                esp = newEsp - 1;
+            }
+            else
+                esp = ebp;
+        }
+#endif
 
         void CheckReturnValue()
         {
