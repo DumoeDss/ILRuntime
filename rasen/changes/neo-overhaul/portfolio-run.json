@@ -867,6 +867,23 @@
       "smoke": "FULL SMOKE 86->80 (-6); 3 targets + 3 bonus byref-stale (ArrayBindTest/UnitTest_OutTest/UnitTest_Out2); stash-toggle airtight; NeoStep 388/0 (async exemption load-bearing); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; multi-root; async exemption proven; DelegateTest43 distinct deeper root reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-vt-binding-misc": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C11 (largest sub-cluster + Fix B): (A) 7 stale *_Neo VT stubs (TestVector3NoBinding/TestVectorClass) port to child-28 template (VT return/arg). (B) IL-static CLR-VT field (UnitTest_10036/10037) -- the IL-static Stsfld/Ldsfeld arms missed ft.IsValueType branch (CLR-VT static = boxed struct in ManagedObjects). Fix B also fixed the lead-13 AV (UnitTest_10037). 6 flipped + bonus TestCLREnum.Test06.",
+      "prerequisites": [
+        "neo-callvirt-this-null-residual"
+      ],
+      "dependsOn": [
+        "neo-callvirt-this-null-residual"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 80->74 (-6); UnitTest_10039/10048/10050 + UnitTest_10036/10037 + bonus TestCLREnum.Test06 (AV UnitTest_10037 also fixed); 0 regression; NeoStep 388/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; stale-stub + IL-static CLR-VT; remaining 9 C11 distinct roots reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -916,7 +933,8 @@
     "neo-enum-cluster-residual",
     "neo-nre-cluster-subclusters",
     "neo-nre-residual-sites",
-    "neo-callvirt-this-null-residual"
+    "neo-callvirt-this-null-residual",
+    "neo-vt-binding-misc"
   ],
   "surfacedFollowups": [
     {
@@ -1104,6 +1122,7 @@
     "fullSmokeAfterC3": 95,
     "fullSmokeAfterC16": 89,
     "fullSmokeAfterNreResidual": 86,
-    "fullSmokeAfterC4residual": 80
+    "fullSmokeAfterC4residual": 80,
+    "fullSmokeAfterC11": 74
   }
 }

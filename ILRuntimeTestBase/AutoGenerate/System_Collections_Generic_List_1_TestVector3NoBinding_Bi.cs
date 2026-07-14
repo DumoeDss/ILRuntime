@@ -93,7 +93,7 @@ namespace ILRuntime.Runtime.Generated
             System.Collections.Generic.List<ILRuntimeTest.TestFramework.TestVector3NoBinding> instance_of_this_method = (System.Collections.Generic.List<ILRuntimeTest.TestFramework.TestVector3NoBinding>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
             System.Int32 @index = (System.Int32)ILIntepreter.ReadNeoInt32(__frameBase, ref __curPrim);
             var result_of_this_method = instance_of_this_method[index];
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.TestVector3NoBinding)); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* get_Item_1(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)

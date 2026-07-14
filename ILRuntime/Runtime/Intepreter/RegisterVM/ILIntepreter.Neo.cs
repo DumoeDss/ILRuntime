@@ -4872,6 +4872,30 @@ namespace ILRuntime.Runtime.Intepreter
                                                 sinst.ManagedObjects[off.ReferenceOffset + ri] = srcRefIdx >= 0 ? mStack[srcRefIdx] : null;
                                             }
                                         }
+                                        else if (ft != null && ft.IsValueType)
+                                        {
+                                            // A CLR value-type IL-static field is laid out as a
+                                            // BOXED struct in ManagedObjects (the Neo static-field
+                                            // offset pass reserves a reference slot -- not a
+                                            // Primitives region -- for a non-IL ValueType, since
+                                            // only ILTypes carry TotalPrimitiveSize). Read the
+                                            // source in-frame flat bytes, box, and store at the
+                                            // field's ReferenceOffset. Mirrors the CLR-static
+                                            // Stsfld value-type branch below (ReadNeoValueType +
+                                            // GetNeoValueTypeManagedSize on ft.TypeForCLR). The
+                                            // preceding `ft is ILType vtil` branch handled IL
+                                            // value types, so this arm matches a CLR ValueType
+                                            // exclusively (previously fell through to the
+                                            // reference branch and read the struct's flat bytes as
+                                            // an mStack index -> IndexOutOfRange).
+                                            Type ftClr = ft.TypeForCLR;
+                                            int stSlotSize = (localInfos != null && ilStRegIdx < localInfos.Length) ? localInfos[ilStRegIdx].Size : 0;
+                                            if (NeoClrVtStaticFieldIsUnsafe(ftClr, stSlotSize))
+                                                throw new NotImplementedException("Neo Stsfld: IL-static CLR value-type field of type " + ft.FullName + " not supported under Neo (Step-13b ref-field CLR struct or slot-size overflow)");
+                                            int vtOff = ilStOff;
+                                            object boxed = ReadNeoValueType(ftClr, frameBase, ref vtOff, Optimizer.GetNeoValueTypeManagedSize(ftClr));
+                                            sinst.ManagedObjects[off.ReferenceOffset] = boxed;
+                                        }
                                         else
                                         {
                                             // Reference static field: the source register is a
@@ -5029,6 +5053,25 @@ namespace ILRuntime.Runtime.Intepreter
                                                 mStack.Add(rv);
                                                 *(int*)(dstSlot + vtil.TotalPrimitiveSize + ri * 4) = mStack.Count - 1;
                                             }
+                                        }
+                                        else if (ft != null && ft.IsValueType)
+                                        {
+                                            // A CLR value-type IL-static field is stored as a
+                                            // BOXED struct in ManagedObjects (see the Stsfld IL-
+                                            // static CLR-VT branch). Unbox and write the flat
+                                            // bytes to the dest slot. Mirrors the CLR-static
+                                            // Ldsfeld value-type branch (WriteNeoValueType +
+                                            // GetNeoValueTypeManagedSize on ft.TypeForCLR). The
+                                            // preceding `ft is ILType vtil` branch handled IL
+                                            // value types. A null/uninitialized slot reads as a
+                                            // default struct (a static VT field's default).
+                                            Type ftClr = ft.TypeForCLR;
+                                            int ldSlotSize = (localInfos != null && ilLdRegIdx < localInfos.Length) ? localInfos[ilLdRegIdx].Size : 0;
+                                            if (NeoClrVtStaticFieldIsUnsafe(ftClr, ldSlotSize))
+                                                throw new NotImplementedException("Neo Ldsfld: IL-static CLR value-type field of type " + ft.FullName + " not supported under Neo (Step-13b ref-field CLR struct or slot-size overflow)");
+                                            object rv = sinst.ManagedObjects[off.ReferenceOffset];
+                                            if (rv == null) rv = System.Activator.CreateInstance(ftClr);
+                                            WriteNeoValueType(rv, dstSlot, Optimizer.GetNeoValueTypeManagedSize(ftClr));
                                         }
                                         else
                                         {
