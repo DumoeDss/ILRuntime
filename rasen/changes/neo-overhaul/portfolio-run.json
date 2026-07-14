@@ -1139,6 +1139,23 @@
       "smoke": "FULL SMOKE 38->35 (-3); InheritanceTest21/22 + GenericsRefOut; NeoStep 398/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; byref reference-field + CLR-struct-static F-10; delegate-extension 3 high-risk deferred)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-constrained-callvirt-residual": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: GenericsRefOut2 constrained.callvirt on ref-type T whose M is non-virtual ILMethod. JIT lowers callvirt->Call (regardless of hasConstrained). Neo Constrained arm only accepted Callvirt family -> NIE. Fix = accept Call in the Constrained trailing-op list (safe: arm owns dispatch + ip+=2).",
+      "prerequisites": [
+        "neo-recluster-38"
+      ],
+      "dependsOn": [
+        "neo-recluster-38"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 35->34 (-1, GenericsRefOut2); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; Constrained arm owns-dispatch; Legacy pass-through divergence)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1204,7 +1221,8 @@
     "neo-ldind-stobj-cluster-g",
     "neo-hotfix-patched-il-execute",
     "neo-interface-callvirt-cluster-c",
-    "neo-recluster-38"
+    "neo-recluster-38",
+    "neo-constrained-callvirt-residual"
   ],
   "surfacedFollowups": [
     {
@@ -1408,6 +1426,7 @@
     "fullSmokeAfterClusterG": 46,
     "fullSmokeAfterClusterH": 42,
     "fullSmokeAfterClusterC": 38,
-    "fullSmokeAfterR38": 35
+    "fullSmokeAfterR38": 35,
+    "fullSmokeAfterConstrained": 34
   }
 }

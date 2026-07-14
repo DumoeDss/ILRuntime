@@ -6947,7 +6947,24 @@ namespace ILRuntime.Runtime.Intepreter
                                     IType constrainedType = AppDomain.GetType(ip->Operand);
                                     OpCodeR* cv = ip + 1;
                                     OpCodeREnum cvCode = cv->Code;
-                                    if (cvCode != OpCodeREnum.Callvirt &&
+                                    // The trailing op is normally a Callvirt variant, but
+                                    // for a constrained REFERENCE-type T whose method M is
+                                    // a non-virtual ILMethod, the JIT lowers the C#
+                                    // `constrained. T; callvirt M` lowering to a plain
+                                    // `Call` (JITCompiler.cs:2845-2850 -- non-virtual /
+                                    // non-abstract / non-interface). A plain `Call` carries
+                                    // the SAME operands the arm reads below (Operand2 =
+                                    // method token via InitializeFunctionParam; Operand =
+                                    // NeoCallParams index via LowerNeoOffsets case-list incl.
+                                    // Call; Register1/DstOffset/Operand3 = return slot), and
+                                    // this arm does its OWN dispatch + skips the trailing op
+                                    // (`ip += 2`), so a Call is accepted identically. Mirrors
+                                    // Legacy ExecuteR (the Constrained arm does not inspect
+                                    // the trailing op at all -- it prepares the receiver and
+                                    // lets the next arm dispatch). [neo-constrained-callvirt-
+                                    // residual: Step-17 D-CONSTRAINED defect]
+                                    if (cvCode != OpCodeREnum.Call &&
+                                        cvCode != OpCodeREnum.Callvirt &&
                                         cvCode != OpCodeREnum.Callvirt_IL &&
                                         cvCode != OpCodeREnum.Callvirt_CLR &&
                                         cvCode != OpCodeREnum.Callvirt_Interface &&
