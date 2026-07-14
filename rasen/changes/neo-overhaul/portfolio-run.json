@@ -1207,6 +1207,23 @@
       "smoke": "FULL SMOKE 32->31 (-1, UnitTest_Struct); stash-toggle airtight; NeoStep 401/0 (+3 probes); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; descriptor + origin write-back; UnitTest_Struct2 case 3 CLR-static ldsflda + UnitTest_10051 constrained-callvirt distinct residuals)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-delegate-dispatch-arg-marshal": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 D1: bound static extension delegate didnt pass obj as param0. Diagnosis DISPROVEN (not NeoRunDelegateTargetOnThis; real path = NeoInvokeSub via CLR delegate autogen Invoke -> NeoInvoke). NeoInvokeSub lacked IsExtend branch (Legacy ILInvokeSub has it). Fix = IsExtend + instance!=null push-instance-as-param0 + argCount=paramCnt-1.",
+      "prerequisites": [
+        "neo-nested-ldflda-byref"
+      ],
+      "dependsOn": [
+        "neo-nested-ldflda-byref"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 31->28 (-3, DelegateExtTest01/02 + DelegateTest01); stash-toggle airtight; NeoStep 401/0 (all delegate tests green); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; NeoInvokeSub path pinned; 3 D1 flipped; NeoRunDelegateTargetOnThis IsExtend latent sibling left)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1276,7 +1293,8 @@
     "neo-constrained-callvirt-residual",
     "neo-remaining-34-batch",
     "neo-long-literal-widened-temp",
-    "neo-nested-ldflda-byref"
+    "neo-nested-ldflda-byref",
+    "neo-delegate-dispatch-arg-marshal"
   ],
   "surfacedFollowups": [
     {
@@ -1484,6 +1502,7 @@
     "fullSmokeAfterConstrained": 34,
     "fullSmokeAfterR34batch": 33,
     "fullSmokeAfterD2": 32,
-    "fullSmokeAfterD4": 31
+    "fullSmokeAfterD4": 31,
+    "fullSmokeAfterD1": 28
   }
 }

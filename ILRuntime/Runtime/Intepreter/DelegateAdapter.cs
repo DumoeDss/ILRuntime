@@ -1121,28 +1121,49 @@ namespace ILRuntime.Runtime.Intepreter
             for (int i = 0; i < nf.TotalRefSize; i++)
                 mStack.Add(null);
 
-            // Write `this` (slot 0) for an instance method.
+            // Write `this` (slot 0) for an instance method. ALSO write the bound
+            // `instance` as slot 0 for a static EXTENSION method
+            // (neo-delegate-dispatch-arg-marshal): a delegate bound to a static
+            // extension method `obj.ExtMethod(...)` must pass the bound `obj` as
+            // the target's param 0 (the `this` extension param). Mirrors Legacy
+            // ILInvokeSub's `if (method.IsExtend && instance != null) {
+            // PushObject(instance); paramCnt--; }` -- the bound instance consumes
+            // the first target slot, and the delegate's explicit args map to the
+            // remaining slots. Without this, the delegate's first explicit arg is
+            // written into the extension-`this` slot (e.g. the `int a` lands where
+            // `obj` belongs -> `obj.AddValue` ldfld.i4 sees an Int32 owner ->
+            // Step-17/13b NIE).
+            bool extendBound = !hasThis && method.IsExtend && instance != null;
+
             int argIdx = 0;
-            if (hasThis)
+            if (hasThis || extendBound)
             {
                 WriteNeoCallSlot(paramInfos[0], frameBase, mStack, frameRefBase, instance);
                 argIdx = 1; // slot 0 consumed
             }
+            // Number of explicit delegate args to copy. For an extension method,
+            // ParameterCount INCLUDES the bound-this param (verified: pCnt=2 for
+            // `IntTest(this T obj, int a)`), so subtract one (Legacy paramCnt-- ).
+            int argCount = extendBound ? paramCnt - 1 : paramCnt;
             // Write each CLR param into its param-region slot. `args` carries
-            // only the explicit params (not `this`).
-            for (int i = 0; i < paramCnt; i++)
+            // only the explicit params (not `this`/bound-instance).
+            for (int i = 0; i < argCount; i++)
             {
                 object arg = (args != null && i < args.Length) ? args[i] : null;
-                if (marshalByRef && byRefScratchOff != null && byRefScratchOff[i] >= 0)
+                // byRefScratchOff/byRefElemType are indexed by TARGET param slot
+                // (filled from method.Parameters), so offset by the consumed
+                // instance slot to align with the delegate-arg index `i`.
+                int brIdx = i + (extendBound ? 1 : 0);
+                if (marshalByRef && byRefScratchOff != null && brIdx < byRefScratchOff.Length && byRefScratchOff[brIdx] >= 0)
                 {
                     // child-14: stage the CLR value in the scratch cell and make
                     // the param's 8-byte Ref Slot self-referencing so the IL
                     // callee's ldind/stind read+write the staged value through
                     // this frame. (objIdx == -1, off == scratchOff).
-                    WriteNeoByrefScratchValue(appdomain, frameBase + byRefScratchOff[i], byRefElemType[i], arg);
-                    int slotIdx = (hasThis ? 1 : 0) + i;
+                    WriteNeoByrefScratchValue(appdomain, frameBase + byRefScratchOff[brIdx], byRefElemType[brIdx], arg);
+                    int slotIdx = argIdx;
                     *(int*)(frameBase + paramInfos[slotIdx].Offset + 0) = -1;
-                    *(int*)(frameBase + paramInfos[slotIdx].Offset + 4) = byRefScratchOff[i];
+                    *(int*)(frameBase + paramInfos[slotIdx].Offset + 4) = byRefScratchOff[brIdx];
                 }
                 else
                 {
