@@ -1260,3 +1260,72 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   (+TypeMakeGenericTypeNeo, gated), `ILRuntime/Runtime/Enviorment/AppDomain.cs` (+1 Neo registration,
   gated), `rasen/changes/neo-overhaul/handoff/fullsmoke-ground-34-postfix.md` (deep-root table),
   `rasen/changes/neo-remaining-34-batch/ship-log.md`.
+
+## Child neo-nested-ldflda-byref DONE (2026-07-15) -- durable findings
+- **RE-AUDIT CONFIRMED (D4 core, JIT-dump-pinned):** `outer.Struct.field += N` lowers to
+  `ldflda Struct(on outer); ldflda field(on the struct byref); ldind.i4; add; stind.i4`. The INNER
+  `ldflda field` operates on the BYREF from the outer ldflda, but the Neo `Ldflda` runtime arm had NO
+  branch for "my operand is a struct-field byref". It read the byref's objIdx half as a direct heap
+  index, re-stamped its own fieldPrimOff into the offset half, and produced `(containingObjIdx,
+  innerFieldHash)` -- pointing at the CONTAINING object but carrying the INNER field's hash (different
+  types) -> the following ldind called `NeoReadClrObjectField(containingObj, innerFieldHash)` which
+  failed to resolve -> NRE. Legacy is JIT-byte-identical (same `ldflda;ldflda;ldind;addi;stind`); the
+  difference is purely the runtime Ldflda arm (Legacy produces a FieldReference chain that
+  RetriveObject/StoreValueToFieldReference walks with box/mutate/unbox).
+- **Runtime detection is UNSAFE (the recurring marker-vs-runtime crux, child-24/29 lineage):** the
+  operand representation (heap object vs byref) is a JIT-time dataflow fact; the untyped Neo frame
+  cannot distinguish a byref's objIdx half (>=0) from a heap object's mStack index (>=0). A JIT marker
+  is MANDATORY. New const `NeoLdfldaNestedByRefMarker = 0x10` (next free bit in the Ldflda Operand4
+  space {0x1 inline, 0x2 F-10, 0x4 heapIlRef, 0x8 clrStructLocal}). Stamped in `case Code.Ldflda` CLRType
+  block when CIL predecessor is Ldflda/Ldsflda. Gated on `type is CLRType` so IL-struct inner fields
+  take their existing path.
+- **A SELF-DESCRIBING DESCRIPTOR on mStack is required (NOT a plain boxed-struct temp) because of
+  WRITE-BACK:** the byref is only 8 bytes (objIdx, off) -- it cannot encode the full nested path
+  (containing obj + struct-field offset + inner field hash). A plain boxed-struct temp would make
+  ldind read correctly via the existing NeoIsClrObject branch, BUT stind's mutation would NOT persist:
+  (a) the `CLRType.SetFieldValue` setter DELEGATE reboxes into a local (the caller's mStack slot is not
+  updated), and (b) a CLR-object owner's box is a FieldInfo.GetValue COPY. The descriptor
+  (`NeoNestedFieldAddr`: ContainingObj/StructFieldOff/InnerFieldHash/InnerDeclTypeHash/BoxedStruct/IsF10)
+  carries the full path so stind can do `f.SetValue(boxedStruct, v)` (mutates the box IN PLACE,
+  child-27 proven) + EXPLICIT origin write-back (F-10 -> `ili.ManagedObjects[refOff] = boxedStruct`;
+  CLR object -> `NeoWriteClrObjectField(containingObj, structFieldOff, boxedStruct)`). The descriptor
+  lives on mStack -> reclaimed with the frame (NO process-static leak). This MATCHES Legacy for F-10
+  (UnitTest_Struct prints 100, Struct2 case 2 prints 222) and EXCEEDS Legacy for CLR-object owners
+  (Struct2 case 1 prints 111 under Legacy, 222 under Neo post-fix).
+- **SOUNDNESS (mirrors child F-10/27): TYPE check FIRST, not the F-10 flag bit.** A CLR-object owner's
+  structFieldOff is the struct field's `FieldInfo.GetHashCode()` which can have bit 0x40000000
+  (NeoF10ByrefOffsetFlag) set by chance. The `containingObj is ILTypeInstance` test MUST precede the
+  flag-bit test.
+- **The frame-native nested chain (`ldloca; ldflda; ldflda`, objIdx == -1) ALREADY WORKS** (the existing
+  `objIdx == -1` branch resolves `vtBase + fieldOff`); the new nested branch is gated on `objIdx >= 0`
+  so it never intercepts the frame-native chain.
+- **ldind/stind arms touched (broad surface, hot path):** added a leading
+  `if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfa) { ...; break; }` to Ldind_I4/I8/R4/R8
+  and Stind_I4/I8/R4/R8 (the primitive arms the `+=` lowering uses). The `is NeoNestedFieldAddr` check
+  is a cheap type-test that fires true only for nested descriptors (a NEW type); no mis-fire on any
+  existing path. NeoStep 401/0 (no regression).
+- **Verify:** full smoke **32 -> 31** (UnitTest_Struct flipped; 935 ran = 932 + 3 probes / 31 failed /
+  20 ignored / 7 todos; the 31 are a STRICT SUBSET of the baseline, no new failures). Stash-toggle of
+  JITCompiler.cs + ILIntepreter.Neo.cs -> 3/3 probes FAULT (ldind NRE) -> pop -> 3/3 PASS with asserted
+  persisted values (TC1 F-10 = 150, TC2 CLR-object = 150, TC3 field-preservation = 35). UnitTest_Struct
+  prints 100 (matches Legacy). NeoStep 401/0 (398 + 3 probes). Legacy-neutral (plain Debug build 0
+  errors; all changes Neo-gated, ILIntepreter.Neo.cs file-gated).
+- **REMAINING D4 sub-gaps (separate children, do NOT re-attribute to nested-ldflda):** (a) `UnitTest_Struct2`
+  STILL FAILS -- at case 3 `TestStruct.instance.value += 111`, which hits the SEPARATELY-DEFERRED CLR
+  STATIC `ldsflda` ("Neo Ldsflda: CLR static field address deferred"); cases 1 (CLR-object) and 2 (F-10)
+  now produce CORRECT values (222/222) and would pass if case 3's ldsflda were fixed. (b) `UnitTest_10051`
+  STILL FAILS its own assertion -- `.x.RawValue` is a constrained-callvirt property read on a nested
+  struct field (a different shape from the `+=` ldflda path; F-10 handoff already noted this). (c) The
+  CLR-static `ldsflda` fix is non-trivial: its byref must also feed the raw Stfld/Ldfld consumers
+  (`ldsflda instance; stfld value` / `ldfld value`), which have their own byref handling -- not just
+  the nested ldflda. Candidate child: `neo-ldsflda-clr-static-struct`.
+- **GOTCHA (TestCases type-name collision):** `TestStruct` resolves to `TestCases.TestStruct` (in
+  Structs.cs) from inside `namespace TestCases`, NOT `ILRuntimeTest.TestFramework.TestStruct` -- a probe
+  must FULLY-QUALIFY it (`ILRuntimeTest.TestFramework.TestStruct`) or `.value` CS1061's. (LightTester1.cs
+  fully qualifies it; easy to miss in a new probe.)
+- **Files (NOT committed, LEAD commits):** `ILRuntime/Runtime/Intepreter/RegisterVM/JITCompiler.cs`
+  (+const 0x10 + stamp in Ldflda CLRType block), `ILRuntime/Runtime/Intepreter/RegisterVM/ILIntepreter.Neo.cs`
+  (+NeoNestedFieldAddr class + ResolveNeoNestedInnerField/WriteNeoNestedInnerField helpers + Ldflda nested
+  branch + ldind.I4/I8/R4/R8 + stind.I4/I8/R4/R8 descriptor checks), new
+  `TestCases/NeoStepNestedLdfldaByrefTest.cs` (3 probes). Capability = `neo-value-types`. Artifacts at
+  `rasen/changes/neo-nested-ldflda-byref/` (proposal/design/specs(neo-value-types ADDED)/tasks).

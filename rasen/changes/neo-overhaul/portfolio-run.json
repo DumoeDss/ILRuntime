@@ -1190,6 +1190,23 @@
       "smoke": "FULL SMOKE 33->32 (-1, UnitTest_1020); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; conv.u8 zero-extend; shift-count Operand field; 2nd latent self-caught)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-nested-ldflda-byref": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 D4: nested ldflda-on-byref (outer.Struct.field += N). Inner ldflda field operates on outer ldflda byref. Neo Ldflda arm had no struct-field-byref branch -> (containingObjIdx, innerFieldHash) -> NRE. Fix = JIT marker 0x10 (5th bit) + NeoNestedFieldAddr descriptor (self-describing on mStack, stind f.SetValue + origin write-back). child-24/29 lineage.",
+      "prerequisites": [
+        "neo-long-literal-widened-temp"
+      ],
+      "dependsOn": [
+        "neo-long-literal-widened-temp"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 32->31 (-1, UnitTest_Struct); stash-toggle airtight; NeoStep 401/0 (+3 probes); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; descriptor + origin write-back; UnitTest_Struct2 case 3 CLR-static ldsflda + UnitTest_10051 constrained-callvirt distinct residuals)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1258,7 +1275,8 @@
     "neo-recluster-38",
     "neo-constrained-callvirt-residual",
     "neo-remaining-34-batch",
-    "neo-long-literal-widened-temp"
+    "neo-long-literal-widened-temp",
+    "neo-nested-ldflda-byref"
   ],
   "surfacedFollowups": [
     {
@@ -1465,6 +1483,7 @@
     "fullSmokeAfterR38": 35,
     "fullSmokeAfterConstrained": 34,
     "fullSmokeAfterR34batch": 33,
-    "fullSmokeAfterD2": 32
+    "fullSmokeAfterD2": 32,
+    "fullSmokeAfterD4": 31
   }
 }

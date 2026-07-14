@@ -2162,6 +2162,14 @@ namespace ILRuntime.Runtime.Intepreter
                                     // frame-native branch below. ip->Operand is the
                                     // declaring type hash.
                                     bool clrStructLocalFieldMarker = (ip->Operand4 & JITCompiler.NeoLdfldaClrStructLocalFieldMarker) != 0;
+                                    // neo-nested-ldflda-byref: the operand is a byref produced
+                                    // by a preceding address-of (ldflda/ldsflda) -- this ldflda
+                                    // drills INTO a struct field's address. See the JIT stamp
+                                    // (NeoLdfldaNestedByRefMarker). The runtime branch below
+                                    // (gated objIdx >= 0) materializes the boxed struct field
+                                    // into a temp so the generic ldind/stind arms read/write the
+                                    // inner field on the boxed struct.
+                                    bool nestedByRefMarker = (ip->Operand4 & JITCompiler.NeoLdfldaNestedByRefMarker) != 0;
                                     int objIdx = *(int*)(frameBase + operandSlotOff + 0);
                                     if (heapIlRefFieldMarker && objIdx >= 0)
                                     {
@@ -2197,6 +2205,104 @@ namespace ILRuntime.Runtime.Intepreter
                                         // offset half discriminates from a Primitives offset.
                                         *(int*)(frameBase + dst + 0) = objIdx;
                                         *(int*)(frameBase + dst + 4) = ip->Operand3 | JITCompiler.NeoF10ByrefOffsetFlag;
+                                    }
+                                    else if (nestedByRefMarker && objIdx >= 0)
+                                    {
+                                        // neo-nested-ldflda-byref: the operand is a BYREF
+                                        // produced by a preceding address-of (ldflda/ldsflda)
+                                        // -- this ldflda addresses an INNER field of a struct
+                                        // field (`outer.Struct.field += N` -> `ldflda Struct;
+                                        // ldflda field; ldind; add; stind`). The operand slot
+                                        // holds the outer byref (containingObjIdx,
+                                        // structFieldOff); objIdx == containingObjIdx (>= 0).
+                                        // Materialize the boxed struct field into a TEMP mStack
+                                        // slot and produce (tempIdx, innerFieldHash) so the
+                                        // generic ldind/stind NeoIsClrObject arms read/write the
+                                        // inner field on the boxed struct (which is a CLR object;
+                                        // NeoReadClrObjectField/NeoWriteClrObjectField resolve
+                                        // the inner field by hash on the struct's OWN CLRType).
+                                        // innerFieldHash = ip->Operand2 (fieldPrimOff; for a
+                                        // CLRType declaring type AppDomain.GetFieldOffset stamps
+                                        // the FieldInfo hash here, same as child-15/24/29).
+                                        int structFieldOff = *(int*)(frameBase + operandSlotOff + 4);
+                                        object containingObj = (objIdx >= 0 && objIdx < mStack.Count) ? mStack[objIdx] : null;
+                                        object boxedStruct;
+                                        bool nestedIsF10 = false;
+                                        // CRITICAL (soundness, mirrors child F-10 / child-27):
+                                        // TYPE check FIRST, not the F-10 flag -- a CLR-object
+                                        // owner's structFieldOff is the struct field's
+                                        // FieldInfo.GetHashCode() which can have the flag bit set.
+                                        ILTypeInstance nestedIl = containingObj as ILTypeInstance;
+                                        if (nestedIl == null && containingObj is CrossBindingAdaptorType cbat)
+                                            nestedIl = cbat.ILInstance;
+                                        if (nestedIl != null && (structFieldOff & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+                                        {
+                                            // F-10 / IL-instance owner: the boxed struct lives at
+                                            // ManagedObjects[refOff]. Read it directly; seed a
+                                            // default box on null (Activator.CreateInstance of the
+                                            // inner declaring CLR type). The descriptor's write-back
+                                            // (WriteNeoNestedInnerField) mutates the box via
+                                            // f.SetValue (in place, child-27 proven) and stores it
+                                            // back into ManagedObjects[refOff] -> persistent,
+                                            // matching Legacy (which persists the F-10 nested +=).
+                                            nestedIsF10 = true;
+                                            int refOff = structFieldOff & ~JITCompiler.NeoF10ByrefOffsetFlag;
+                                            boxedStruct = nestedIl.ManagedObjects[refOff];
+                                            if (boxedStruct == null)
+                                            {
+                                                var innerDeclType = AppDomain.GetType(ip->Operand);
+                                                if (innerDeclType == null)
+                                                    throw new NotImplementedException("Neo nested ldflda (F-10): inner declaring type not resolved for hash 0x" + ip->Operand.ToString("X"));
+                                                boxedStruct = System.Activator.CreateInstance(innerDeclType.TypeForCLR);
+                                                nestedIl.ManagedObjects[refOff] = boxedStruct;
+                                            }
+                                        }
+                                        else if (nestedIl != null)
+                                        {
+                                            // IL-instance owner of an IL-struct field (flat
+                                            // Primitives) -- a distinct shape not covered here.
+                                            // Defer loud (tagged NIE) rather than silently
+                                            // mis-resolve.
+                                            throw new NotImplementedException("Neo nested ldflda: IL-instance IL-struct-field operand deferred (follow-up). Inner declaring hash 0x" + ip->Operand.ToString("X"));
+                                        }
+                                        else
+                                        {
+                                            // CLR-object owner: the struct field is a CLR field on
+                                            // the containing object. NeoReadClrObjectField boxes
+                                            // it (FieldInfo.GetValue -> a boxed copy). The
+                                            // descriptor's write-back does f.SetValue (in place)
+                                            // + NeoWriteClrObjectField(containingObj,
+                                            // structFieldOff, box) -> persistent (EXCEEDS Legacy,
+                                            // which does not back-propagate a CLR-class struct-
+                                            // field boxed-copy mutation for the `+=` shape).
+                                            if (containingObj == null)
+                                                throw new NullReferenceException();
+                                            boxedStruct = NeoReadClrObjectField(AppDomain, containingObj, structFieldOff);
+                                        }
+                                        // Build a SELF-DESCRIBING descriptor and push it onto mStack.
+                                        // The ldind/stind arms recognize `mStack[objIdx] is
+                                        // NeoNestedFieldAddr` BEFORE their existing branches and
+                                        // route to ResolveNeoNestedInnerField /
+                                        // WriteNeoNestedInnerField (box/read-inner +
+                                        // box/mutate/unbox-inner with explicit origin write-back).
+                                        // Carrying the full nested path in the descriptor (not the
+                                        // 8-byte byref) is what makes the write-back possible; the
+                                        // descriptor is reclaimed with the frame (lives on mStack --
+                                        // no process-static leak). off (dst+4) is unused for a
+                                        // descriptor (the inner field hash lives in the descriptor).
+                                        var nestedAddr = new NeoNestedFieldAddr
+                                        {
+                                            ContainingObj = containingObj,
+                                            StructFieldOff = structFieldOff,
+                                            InnerFieldHash = fieldPrimOff,
+                                            InnerDeclTypeHash = ip->Operand,
+                                            BoxedStruct = boxedStruct,
+                                            IsF10 = nestedIsF10,
+                                        };
+                                        mStack.Add(nestedAddr);
+                                        int nestedTempIdx = mStack.Count - 1;
+                                        *(int*)(frameBase + dst + 0) = nestedTempIdx;
+                                        *(int*)(frameBase + dst + 4) = 0;
                                     }
                                     else if (objIdx == -1)
                                     {
@@ -6157,6 +6263,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     int v = *(int*)(frameBase + ip->SrcOffset);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaST4) { WriteNeoNestedInnerField(AppDomain, nfaST4, v); break; }
                                     if (objIdx == -1) *(int*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
@@ -6168,6 +6275,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     long v = *(long*)(frameBase + ip->SrcOffset);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaST8) { WriteNeoNestedInnerField(AppDomain, nfaST8, v); break; }
                                     if (objIdx == -1) *(long*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
@@ -6179,6 +6287,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     float v = *(float*)(frameBase + ip->SrcOffset);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaSTR4) { WriteNeoNestedInnerField(AppDomain, nfaSTR4, v); break; }
                                     if (objIdx == -1) *(float*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
@@ -6190,6 +6299,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int objIdx = *(int*)(frameBase + ip->DstOffset + 0);
                                     int off = *(int*)(frameBase + ip->DstOffset + 4);
                                     double v = *(double*)(frameBase + ip->SrcOffset);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaSTR8) { WriteNeoNestedInnerField(AppDomain, nfaSTR8, v); break; }
                                     if (objIdx == -1) *(double*)(frameBase + off) = v;
                                     else if (mStack[objIdx] is Array cArr) cArr.SetValue(v, off);
                                     else if (NeoIsClrObject(mStack, objIdx)) NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, v);
@@ -6247,6 +6357,7 @@ namespace ILRuntime.Runtime.Intepreter
                                 {
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaLD4) { *(int*)(frameBase + ip->DstOffset) = (int)ResolveNeoNestedInnerField(AppDomain, nfaLD4); break; }
                                     if (objIdx == -1) *(int*)(frameBase + ip->DstOffset) = *(int*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(int*)(frameBase + ip->DstOffset) = (int)cArr.GetValue(off);
                                     else if (NeoIsClrObject(mStack, objIdx)) *(int*)(frameBase + ip->DstOffset) = (int)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
@@ -6269,6 +6380,7 @@ namespace ILRuntime.Runtime.Intepreter
                                 {
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaLD8) { *(long*)(frameBase + ip->DstOffset) = (long)ResolveNeoNestedInnerField(AppDomain, nfaLD8); break; }
                                     if (objIdx == -1) *(long*)(frameBase + ip->DstOffset) = *(long*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(long*)(frameBase + ip->DstOffset) = (long)cArr.GetValue(off);
                                     else if (NeoIsClrObject(mStack, objIdx)) *(long*)(frameBase + ip->DstOffset) = (long)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
@@ -6279,6 +6391,7 @@ namespace ILRuntime.Runtime.Intepreter
                                 {
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaLDR4) { *(float*)(frameBase + ip->DstOffset) = (float)ResolveNeoNestedInnerField(AppDomain, nfaLDR4); break; }
                                     if (objIdx == -1) *(float*)(frameBase + ip->DstOffset) = *(float*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(float*)(frameBase + ip->DstOffset) = (float)cArr.GetValue(off);
                                     else if (NeoIsClrObject(mStack, objIdx)) *(float*)(frameBase + ip->DstOffset) = (float)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
@@ -6289,6 +6402,7 @@ namespace ILRuntime.Runtime.Intepreter
                                 {
                                     int objIdx = *(int*)(frameBase + ip->SrcOffset + 0);
                                     int off = *(int*)(frameBase + ip->SrcOffset + 4);
+                                    if (objIdx >= 0 && mStack[objIdx] is NeoNestedFieldAddr nfaLDR8) { *(double*)(frameBase + ip->DstOffset) = (double)ResolveNeoNestedInnerField(AppDomain, nfaLDR8); break; }
                                     if (objIdx == -1) *(double*)(frameBase + ip->DstOffset) = *(double*)(frameBase + off);
                                     else if (mStack[objIdx] is Array cArr) *(double*)(frameBase + ip->DstOffset) = (double)cArr.GetValue(off);
                                     else if (NeoIsClrObject(mStack, objIdx)) *(double*)(frameBase + ip->DstOffset) = (double)NeoReadClrObjectField(AppDomain, mStack[objIdx], off);
@@ -7447,6 +7561,76 @@ namespace ILRuntime.Runtime.Intepreter
         //      SetFieldValue). The hash is resolvable at runtime via the object's
         //      runtime CLRType -- no JIT stamp change is required (the hash is
         //      already the offset half). ----
+
+        // neo-nested-ldflda-byref: a self-describing byref for an INNER field of
+        // a struct field (`outer.Struct.field += N`). Produced by the Ldflda
+        // nested-byref branch (pushed onto mStack; the byref is (tempIdx, 0)).
+        // Consumed by the ldind/stind arms via a `mStack[objIdx] is
+        // NeoNestedFieldAddr` check BEFORE their existing branches. Carries the
+        // full nested path (containing object + struct-field offset + inner
+        // field hash/decl-type + the materialized boxed struct) so the consumers
+        // can do box/read-inner (ldind) and box/mutate/unbox-inner WITH EXPLICIT
+        // ORIGIN WRITE-BACK (stind) -- the write-back is what the 8-byte byref
+        // cannot encode. Reclaimed with the frame (lives on mStack -- no
+        // process-static leak). Neo-only (this whole file is #if-gated).
+        sealed class NeoNestedFieldAddr
+        {
+            public object ContainingObj;   // ILTypeInstance (F-10) or CLR object
+            public int StructFieldOff;      // refOff|NeoF10ByrefOffsetFlag (F-10) or struct field hash (CLR object)
+            public int InnerFieldHash;      // FieldInfo hash of the inner field on the struct's CLRType
+            public int InnerDeclTypeHash;   // declaring-type hash of the inner field (the struct CLRType)
+            public object BoxedStruct;      // the materialized boxed struct (read / mutated in place)
+            public bool IsF10;              // IL-instance owner -> write back to ManagedObjects[refOff]
+        }
+
+        // neo-nested-ldflda-byref: read the inner field off the boxed struct via
+        // reflection (f.GetValue). Used by the ldind arms.
+        static object ResolveNeoNestedInnerField(ILRuntime.Runtime.Enviorment.AppDomain appdomain, NeoNestedFieldAddr addr)
+        {
+            if (addr.BoxedStruct == null)
+                throw new NullReferenceException();
+            var ct = appdomain.GetType(addr.InnerDeclTypeHash) as CLRType;
+            if (ct == null)
+                throw new NotImplementedException("Neo nested ldflda read: inner declaring type not a CLRType. Hash 0x" + addr.InnerDeclTypeHash.ToString("X"));
+            var f = ct.GetField(addr.InnerFieldHash);
+            if (f == null)
+                throw new NotImplementedException("Neo nested ldflda read: inner field hash 0x" + addr.InnerFieldHash.ToString("X") + " not resolved on " + ct.FullName);
+            return f.GetValue(addr.BoxedStruct);
+        }
+
+        // neo-nested-ldflda-byref: mutate the inner field on the boxed struct
+        // (f.SetValue -- mutates the box IN PLACE, child-27 proven) and write the
+        // box back to its origin. F-10 -> ManagedObjects[refOff]; CLR object ->
+        // NeoWriteClrObjectField(containingObj, structFieldOff, box). This is the
+        // box/mutate/unbox pattern of child-27/F-10 applied to the INNER field.
+        // Used by the stind arms.
+        static void WriteNeoNestedInnerField(ILRuntime.Runtime.Enviorment.AppDomain appdomain, NeoNestedFieldAddr addr, object value)
+        {
+            if (addr.BoxedStruct == null)
+                throw new NullReferenceException();
+            var ct = appdomain.GetType(addr.InnerDeclTypeHash) as CLRType;
+            if (ct == null)
+                throw new NotImplementedException("Neo nested ldflda write: inner declaring type not a CLRType. Hash 0x" + addr.InnerDeclTypeHash.ToString("X"));
+            var f = ct.GetField(addr.InnerFieldHash);
+            if (f == null)
+                throw new NotImplementedException("Neo nested ldflda write: inner field hash 0x" + addr.InnerFieldHash.ToString("X") + " not resolved on " + ct.FullName);
+            if (f.FieldType != null)
+                value = f.FieldType.CheckCLRTypes(value);
+            f.SetValue(addr.BoxedStruct, value);
+            if (addr.IsF10)
+            {
+                int refOff = addr.StructFieldOff & ~JITCompiler.NeoF10ByrefOffsetFlag;
+                ILTypeInstance ili = addr.ContainingObj as ILTypeInstance;
+                if (ili == null && addr.ContainingObj is CrossBindingAdaptorType cbat)
+                    ili = cbat.ILInstance;
+                if (ili != null)
+                    ili.ManagedObjects[refOff] = addr.BoxedStruct;
+            }
+            else
+            {
+                NeoWriteClrObjectField(appdomain, addr.ContainingObj, addr.StructFieldOff, addr.BoxedStruct);
+            }
+        }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         static object NeoReadClrObjectField(ILRuntime.Runtime.Enviorment.AppDomain appdomain, object target, int fieldHash)

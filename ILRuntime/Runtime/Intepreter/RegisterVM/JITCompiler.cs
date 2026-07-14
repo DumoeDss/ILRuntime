@@ -204,6 +204,31 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // with reference fields throws the Step-13b NIE inside
         // ReadNeoValueType/WriteNeoValueType first).
         public const int NeoLdfldaClrStructLocalFieldMarker = 0x8;
+        // neo-nested-ldflda-byref: marks an `Ldflda` whose operand is a BYREF
+        // produced by a preceding address-of (Ldflda / Ldsflda) -- i.e. this
+        // ldflda drills INTO a struct field's address. The canonical shape is
+        // `outer.Struct.field += N` which lowers to `ldflda Struct(on outer);
+        // ldflda field(on the struct byref); ldind.i4; add; stind.i4`. The
+        // inner ldflda's operand slot holds the outer byref
+        // (containingObjIdx, structFieldOff); without this marker the runtime
+        // Ldflda arm treats the byref's objIdx half as a direct heap index and
+        // re-stamps its own fieldPrimOff, dropping the struct-field
+        // indirection -> the following ldind/stind mis-resolve the inner field
+        // on the wrong (containing) object. Stamped on the inner Ldflda's
+        // standalone Operand4 (bit 0x10, the next free bit after
+        // 0x1/0x2/0x4/0x8). The CIL predecessor (Ldflda/Ldsflda) is the
+        // reliable JIT-time signal that the operand is a byref (the untyped
+        // Neo frame cannot distinguish a byref's objIdx half from a heap
+        // object's mStack index at runtime -- same crux as child-24/29 raw-
+        // Ldfld). Mutually exclusive with the in-frame-VT source shapes: the
+        // frame-native nested chain (`ldloca; ldflda; ldflda`, objIdx == -1)
+        // is already handled by the existing `objIdx == -1` branch (vtBase +
+        // fieldOff), so the runtime nested branch is gated on objIdx >= 0.
+        // Prefixes (readonly./constrained./unaligned.) precede the address-
+        // producer and never sit between it and the inner ldflda; a prefix ON
+        // the inner ldfld itself is a rare edge that skips the marker (fails
+        // safe, same as child-24/29).
+        public const int NeoLdfldaNestedByRefMarker = 0x10;
         // neo-raw-ldfld-array-element: marks a raw `Ldfld` (CLR-declaring-type
         // field, the typed-splitter's CLRType `else` branch) whose owner is a
         // CLR-struct ARRAY ELEMENT byref produced by `ldelema` (the CIL shape
@@ -3357,7 +3382,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         // requires `type is CLRType`. (A CLR struct field ON an IL
                         // heap instance is F-10 above, handled first.)
                         else if (type is CLRType)
+                        {
                             op.Operand4 |= NeoLdfldaClrStructLocalFieldMarker;
+                            // neo-nested-ldflda-byref: the operand is a byref
+                            // produced by a preceding address-of (Ldflda/Ldsflda)
+                            // -- this ldflda drills INTO a struct field's address
+                            // (`outer.Struct.field += N` -> `ldflda Struct;
+                            // ldflda field; ldind; add; stind`). The CIL
+                            // predecessor is the immediate address-producer and
+                            // its dest register IS this ldflda's owner register
+                            // (same dataflow link as child-24/29 raw-Ldfld on a
+                            // byref owner). Mutually exclusive with the direct-
+                            // heap-object case (predecessor is a load, not an
+                            // address-of). Gated on `type is CLRType` so an
+                            // IL-struct inner field takes its existing path.
+                            if (ins.Previous != null && (ins.Previous.OpCode.Code == Code.Ldflda || ins.Previous.OpCode.Code == Code.Ldsflda))
+                                op.Operand4 |= NeoLdfldaNestedByRefMarker;
+                        }
                     }
 #else
                     op.OperandLong = appdomain.GetStaticFieldIndex(token, declaringType, method);
