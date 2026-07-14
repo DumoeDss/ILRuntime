@@ -1054,6 +1054,23 @@
       "smoke": "FULL SMOKE 54->51 (-3); CLRBindingTest07/08 + bonus JsonTest9; stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; Step-22 deferred case; ref-share-order-dependence pinned; inlining-stale-symbol cross-check self-caught regression)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-raw-ldfld-stfld-cluster-e": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-60 cluster E (PARTIAL, largest sub-cluster): unseeded in-frame-IL-VT producer. typed heap arms assume owner=mStack index; in-frame IL struct owner=flat bytes needs _Inline. TryRewriteFieldAccessForInline only rewrites when registerTypes[ownerReg]=struct ILType, but Ldarga (struct-param addr; Ldloca seeded, Ldarga not) and Ldfld_Value (whole-VT load dest) never seeded it. Fix = Ldarga/Ldfld_Value seeding (child-16/21/23 class). UnitTest_1008/10022/10023.",
+      "prerequisites": [
+        "neo-jit-generic-method-specialization"
+      ],
+      "dependsOn": [
+        "neo-jit-generic-method-specialization"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 51->48 (-3); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; producer-seeding class; 6 E-remaining distinct roots reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1114,7 +1131,8 @@
     "neo-callvirt-il-target-residual",
     "neo-recluster-60",
     "neo-autogen-binding-invoke",
-    "neo-jit-generic-method-specialization"
+    "neo-jit-generic-method-specialization",
+    "neo-raw-ldfld-stfld-cluster-e"
   ],
   "surfacedFollowups": [
     {
@@ -1313,6 +1331,7 @@
     "fullSmokeAfterCvilt": 60,
     "fullSmokeAfterRecluster60": 55,
     "fullSmokeAfterDbinding": 54,
-    "fullSmokeAfterJitGen": 51
+    "fullSmokeAfterJitGen": 51,
+    "fullSmokeAfterClusterE": 48
   }
 }

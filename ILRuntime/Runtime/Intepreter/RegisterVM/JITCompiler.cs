@@ -935,6 +935,24 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     IType svOwnerType = GetRegisterType(registerTypes, svOwnerReg);
                     bool svOwnerInFrame = svOwnerType is ILType svt && svt.IsValueType && !svt.IsEnum;
                     op.Operand = svOwnerInFrame ? NeoValueFieldInFrameOwnerMarker : NeoValueFieldHeapOwnerMarker;
+                    // cluster-E: a Ldfld_Value dest ALWAYS holds an in-frame copy of
+                    // the whole IL value-type field (flat managed bytes), for BOTH a
+                    // heap and an in-frame owner (the runtime arm copies the field's
+                    // primitive+ref region into the dest either way). Seed the dest
+                    // (Register1) with the field's ILType (Operand4 = field-type hash,
+                    // stamped at body emission) so a following typed Ldfld_*/Stfld_*
+                    // on that dest (e.g. `a.C.x` where `a.C` is a Vector3 loaded via
+                    // ldfld.value) is rewritten to its _Inline variant. Without this
+                    // the followup stays the plain heap arm and reads the dest's first
+                    // bytes as an mStack index -> GetNeoILInstance NRE. A non-IL /
+                    // non-value-type field (should not occur for Ldfld_Value, but
+                    // guarded) leaves the dest unseeded.
+                    if (op.Code == OpCodeREnum.Ldfld_Value)
+                    {
+                        var fldType = appdomain.GetType(op.Operand4);
+                        if (fldType is ILType ftIl && ftIl.IsValueType && !ftIl.IsEnum)
+                            SetRegisterType(registerTypes, op.Register1, fldType);
+                    }
                 }
                 switch (op.Code)
                 {
@@ -1283,6 +1301,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     // ldloca dest back to the source local's offset.
                     case OpCodeREnum.Ldloca:
                     case OpCodeREnum.Ldloca_S:
+                        {
+                            IType srcType = GetRegisterType(registerTypes, op.Register2);
+                            if (srcType is ILType srcIl && srcIl.IsValueType && !srcIl.IsEnum)
+                                SetRegisterType(registerTypes, op.Register1, srcType);
+                        }
+                        break;
+                    // cluster-E: ldarga of a struct PARAMETER (the byref dest
+                    // aliases the param's in-frame flat bytes). Same rule as
+                    // Ldloca above -- propagate the source param's value-type so
+                    // a following typed Ldfld_*/Stfld_* on this byref is rewritten
+                    // to its _Inline variant (without this, e.g. `void F(Struc a){
+                    // a.a = 3; }` lowers to `ldarga;stfld.i4` and the plain heap
+                    // arm reads the struct's first field as an mStack index ->
+                    // GetNeoILInstance NRE). A primitive/ref param is not an ILType
+                    // -> no seed -> no change (a `ref int` byref stays untyped).
+                    case OpCodeREnum.Ldarga:
+                    case OpCodeREnum.Ldarga_S:
                         {
                             IType srcType = GetRegisterType(registerTypes, op.Register2);
                             if (srcType is ILType srcIl && srcIl.IsValueType && !srcIl.IsEnum)
