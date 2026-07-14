@@ -1003,6 +1003,23 @@
       "smoke": "FULL SMOKE 63->60 (-3, DelegateTest16/17/SimpleTest.EqualsTest); stash-toggle airtight; NeoStep 394/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; DelegateAdapter Type==null pinned; ResolveNeoGenericCallvirtTarget:1458 latent shape noted)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-recluster-60": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 recluster: FRESH 60-baseline grounding (189-grounding stale). Largest single-root cluster B = unbox.any T for reference-type T (Roslyn lowers (T)x/x as T to unbox.any T; ref-type T is semantically castclass). Neo arm only handled VT/enum/primitive. Fix = Unbox arm ref-type branch (mirror Legacy). Wrote fresh 60 cluster table to fullsmoke-ground-60.md.",
+      "prerequisites": [
+        "neo-callvirt-il-target-residual"
+      ],
+      "dependsOn": [
+        "neo-callvirt-il-target-residual"
+      ],
+      "status": "done",
+      "capability": "neo-type-checks",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 60->55 (-5); GenericMethodTest9/15 + GenericStaticMethodTest19 + InheritanceTest06/18; stash-toggle airtight; NeoStep 397/0 (+3 probes); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; fresh grounding; unbox.any ref-type; RefOutNull2 progressed to stobj T cluster G)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1060,7 +1077,8 @@
     "neo-c10-list-index-residual",
     "neo-typed-opcode-reach-executer",
     "neo-float-arith-residual",
-    "neo-callvirt-il-target-residual"
+    "neo-callvirt-il-target-residual",
+    "neo-recluster-60"
   ],
   "surfacedFollowups": [
     {
@@ -1256,6 +1274,7 @@
     "fullSmokeAfterC10res": 69,
     "fullSmokeAfterTypedOp": 65,
     "fullSmokeAfterFloatArith": 63,
-    "fullSmokeAfterCvilt": 60
+    "fullSmokeAfterCvilt": 60,
+    "fullSmokeAfterRecluster60": 55
   }
 }

@@ -5442,6 +5442,33 @@ namespace ILRuntime.Runtime.Intepreter
                             case OpCodeREnum.Unbox_Any:
                                 dstRefOffset = ip->Operand3;
                                 t = AppDomain.GetType(ip->Operand);
+                                // Reference-type T (IL class / interface / CLR ref type):
+                                // `unbox.any` is semantically a reference copy (mirrors Legacy
+                                // ExecuteR AssignToRegister at Register.cs:4147-4150; a null
+                                // source is a no-op -> dest null, NOT a throw). Roslyn lowers
+                                // `(T)x` / `x as T` / generic returns on a generic type param T
+                                // as `unbox.any T` (valid for both ref and val T); without this
+                                // branch the value-type-only arm below throws InvalidCastException
+                                // (IL-class T) or NullReferenceException (null source). The
+                                // `!t.IsValueType` discriminator exactly mirrors Legacy's
+                                // `t.IsValueType` branch boundary, so every value-type / enum /
+                                // primitive path below is untouched. Reference-write convention
+                                // mirrors the Isinst/Castclass arms below (mStack[frameRefBase+
+                                // dstRefOffset], index in DstOffset, -1 for null).
+                                if (t != null && !t.IsValueType)
+                                {
+                                    srcIdx = *(int*)(frameBase + ip->SrcOffset);
+                                    obj = srcIdx >= 0 ? mStack[srcIdx] : null;
+                                    if (obj != null)
+                                    {
+                                        dstIdx = frameRefBase + dstRefOffset;
+                                        mStack[dstIdx] = obj;
+                                        *(int*)(frameBase + ip->DstOffset) = dstIdx;
+                                    }
+                                    else
+                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                    break;
+                                }
                                 srcIdx = *(int*)(frameBase + ip->SrcOffset);
                                 if (srcIdx < 0)
                                     throw new NullReferenceException();
