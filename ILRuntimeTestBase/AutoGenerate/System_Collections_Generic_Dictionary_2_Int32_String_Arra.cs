@@ -95,7 +95,7 @@ namespace ILRuntime.Runtime.Generated
             int __curPrim = 0;
             System.Collections.Generic.Dictionary<System.Int32, System.String[][]> instance_of_this_method = (System.Collections.Generic.Dictionary<System.Int32, System.String[][]>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
             var result_of_this_method = instance_of_this_method.GetEnumerator();
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(result_of_this_method.GetType()); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* GetEnumerator_1(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)

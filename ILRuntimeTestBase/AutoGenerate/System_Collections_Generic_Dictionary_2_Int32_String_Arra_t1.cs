@@ -99,10 +99,12 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator instance_of_this_method = default(System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator);
-            // TODO: ValueType instance in Neo
+            int __off_0 = __curPrim;
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator));
+            System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator instance_of_this_method = (System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator)ILIntepreter.ReadNeoValueType(typeof(System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator), __frameBase, ref __curPrim, __sz_0);
             var result_of_this_method = instance_of_this_method.Current;
-            // TODO: CLR value type return in reflection fallback: Step 13
+            ILIntepreter.WriteNeoValueType(instance_of_this_method, __frameBase + __off_0, __sz_0);
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(result_of_this_method.GetType()); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* get_Current_0(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)
@@ -130,9 +132,11 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator instance_of_this_method = default(System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator);
-            // TODO: ValueType instance in Neo
+            int __off_0 = __curPrim;
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator));
+            System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator instance_of_this_method = (System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator)ILIntepreter.ReadNeoValueType(typeof(System.Collections.Generic.Dictionary<System.Int32, System.String[][]>.Enumerator), __frameBase, ref __curPrim, __sz_0);
             var result_of_this_method = instance_of_this_method.MoveNext();
+            ILIntepreter.WriteNeoValueType(instance_of_this_method, __frameBase + __off_0, __sz_0);
             if (__retDst != null) *(int*)__retDst = result_of_this_method ? 1 : 0;
         }
 #else

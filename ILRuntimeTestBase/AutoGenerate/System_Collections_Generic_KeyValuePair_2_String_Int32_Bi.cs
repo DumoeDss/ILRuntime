@@ -92,9 +92,11 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Collections.Generic.KeyValuePair<System.String, System.Int32> instance_of_this_method = default(System.Collections.Generic.KeyValuePair<System.String, System.Int32>);
-            // TODO: ValueType instance in Neo
+            int __off_0 = __curPrim;
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Collections.Generic.KeyValuePair<System.String, System.Int32>));
+            System.Collections.Generic.KeyValuePair<System.String, System.Int32> instance_of_this_method = (System.Collections.Generic.KeyValuePair<System.String, System.Int32>)ILIntepreter.ReadNeoValueType(typeof(System.Collections.Generic.KeyValuePair<System.String, System.Int32>), __frameBase, ref __curPrim, __sz_0);
             var result_of_this_method = instance_of_this_method.Key;
+            ILIntepreter.WriteNeoValueType(instance_of_this_method, __frameBase + __off_0, __sz_0);
             if (__retDst != null)
             {
                 if (__retRefBase >= __mStack.Count)

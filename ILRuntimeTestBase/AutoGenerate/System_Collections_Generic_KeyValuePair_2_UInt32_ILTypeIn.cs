@@ -92,9 +92,11 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Collections.Generic.KeyValuePair<System.UInt32, ILRuntime.Runtime.Intepreter.ILTypeInstance> instance_of_this_method = default(System.Collections.Generic.KeyValuePair<System.UInt32, ILRuntime.Runtime.Intepreter.ILTypeInstance>);
-            // TODO: ValueType instance in Neo
+            int __off_0 = __curPrim;
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Collections.Generic.KeyValuePair<System.UInt32, ILRuntime.Runtime.Intepreter.ILTypeInstance>));
+            System.Collections.Generic.KeyValuePair<System.UInt32, ILRuntime.Runtime.Intepreter.ILTypeInstance> instance_of_this_method = (System.Collections.Generic.KeyValuePair<System.UInt32, ILRuntime.Runtime.Intepreter.ILTypeInstance>)ILIntepreter.ReadNeoValueType(typeof(System.Collections.Generic.KeyValuePair<System.UInt32, ILRuntime.Runtime.Intepreter.ILTypeInstance>), __frameBase, ref __curPrim, __sz_0);
             var result_of_this_method = instance_of_this_method.Key;
+            ILIntepreter.WriteNeoValueType(instance_of_this_method, __frameBase + __off_0, __sz_0);
             if (__retDst != null) *(uint*)__retDst = (uint)result_of_this_method;
         }
 #else

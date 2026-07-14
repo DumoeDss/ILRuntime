@@ -816,6 +816,23 @@
       "smoke": "FULL SMOKE 101->95 (-6); all 6 EnumTest residual green, 0 EnumTest failures remain; stash-toggle airtight; NeoStep 388/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; 3 roots pinned Neo-vs-Legacy; 0 EnumTest residual)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-nre-cluster-subclusters": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C16 NRE (PARTIAL, largest sub-cluster): Enumerator/KeyValuePair stale default-TODO stubs (child-28 class) -- MoveNext_1_Neo didnt read VT this -> zeroed enumerator -> NRE. Fix = hand-port ~32 stubs across 23 binding files (MoveNext/get_Current/GetEnumerator/KeyValuePair get_Key/get_Value ReadNeoValueType+write-back). No engine change. 6 flipped (largest sub-cluster 10, 4 progressed to secondary roots).",
+      "prerequisites": [
+        "neo-enum-cluster-residual"
+      ],
+      "dependsOn": [
+        "neo-enum-cluster-residual"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 95->89 (-6); GCTest.TestDicEnumerator + GenericTest + InheritanceTest24 + Test05.TestForEachTry/TestReturn + UnitTest_10034; stash-toggle airtight; NeoStep 388/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; stale-stub class; 6 flipped, 4 progressed reported; remaining NRE sub-clusters + 33 stale-TODO files reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -862,7 +879,8 @@
     "neo-lowerneoffsets-push-missing",
     "neo-clr-struct-newobj-retdest-null",
     "neo-callvirt-clr-struct-arg",
-    "neo-enum-cluster-residual"
+    "neo-enum-cluster-residual",
+    "neo-nre-cluster-subclusters"
   ],
   "surfacedFollowups": [
     {
@@ -1047,6 +1065,7 @@
     "fullSmokeAfterC14": 103,
     "fullSmokeAfterC7": 101,
     "fullSmokeAfterNewobj": 101,
-    "fullSmokeAfterC3": 95
+    "fullSmokeAfterC3": 95,
+    "fullSmokeAfterC16": 89
   }
 }

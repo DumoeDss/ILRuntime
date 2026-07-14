@@ -99,9 +99,11 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]> instance_of_this_method = default(System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>);
-            // TODO: ValueType instance in Neo
+            int __off_0 = __curPrim;
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>));
+            System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]> instance_of_this_method = (System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>)ILIntepreter.ReadNeoValueType(typeof(System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>), __frameBase, ref __curPrim, __sz_0);
             var result_of_this_method = instance_of_this_method.Key;
+            ILIntepreter.WriteNeoValueType(instance_of_this_method, __frameBase + __off_0, __sz_0);
             if (__retDst != null) *(int*)__retDst = (int)result_of_this_method;
         }
 #else
@@ -132,9 +134,11 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]> instance_of_this_method = default(System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>);
-            // TODO: ValueType instance in Neo
+            int __off_0 = __curPrim;
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>));
+            System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]> instance_of_this_method = (System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>)ILIntepreter.ReadNeoValueType(typeof(System.Collections.Generic.KeyValuePair<System.Int32, System.String[][]>), __frameBase, ref __curPrim, __sz_0);
             var result_of_this_method = instance_of_this_method.Value;
+            ILIntepreter.WriteNeoValueType(instance_of_this_method, __frameBase + __off_0, __sz_0);
             if (__retDst != null)
             {
                 if (__retRefBase >= __mStack.Count)
