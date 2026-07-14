@@ -2119,5 +2119,58 @@ namespace ILRuntime.Runtime.Enviorment
             else
                 return domain.GetType(type);
         }
+
+        // Neo redirect for System.Type.MakeGenericType(Type[]). Mirrors the Legacy
+        // CLRRedirections.TypeMakeGenericType (CLRRedirections.cs:2070). Under Neo the
+        // autogen MakeGenericType_4_Neo stub (System_Type_Binding.cs) calls the framework
+        // `instance.MakeGenericType(typeArgs)` directly. When the `this` or a type arg is
+        // an ILRuntimeType (an IL open-generic type, or an IL method's parameter type
+        // reached via reflection -- e.g. DelegateTest36's
+        // typeof(Action<>).MakeGenericType(parameterInfos[0].ParameterType) where the
+        // parameter type is an IL type), the base System.Type.MakeGenericType throws
+        // NotImplementedException "Derived classes must provide an implementation" (the
+        // runtime-Type override is missing on ILRuntimeType). The Legacy redirect routes
+        // through ToIType + MakeGenericInstance (the ILRuntime-internal generic
+        // construction, bypassing the framework call entirely) -- byte-identical logic is
+        // mirrored here. Registered on RedirectMapNeo in the AppDomain ctor
+        // (first-registered-wins, runs before the test-harness autogen
+        // System_Type_Binding.Register), preempting the broken stub (the recurring
+        // child-22/6/12 defect class -- same shape as EnumToObjectNeo / CreateInstanceNeo
+        // / InitializeArrayNeo).
+#if ENABLE_NEO_MODE
+        public unsafe static void TypeMakeGenericTypeNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            AppDomain domain = intp.AppDomain;
+            int curPrim = 0;
+            Type type = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            Type[] param = (Type[])ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            IType t = ToIType(type, domain);
+            if (!t.HasGenericParameter)
+                throw new NotSupportedException(string.Format("{0} is not a generic type", t.FullName));
+            object result;
+            ILType iltype = t as ILType;
+            if (iltype != null)
+            {
+                KeyValuePair<string, IType>[] arr = new KeyValuePair<string, IType>[iltype.TypeDefinition.GenericParameters.Count];
+                for (int i = 0; i < arr.Length; i++)
+                    arr[i] = new KeyValuePair<string, IType>(iltype.TypeDefinition.GenericParameters[i].Name, ToIType(param[i], domain));
+                result = t.MakeGenericInstance(arr).ReflectionType;
+            }
+            else
+            {
+                CLRType clrType = t as CLRType;
+                if (clrType != null)
+                {
+                    KeyValuePair<string, IType>[] arr = new KeyValuePair<string, IType>[param.Length];
+                    for (int i = 0; i < arr.Length; i++)
+                        arr[i] = new KeyValuePair<string, IType>("!", ToIType(param[i], domain));
+                    result = t.MakeGenericInstance(arr).ReflectionType;
+                }
+                else
+                    throw new NotImplementedException();
+            }
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+#endif
     }
 }

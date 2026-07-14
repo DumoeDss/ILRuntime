@@ -1207,3 +1207,56 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   field float read, null-slot seed). Legacy-neutral (probes + StructTest7 + UnitTest_10051 all PASS
   under plain Debug+useRegister=true). Files: `ILIntepreter.Neo.cs` (raw Stfld + raw Ldfld VT-owner
   arms), new `TestCases/NeoStepIlInstanceClrStructFieldTest.cs`. Capability = `neo-value-types`.
+
+## neo-remaining-34-batch DONE (2026-07-15) -- durable findings
+- **The full Neo smoke is now 33 (was 38 at recluster-38 start, 34 at this child start).** Fresh
+  grounding: 932 ran / 33 failed / 20 ignored / 7 todos (exit 127 = known graceful Dict-NRE crash;
+  summary emitted). NeoStep 398/0. Legacy (plain Debug) build VERIFIED clean (Legacy-neutral). Full
+  per-test classification + pinned deep-root table at
+  `rasen/changes/neo-overhaul/handoff/fullsmoke-ground-34-postfix.md`.
+- **Only 1 clean quick-win existed in the 34: TypeMakeGenericTypeNeo (missing-Neo-redirect,
+  DelegateTest36).** It is the ONLY Legacy redirect in AppDomain.cs without a Neo twin that maps to
+  a failing test (MethodInfoInvoke has no Neo twin too, but its IL-method execution path is
+  non-trivial -> deferred). The other 33 survivors are distinct DEEP roots: delegate dispatch
+  (Step-19, x3 single-root), long-literal/widened-temp call-marshalling, nested-ldflda-on-byref
+  (x3, known deferred), IL-type-bridge autogen stubs (no Legacy twin), byref out-STRUCT, raw
+  ldfld.i4/stfld.ref collection-struct, reflection, reference-arg aliasing, hotfix Neo-bridge
+  field-index, + a grab-bag of test-internal throw-assertions (Neo.cs:6862). LESSON: the wave has
+  exhausted the mechanical quick-win surface; further gains need per-root deep children.
+- **PINNED: long-literal/widened-temp call-marshalling bug (UnitTest_1020).** Caller JIT for
+  `UnitTest_1020Sub(20176515, 2400000000)` (both long) is `ldc.i4 20176515; conv.i8` + `ldc.i4
+  -1894967296(=0x8F0D1800); conv.u8` (Roslyn lowers a uint->ulong literal to ldc.i4 + conv.u8).
+  Legacy prints `maxExp:2400000000,exp:20176515` and PASSES; Neo prints `maxExp:0,exp:0` (BOTH
+  long args arrive as 0) and FAILS. The IL-to-IL call reads the HIGH dword (offset+4) of each
+  8-byte long arg, OR a conv-widened (4->8 byte) temp's frame slot is sized 4 (ldc.i4) so the 8-byte
+  conv write overflows/mis-offsets. (Side note: Neo `ReadConvU8` I4 case does `(ulong)*(int*)` =
+  sign-extend; ECMA conv.u8 zero-extends -> matches Legacy -- but exp also =0 so the dominant bug is
+  the call-marshalling/slot-sizing of widened long temps, NOT conv alone.) Re-audit whether this is
+  broad (any >int32 long literal / any widened temp) before scoping the fix child.
+- **PINNED: reference-arg aliasing on a plain Call (UnitTest_TestInline01).** `object obj=...;
+  Sub(obj); if(obj==null) throw` where `Sub(object o){ o=null; }`. The callee nullifying its local
+  also nullifies the caller's obj -> by-ref aliasing instead of by-value copy. Same defect CLASS as
+  child-13 (newobj arg aliasing) but on a plain Call; child-13 fixed only the newobj dest/arg case.
+- **PINNED: delegate-dispatch `this`/arg marshal (DelegateExtTest01/02 + DelegateTest01, x3
+  identical, single root).** A delegate wrapping an extension method `IntTest(this DelegateExtObj
+  obj, int)` on an IL class: on invoke the bound `this` (ILTypeInstance) is marshalled so the
+  callee's `obj` slot holds a boxed `System.Int32` (the field-0 value) -> `obj.AddValue` ->
+  `this.Value` ldfld.i4 -> GetNeoILInstance sees `mStack[idx] is Int32` -> Step-17/13b NIE. Highest-
+  coverage single root (3 tests) in the 33; Step-19 delegate-invoke arg-marshalling.
+- **PINNED: `typeof(<genericparam>)` resolution bug (TestGenericMethod2).** Tried + REVERTED a
+  ConvertChangeTypeNeo redirect (unwrapped ILRuntimeType -> ILType.TypeForCLR). It made line 167
+  `Convert.ChangeType("123", typeof(A))` (A=int) PASS but line 168 `typeof(B)` (B=double) threw
+  FormatException parsing "345.678" as Int32. So `typeof(<genericparam>)` under Neo returns an
+  ILRuntimeType whose `ILType.TypeForCLR` resolves BOTH A and B to int (B=double mis-resolved). The
+  real root is the generic-param TypeForCLR, not a ChangeType unwrap. A ChangeType redirect alone
+  CANNOT fix this; candidate child = typeof(generic-param) resolution (likely broader than ChangeType).
+- **Gotcha reaffirmed: a Neo redirect method that calls ReadNeoReference MUST be `#if
+  ENABLE_NEO_MODE`-gated** (ReadNeoReference lives in ILIntepreter.Neo.cs which is file-gated). The
+  existing `#if ENABLE_NEO_MODE` block in CLRRedirections.cs spans ONLY lines ~506-1042 (EnumToObjectNeo
+  etc.); redirects added AFTER ToIType (e.g. a new twin near the Legacy method) are OUTSIDE that
+  block and must carry their own `#if ENABLE_NEO_MODE` / `#endif` or they break the plain-Debug
+  (Legacy) build. Always `dotnet build ILRuntimeTestCLI -c Debug` to verify Legacy-neutral.
+- **Files this child (NOT committed, LEAD commits):** `ILRuntime/Runtime/Enviorment/CLRRedirections.cs`
+  (+TypeMakeGenericTypeNeo, gated), `ILRuntime/Runtime/Enviorment/AppDomain.cs` (+1 Neo registration,
+  gated), `rasen/changes/neo-overhaul/handoff/fullsmoke-ground-34-postfix.md` (deep-root table),
+  `rasen/changes/neo-remaining-34-batch/ship-log.md`.

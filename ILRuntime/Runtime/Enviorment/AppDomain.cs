@@ -294,6 +294,18 @@ namespace ILRuntime.Runtime.Enviorment
             RegisterCLRMethodRedirection(mi, CLRRedirections.GetTypeFromHandle);
             mi = typeof(System.Type).GetMethod("MakeGenericType");
             RegisterCLRMethodRedirection(mi, CLRRedirections.TypeMakeGenericType);
+#if ENABLE_NEO_MODE
+            // neo-remaining-34 (missing-Neo-redirect): Neo dispatch consults
+            // RedirectMapNeo exclusively. Without a Neo entry the autogen
+            // MakeGenericType_4_Neo stub calls the framework
+            // ILRuntimeType.MakeGenericType directly -> NotImplementedException
+            // "Derived classes must provide an implementation" whenever the `this`
+            // or a type arg is an IL type (DelegateTest36). First-registered-wins
+            // (this ctor runs before the test-harness System_Type_Binding.Register),
+            // preempting the broken stub -- same pattern as EnumToObjectNeo /
+            // CreateInstanceNeo / InitializeArrayNeo.
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.TypeMakeGenericTypeNeo);
+#endif
             mi = typeof(object).GetMethod("GetType");
             RegisterCLRMethodRedirection(mi, CLRRedirections.ObjectGetType);
 #if ENABLE_NEO_MODE

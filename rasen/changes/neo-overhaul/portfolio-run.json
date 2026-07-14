@@ -1156,6 +1156,23 @@
       "smoke": "FULL SMOKE 35->34 (-1, GenericsRefOut2); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; Constrained arm owns-dispatch; Legacy pass-through divergence)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-remaining-34-batch": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 remaining-34 batch (1 quick-win + report). TypeMakeGenericType Neo redirect (DelegateTest36) -- last missing-Neo-twin. The rest 33 are distinct deep roots (mechanical surface exhausted). Deep-root table D1-D11 written to fullsmoke-ground-34-postfix.md.",
+      "prerequisites": [
+        "neo-constrained-callvirt-residual"
+      ],
+      "dependsOn": [
+        "neo-constrained-callvirt-residual"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 34->33 (-1, DelegateTest36); NeoStep 398/0; Legacy-neutral; ConvertChangeType reverted (deeper typeof-genericparam bug)",
+      "review": "APPROVE (LEAD non-author; mechanical surface exhausted; D1-D11 deep table)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1222,7 +1239,8 @@
     "neo-hotfix-patched-il-execute",
     "neo-interface-callvirt-cluster-c",
     "neo-recluster-38",
-    "neo-constrained-callvirt-residual"
+    "neo-constrained-callvirt-residual",
+    "neo-remaining-34-batch"
   ],
   "surfacedFollowups": [
     {
@@ -1427,6 +1445,7 @@
     "fullSmokeAfterClusterH": 42,
     "fullSmokeAfterClusterC": 38,
     "fullSmokeAfterR38": 35,
-    "fullSmokeAfterConstrained": 34
+    "fullSmokeAfterConstrained": 34,
+    "fullSmokeAfterR34batch": 33
   }
 }
