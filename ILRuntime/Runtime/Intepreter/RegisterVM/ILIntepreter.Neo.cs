@@ -6372,7 +6372,50 @@ namespace ILRuntime.Runtime.Intepreter
                                     ilType = t as ILType;
                                     int primSize = ilType != null ? ilType.TotalPrimitiveSize : AppDomain.GetPrimitiveSize(t);
                                     int refCount = ilType != null ? ilType.TotalReferenceCount : 0;
-                                    if (objIdx == -1)
+                                    if (t != null && !t.IsValueType)
+                                    {
+                                        // stobj of a reference-type T is a REFERENCE STORE through the
+                                        // dest byref -- the dest byref semantics are identical to Stind_Ref
+                                        // (a managed pointer to a reference slot). Mirror the Stind_Ref
+                                        // dispatch exactly: frame-native (objIdx==-1) writes the mStack
+                                        // index into the slot's primitive bytes; the F-10/F-7B bit-30 flag
+                                        // means objIdx IS the reference slot (write directly); a CLR array /
+                                        // CLR object / IL-instance (incl. ILTypeStaticInstance, which derives
+                                        // from ILTypeInstance) target writes through ManagedObjects/SetValue/
+                                        // the field-hash accessor. Source = the mStack index at ip->SrcOffset
+                                        // (-1 = null). Covers `obj = new T()` / `res = expr` into a ref/out
+                                        // param, a static reference field, or a heap IL reference field.
+                                        // (Legacy parity: ExecuteR Stobj StackObjectReference/StaticFieldReference
+                                        // reference-store branches.)
+                                        int stRefVIdx = *(int*)(frameBase + ip->SrcOffset);
+                                        object stRefVal = stRefVIdx >= 0 ? mStack[stRefVIdx] : null;
+                                        if (objIdx == -1)
+                                        {
+                                            *(int*)(frameBase + off) = stRefVIdx;
+                                        }
+                                        else if ((off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+                                        {
+                                            mStack[objIdx] = stRefVal;
+                                        }
+                                        else if (mStack[objIdx] is Array stRefArr)
+                                        {
+                                            stRefArr.SetValue(stRefVal, off);
+                                        }
+                                        else if (NeoIsClrObject(mStack, objIdx))
+                                        {
+                                            NeoWriteClrObjectField(AppDomain, mStack[objIdx], off, stRefVal);
+                                        }
+                                        else if (mStack[objIdx] is ILTypeInstance stRefIns)
+                                        {
+                                            stRefIns.ManagedObjects[off] = stRefVal;
+                                        }
+                                        else
+                                        {
+                                            throw new NotImplementedException(
+                                                "Step 17: stobj of a reference-type T on an unsupported byref shape (not frame-native / caller-owned-slot / CLR-array / CLR-object / IL-instance-ref-field)");
+                                        }
+                                    }
+                                    else if (objIdx == -1)
                                     {
                                         Unsafe.CopyBlock(frameBase + off, frameBase + ip->SrcOffset, (uint)primSize);
                                         // Step 17 (b) (neo-step17-stobj-refloop): a value type
@@ -6490,7 +6533,56 @@ namespace ILRuntime.Runtime.Intepreter
                                     ilType = t as ILType;
                                     int primSize = ilType != null ? ilType.TotalPrimitiveSize : AppDomain.GetPrimitiveSize(t);
                                     int refCount = ilType != null ? ilType.TotalReferenceCount : 0;
-                                    if (objIdx == -1)
+                                    if (t != null && !t.IsValueType)
+                                    {
+                                        // ldobj of a reference-type T is a REFERENCE LOAD through the
+                                        // source byref -- identical byref semantics to Ldind_Ref (a
+                                        // managed pointer to a reference slot). Mirror the Ldind_Ref
+                                        // dispatch: read the referent and materialize it into the dest
+                                        // ref slot (Operand3 IS stamped for ldobj by LowerNeoOffsets,
+                                        // same case as Ldind_Ref). Covers `return dest`/`x = refParam`
+                                        // in generic code where T is a reference type (Roslyn emits
+                                        // `ldobj T`, not `ldind.ref`, for a generic-byref load).
+                                        // (Legacy parity: ExecuteR Ldobj StackObjectReference ->
+                                        // CopyToRegister(dest, resolveReference).)
+                                        object ldRefElem = null; bool ldRefHas = false;
+                                        if (objIdx == -1)
+                                        {
+                                            int ldRefSrcIdx = *(int*)(frameBase + off);
+                                            ldRefHas = ldRefSrcIdx >= 0;
+                                            if (ldRefHas) ldRefElem = mStack[ldRefSrcIdx];
+                                        }
+                                        else if ((off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+                                        {
+                                            ldRefElem = mStack[objIdx]; ldRefHas = true;
+                                        }
+                                        else if (mStack[objIdx] is Array ldRefArr)
+                                        {
+                                            ldRefElem = ldRefArr.GetValue(off); ldRefHas = true;
+                                        }
+                                        else if (NeoIsClrObject(mStack, objIdx))
+                                        {
+                                            ldRefElem = NeoReadClrObjectField(AppDomain, mStack[objIdx], off); ldRefHas = true;
+                                        }
+                                        else if (mStack[objIdx] is ILTypeInstance ldRefIns)
+                                        {
+                                            ldRefElem = ldRefIns.ManagedObjects[off]; ldRefHas = true;
+                                        }
+                                        else
+                                        {
+                                            throw new NotImplementedException(
+                                                "Step 17: ldobj of a reference-type T on an unsupported byref shape (not frame-native / caller-owned-slot / CLR-array / CLR-object / IL-instance-ref-field)");
+                                        }
+                                        if (ldRefHas && ldRefElem != null)
+                                        {
+                                            int ldRefDst = frameRefBase + ip->Operand3;
+                                            mStack[ldRefDst] = ldRefElem;
+                                            *(int*)(frameBase + ip->DstOffset) = ldRefDst;
+                                        }
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
+                                    }
+                                    else if (objIdx == -1)
                                     {
                                         Unsafe.CopyBlock(frameBase + ip->DstOffset, frameBase + off, (uint)primSize);
                                         // Step 17 (b) (neo-step17-stobj-refloop): mirror of the
@@ -6621,11 +6713,29 @@ namespace ILRuntime.Runtime.Intepreter
                                     {
                                         ILTypeInstance elem = ilArr[elementIdx];
                                         if (elem == null)
-                                            throw new NullReferenceException();
-                                        int elemMStackIdx = mStack.Count;
-                                        mStack.Add(elem);
-                                        *(int*)(frameBase + ip->DstOffset + 0) = elemMStackIdx;
-                                        *(int*)(frameBase + ip->DstOffset + 4) = 0;
+                                        {
+                                            // A null IL-class array element is a LEGAL byref target
+                                            // for an `out arr[i]` / `ref arr[i]` param (the callee
+                                            // WRITES the element; the initial null is expected). Emit
+                                            // the (arrIdx, elementIdx) array-element byref -- the SAME
+                                            // encoding the CLR-array `else` branch below uses -- so the
+                                            // consumer's `mStack[arrIdx] is Array` arms (stind_ref /
+                                            // stobj / ldind_ref / NeoMarshalByrefFieldToSlot) read
+                                            // (GetValue -> null -> -1) and write-back (SetValue) the
+                                            // element correctly. (Throwing NRE here broke
+                                            // `dict.TryGetValue(k, out arr[i])` on a freshly-allocated
+                                            // array.) For a non-null element, keep the materialize-for-
+                                            // read path (unchanged).
+                                            *(int*)(frameBase + ip->DstOffset + 0) = arrIdx;
+                                            *(int*)(frameBase + ip->DstOffset + 4) = elementIdx;
+                                        }
+                                        else
+                                        {
+                                            int elemMStackIdx = mStack.Count;
+                                            mStack.Add(elem);
+                                            *(int*)(frameBase + ip->DstOffset + 0) = elemMStackIdx;
+                                            *(int*)(frameBase + ip->DstOffset + 4) = 0;
+                                        }
                                     }
                                     else
                                     {

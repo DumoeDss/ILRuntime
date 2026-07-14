@@ -1071,6 +1071,23 @@
       "smoke": "FULL SMOKE 51->48 (-3); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; producer-seeding class; 6 E-remaining distinct roots reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-ldind-stobj-cluster-g": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-60 cluster G (PARTIAL, largest sub-cluster): stobj/ldobj of a reference-type T is a reference store/load (same semantics as Stind_Ref/Ldind_Ref) but Neo arms only had value-type copy -> NRE/corruption. Fix = Stobj/Ldobj reference-type branch (mirror Stind_Ref/Ldind_Ref) + ldelema null-IL-class-element byref. RefOutNull2 + ArrayReferenceTest.",
+      "prerequisites": [
+        "neo-raw-ldfld-stfld-cluster-e"
+      ],
+      "dependsOn": [
+        "neo-raw-ldfld-stfld-cluster-e"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 48->46 (-2); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; stobj/ldobj ref-type; 4 G-remaining distinct roots reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1132,7 +1149,8 @@
     "neo-recluster-60",
     "neo-autogen-binding-invoke",
     "neo-jit-generic-method-specialization",
-    "neo-raw-ldfld-stfld-cluster-e"
+    "neo-raw-ldfld-stfld-cluster-e",
+    "neo-ldind-stobj-cluster-g"
   ],
   "surfacedFollowups": [
     {
@@ -1332,6 +1350,7 @@
     "fullSmokeAfterRecluster60": 55,
     "fullSmokeAfterDbinding": 54,
     "fullSmokeAfterJitGen": 51,
-    "fullSmokeAfterClusterE": 48
+    "fullSmokeAfterClusterE": 48,
+    "fullSmokeAfterClusterG": 46
   }
 }
