@@ -344,10 +344,45 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         if (op.Operand2 == 1) continue;
                         field = PatchField.Operand;
                         break;
+                    // T-qualified Call/Callvirt method-token. The method hash lives
+                    // in Operand2 (InitializeFunctionParam: m.GetHashCode() when the
+                    // token is generic-param-bearing / "invalid", else token.GetHashCode
+                    // ()). A generic-method call whose generic arg is a method-generic-
+                    // param T (e.g. LoadAsset<T> from inside CLRBindingTest06Sub<T>)
+                    // resolves to a T-dependent hash, so the cloned template body MUST
+                    // re-emit it per instance. Without this patch, HasIdentityToken()
+                    // returns false for an otherwise token-free body -> TryInstantiate
+                    // wrongfully ref-shares the capture-T body across all all-ref
+                    // instantiations -> wrong-type CLR dispatch (CLRBindingTest07/08:
+                    // LoadAsset<TestCLRBinding> served for <String>/<Int32> callers).
+                    // Skip the trailing callvirt of a constrained pair: the Constrained
+                    // case above already recorded its Operand2 patch from the pre-
+                    // captured (reliable) Cecil pair, and this op's symbol may be
+                    // scrambled (BLOCKER-1) -> would overwrite the correct token.
+                    case OpCodeREnum.Call:
+                    case OpCodeREnum.Callvirt:
+                    case OpCodeREnum.Callvirt_IL:
+                    case OpCodeREnum.Callvirt_CLR:
+                    case OpCodeREnum.Call_Redirect:
+                        if (i > 0 && body[i - 1].Code == OpCodeREnum.Constrained)
+                            continue;
+                        if (!template.Symbols.TryGetValue(i, out var symCall))
+                            continue;
+                        var callToken = symCall.Instruction.Operand;
+                        if (callToken == null) continue;
+                        if (!HasGenericParameter(callToken)) continue;  // T-invariant -> no patch
+                        patches.Add(new PatchEntry
+                        {
+                            InstrIdx = i,
+                            Field = PatchField.Operand2,
+                            Kind = PatchKind.MethodToken,
+                            GenericParamIdx = ResolveGenericParamIdx(callToken, def),
+                            CecilToken = callToken,
+                        });
+                        continue;
                     // Ldelem_Any / Stelem_Any carry no element-type token in this
                     // JIT (the array kind is on the Newarr); Initobj prefix is
-                    // rebuilt. T-qualified Call/Callvirt (MethodToken) is not
-                    // exercised by the Step-22 V1 matrix and is deferred.
+                    // rebuilt.
                     default:
                         continue;
                 }
@@ -647,15 +682,38 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 {
                     var pe = patches[p];
                     if (pe.CecilToken == null) continue;
-                    int newHash = pe.Kind == PatchKind.MethodToken
-                        ? GetMethodTokenHash(appdomain, declaringType, instance, pe.CecilToken)
-                        : instance.GetTypeTokenHashCode(pe.CecilToken);
                     int idx = pe.InstrIdx;
-                    switch (pe.Field)
+                    if (pe.Kind == PatchKind.MethodToken)
                     {
-                        case PatchField.Operand: body[idx].Operand = newHash; break;
-                        case PatchField.Operand2: body[idx].Operand2 = newHash; break;
-                        case PatchField.Operand4: body[idx].Operand4 = newHash; break;
+                        // Reliability cross-check: the call body op's symbol can be
+                        // STALE after inlining (the inliner removes an inlined call
+                        // but leaves its Cecil instruction linked at a body index
+                        // that now holds a DIFFERENT call). If pe.CecilToken (from
+                        // the symbol) re-resolves to a method whose Name differs
+                        // from the body op's CURRENT method (body[idx].Operand2 is
+                        // the reliable capture-T hash), the symbol was scrambled ->
+                        // SKIP the patch (keep the capture-T hash; identical to the
+                        // token-free ref-share semantics). Without this guard the
+                        // patch corrupts the wrong call's Operand2 (e.g. an inlined-
+                        // away Output<T> token stamped onto an ACallback::Invoke
+                        // callvirt -> wrong pCnt -> LowerNeoOffsets OOB).
+                        var currentMethod = appdomain.GetMethod(body[idx].Operand2);
+                        var resolvedMethod = appdomain.GetMethod(pe.CecilToken, declaringType, instance, out _);
+                        if (currentMethod != null && resolvedMethod != null
+                            && currentMethod.Name != resolvedMethod.Name)
+                            continue;
+                        int mh = GetMethodTokenHash(appdomain, declaringType, instance, pe.CecilToken);
+                        body[idx].Operand2 = mh;
+                    }
+                    else
+                    {
+                        int newHash = instance.GetTypeTokenHashCode(pe.CecilToken);
+                        switch (pe.Field)
+                        {
+                            case PatchField.Operand: body[idx].Operand = newHash; break;
+                            case PatchField.Operand2: body[idx].Operand2 = newHash; break;
+                            case PatchField.Operand4: body[idx].Operand4 = newHash; break;
+                        }
                     }
                 }
             }

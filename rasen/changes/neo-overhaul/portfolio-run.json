@@ -1037,6 +1037,23 @@
       "smoke": "FULL SMOKE 55->54 (-1, UnitTest_RefCLREnum); stash-toggle airtight; NeoStep 398/0 (+1 probe); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; byref-enum box; multi-root honesty)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-jit-generic-method-specialization": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 D-root: Step-22 V1 matrix DEFERRED Call/Callvirt MethodToken case in GenericMethodTemplate.ExtractPatches -> a generic method whose only T-identity site is a T-qualified call had HasIdentityToken==false -> TryInstantiate wrongfully ref-shared capture-T body (order-dependent: full-smoke FAIL, isolation PASS). Fix = ExtractPatches Call cases + DoCloneAndPatch inlining-stale-symbol Name cross-check (avoid Output<T>->ACallback regression).",
+      "prerequisites": [
+        "neo-autogen-binding-invoke"
+      ],
+      "dependsOn": [
+        "neo-autogen-binding-invoke"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 54->51 (-3); CLRBindingTest07/08 + bonus JsonTest9; stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; Step-22 deferred case; ref-share-order-dependence pinned; inlining-stale-symbol cross-check self-caught regression)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1096,7 +1113,8 @@
     "neo-float-arith-residual",
     "neo-callvirt-il-target-residual",
     "neo-recluster-60",
-    "neo-autogen-binding-invoke"
+    "neo-autogen-binding-invoke",
+    "neo-jit-generic-method-specialization"
   ],
   "surfacedFollowups": [
     {
@@ -1294,6 +1312,7 @@
     "fullSmokeAfterFloatArith": 63,
     "fullSmokeAfterCvilt": 60,
     "fullSmokeAfterRecluster60": 55,
-    "fullSmokeAfterDbinding": 54
+    "fullSmokeAfterDbinding": 54,
+    "fullSmokeAfterJitGen": 51
   }
 }
