@@ -2228,10 +2228,41 @@ namespace ILRuntime.Runtime.Intepreter
                                         object containingObj = (objIdx >= 0 && objIdx < mStack.Count) ? mStack[objIdx] : null;
                                         object boxedStruct;
                                         bool nestedIsF10 = false;
+                                        // neo-ldsflda-clr-static-struct: when the containing origin
+                                        // is a CLR STATIC struct field (ldsflda), the box must be
+                                        // written back to that static field after the inner-field
+                                        // mutation (the nested-`+=` write-back path).
+                                        bool nestedIsClrStatic = false;
+                                        CLRType nestedClrStaticType = null;
+                                        int nestedClrStaticFieldHash = 0;
                                         // CRITICAL (soundness, mirrors child F-10 / child-27):
                                         // TYPE check FIRST, not the F-10 flag -- a CLR-object
                                         // owner's structFieldOff is the struct field's
                                         // FieldInfo.GetHashCode() which can have the flag bit set.
+                                        if (containingObj is NeoClrStaticFieldAddr saNest)
+                                        {
+                                            // neo-ldsflda-clr-static-struct (nested): the outer byref
+                                            // came from `ldsflda <CLR static struct field>`. Read the
+                                            // current boxed struct via the static field; seed a default
+                                            // box on null. The descriptor's write-back
+                                            // (WriteNeoNestedInnerField, IsClrStatic) mutates the box
+                                            // via f.SetValue (in place) + SetStaticFieldValue ->
+                                            // persistent.
+                                            nestedIsClrStatic = true;
+                                            nestedClrStaticType = saNest.ClrType;
+                                            nestedClrStaticFieldHash = saNest.FieldHash;
+                                            boxedStruct = saNest.ClrType.GetFieldValue(saNest.FieldHash, null);
+                                            if (boxedStruct == null)
+                                            {
+                                                var innerDeclType = AppDomain.GetType(ip->Operand);
+                                                if (innerDeclType == null)
+                                                    throw new NotImplementedException("Neo nested ldflda (CLR static): inner declaring type not resolved for hash 0x" + ip->Operand.ToString("X"));
+                                                boxedStruct = System.Activator.CreateInstance(innerDeclType.TypeForCLR);
+                                                saNest.ClrType.SetStaticFieldValue(saNest.FieldHash, boxedStruct);
+                                            }
+                                        }
+                                        else
+                                        {
                                         ILTypeInstance nestedIl = containingObj as ILTypeInstance;
                                         if (nestedIl == null && containingObj is CrossBindingAdaptorType cbat)
                                             nestedIl = cbat.ILInstance;
@@ -2279,6 +2310,7 @@ namespace ILRuntime.Runtime.Intepreter
                                                 throw new NullReferenceException();
                                             boxedStruct = NeoReadClrObjectField(AppDomain, containingObj, structFieldOff);
                                         }
+                                        }
                                         // Build a SELF-DESCRIBING descriptor and push it onto mStack.
                                         // The ldind/stind arms recognize `mStack[objIdx] is
                                         // NeoNestedFieldAddr` BEFORE their existing branches and
@@ -2298,6 +2330,9 @@ namespace ILRuntime.Runtime.Intepreter
                                             InnerDeclTypeHash = ip->Operand,
                                             BoxedStruct = boxedStruct,
                                             IsF10 = nestedIsF10,
+                                            IsClrStatic = nestedIsClrStatic,
+                                            ClrStaticType = nestedClrStaticType,
+                                            ClrStaticFieldHash = nestedClrStaticFieldHash,
                                         };
                                         mStack.Add(nestedAddr);
                                         int nestedTempIdx = mStack.Count - 1;
@@ -4514,7 +4549,22 @@ namespace ILRuntime.Runtime.Intepreter
                                     object fldVal;
                                     if (ct.TypeForCLR.IsValueType)
                                     {
-                                        if ((ip->Operand4 & JITCompiler.NeoRawLdfldArrayElementByRefMarker) != 0)
+                                        int csObjIdx = *(int*)(frameBase + ownerOff);
+                                        if (csObjIdx >= 0 && csObjIdx < mStack.Count && mStack[csObjIdx] is NeoClrStaticFieldAddr saLd)
+                                        {
+                                            // neo-ldsflda-clr-static-struct (READ): the owner byref
+                                            // came from `ldsflda <CLR static struct field>`. Read the
+                                            // current boxed struct via the static field, reflection-
+                                            // read the leaf field (f from this Ldfld's OperandLong).
+                                            // A null static field yields the field default via a
+                                            // seeded default struct (read-only). The existing dest
+                                            // marshalling below handles fldVal by category.
+                                            object boxedStruct = saLd.ClrType.GetFieldValue(saLd.FieldHash, null);
+                                            if (boxedStruct == null)
+                                                boxedStruct = System.Activator.CreateInstance(ct.TypeForCLR);
+                                            fldVal = f.GetValue(boxedStruct);
+                                        }
+                                        else if ((ip->Operand4 & JITCompiler.NeoRawLdfldArrayElementByRefMarker) != 0)
                                         {
                                             // neo-raw-ldfld-array-element: CLR-struct ARRAY ELEMENT
                                             // owner. The owner slot holds the ldelema-produced 8-byte
@@ -4823,7 +4873,24 @@ namespace ILRuntime.Runtime.Intepreter
                                         // tagged NIE (not the Step-6 default).
                                         int objIdx = *(int*)(frameBase + ownerOff);
                                         int off = *(int*)(frameBase + ownerOff + 4);
-                                        if (objIdx == -1)
+                                        if (objIdx >= 0 && objIdx < mStack.Count && mStack[objIdx] is NeoClrStaticFieldAddr saSt)
+                                        {
+                                            // neo-ldsflda-clr-static-struct (WRITE): the owner byref
+                                            // came from `ldsflda <CLR static struct field>`. Read the
+                                            // current boxed struct via the static field, reflection-
+                                            // write the leaf field (f from this Stfld's OperandLong),
+                                            // write the mutated box back to the static field.
+                                            // FieldInfo.SetValue on a boxed value type mutates it in
+                                            // place (child-27/29 precedent). `value` is already boxed
+                                            // by field category above. A null static field is seeded
+                                            // with a default struct.
+                                            object boxedStruct = saSt.ClrType.GetFieldValue(saSt.FieldHash, null);
+                                            if (boxedStruct == null)
+                                                boxedStruct = System.Activator.CreateInstance(ct.TypeForCLR);
+                                            f.SetValue(boxedStruct, value);
+                                            saSt.ClrType.SetStaticFieldValue(saSt.FieldHash, boxedStruct);
+                                        }
+                                        else if (objIdx == -1)
                                         {
                                             int ownerSz = Optimizer.GetNeoValueTypeManagedSize(ct.TypeForCLR);
                                             int cur = off;
@@ -5419,13 +5486,28 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        // CLR static field: no heap object to address
-                                        // (FieldInfo.GetValue/SetValue null), so the existing
-                                        // (objIdx, off) object-field consumers cannot resolve
-                                        // it. Defer with a tagged NIE (distinct from the Step-
-                                        // 6 default) unless a future follow-up adds a
-                                        // dedicated static-field byref sentinel + consumer arm.
-                                        throw new NotImplementedException("Neo Ldsflda: CLR static field address deferred (follow-up)");
+                                        // neo-ldsflda-clr-static-struct: a CLR STATIC struct
+                                        // field (e.g. `static TestStruct instance`) has no heap
+                                        // object to address (FieldInfo.GetValue/SetValue null).
+                                        // Materialize a self-describing NeoClrStaticFieldAddr
+                                        // descriptor onto mStack + emit byref (mStackIdx, 0).
+                                        // The raw Stfld/Ldfld VT-owner arms + the nested ldflda
+                                        // branch recognize `mStack[objIdx] is NeoClrStaticFieldAddr`
+                                        // BEFORE their existing branches and do box/read (Ldfld)
+                                        // + box/mutate/unbox WITH write-back to the static field
+                                        // via CLRType.GetFieldValue/SetStaticFieldValue. A NEW
+                                        // mStack type -> collision-free, NO JIT marker. off
+                                        // (dst+4) is unused (the field identity lives in the
+                                        // descriptor). Scoped to a CLR-struct (value-type) static
+                                        // field (the tested shape); a non-VT CLR static ldsflda
+                                        // has no live test -> fail-loud below.
+                                        var ldaCt = ldaDeclType as CLRType;
+                                        if (ldaCt == null)
+                                            throw new NotImplementedException("Neo Ldsflda: CLR static field on a non-CLRType not supported. Type " + ldaDeclType.FullName);
+                                        var ldaSa = new NeoClrStaticFieldAddr { ClrType = ldaCt, FieldHash = (int)ip->OperandLong };
+                                        mStack.Add(ldaSa);
+                                        *(int*)(frameBase + ldaDstOff + 0) = mStack.Count - 1;
+                                        *(int*)(frameBase + ldaDstOff + 4) = 0;
                                     }
                                 }
                                 break;
@@ -7581,6 +7663,30 @@ namespace ILRuntime.Runtime.Intepreter
             public int InnerDeclTypeHash;   // declaring-type hash of the inner field (the struct CLRType)
             public object BoxedStruct;      // the materialized boxed struct (read / mutated in place)
             public bool IsF10;              // IL-instance owner -> write back to ManagedObjects[refOff]
+            // neo-ldsflda-clr-static-struct: when the containing origin is a CLR
+            // STATIC struct field (ldsflda), the box must be written back to that
+            // static field after an inner-field mutation (stind += shape). The
+            // nested-ldflda branch sets IsClrStatic + the static-field identity.
+            public bool IsClrStatic;
+            public CLRType ClrStaticType;
+            public int ClrStaticFieldHash;
+        }
+
+        // neo-ldsflda-clr-static-struct: a self-describing byref for a CLR STATIC
+        // struct field (`static TestStruct instance; ... instance.value = 222`).
+        // Produced by the Ldsflda CLR-static branch (pushed onto mStack; the byref
+        // is (mStackIdx, 0)). Consumed by the raw Stfld/Ldfld VT-owner arms + the
+        // nested ldflda branch via a `mStack[objIdx] is NeoClrStaticFieldAddr`
+        // content check BEFORE their existing branches (a NEW mStack type ->
+        // collision-free, NO JIT marker needed, mirror of NeoNestedFieldAddr).
+        // The consumers do box/read (Ldfld) and box/mutate/unbox WITH write-back
+        // to the static field via CLRType.GetFieldValue/SetStaticFieldValue (the
+        // SAME accessors the Stsfld/Ldsfeld CLR-static arms use). Reclaimed with
+        // the frame (lives on mStack -- no process-static leak). Neo-only.
+        sealed class NeoClrStaticFieldAddr
+        {
+            public CLRType ClrType;    // the declaring CLR type
+            public int FieldHash;      // the static field hash (low dword of ldsflda OperandLong)
         }
 
         // neo-nested-ldflda-byref: read the inner field off the boxed struct via
@@ -7617,7 +7723,22 @@ namespace ILRuntime.Runtime.Intepreter
             if (f.FieldType != null)
                 value = f.FieldType.CheckCLRTypes(value);
             f.SetValue(addr.BoxedStruct, value);
-            if (addr.IsF10)
+            if (addr.IsClrStatic)
+            {
+                // neo-ldsflda-clr-static-struct: MIRROR LEGACY -- the nested-`+=`
+                // (ldflda <inner field>; ldind; add; stind) mutation on a CLR STATIC
+                // struct field does NOT persist under Legacy (Legacy's ldflda-CLR-
+                // static produces a non-persistent address: e.g. TestValueTypeBinding
+                // .Test01 `TestVector3.One.X += vec.X` leaves One.X unchanged, so the
+                // test's `if(One.X==1) throw` fires -> IsToDo). Persisting it here
+                // (.NET-correct via SetStaticFieldValue) would mutate the shared
+                // static and break later tests that read it (UnitTest_10047 reads
+                // TestVector3.One). So the stind mutates ONLY the descriptor's local
+                // boxed copy (discarded with the frame) -- matching Legacy exactly.
+                // The raw Stfld/Ldfld CLR-static arms (the `= v` / read forms) DO
+                // persist (Legacy parity: Struct2 `instance.value = 222` persists).
+            }
+            else if (addr.IsF10)
             {
                 int refOff = addr.StructFieldOff & ~JITCompiler.NeoF10ByrefOffsetFlag;
                 ILTypeInstance ili = addr.ContainingObj as ILTypeInstance;

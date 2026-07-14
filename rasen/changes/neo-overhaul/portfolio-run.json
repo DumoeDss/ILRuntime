@@ -1224,6 +1224,23 @@
       "smoke": "FULL SMOKE 31->28 (-3, DelegateExtTest01/02 + DelegateTest01); stash-toggle airtight; NeoStep 401/0 (all delegate tests green); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; NeoInvokeSub path pinned; 3 D1 flipped; NeoRunDelegateTargetOnThis IsExtend latent sibling left)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-recluster-28": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-28 recluster: ldsflda CLR-static struct field deferred NIE (UnitTest_Struct2). Fix = NeoClrStaticFieldAddr descriptor (Ldsflda CLR-static branch replaces NIE) + Stfld/Ldfld/nested-ldflda guards. Critical: nested-+= write-back intentional NO-OP (Legacy parity; persisting breaks UnitTest_10047).",
+      "prerequisites": [
+        "neo-delegate-dispatch-arg-marshal"
+      ],
+      "dependsOn": [
+        "neo-delegate-dispatch-arg-marshal"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 28->27 (-1, UnitTest_Struct2); NeoStep 401/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; NeoClrStaticFieldAddr descriptor; Legacy-parity NO-OP)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1294,7 +1311,8 @@
     "neo-remaining-34-batch",
     "neo-long-literal-widened-temp",
     "neo-nested-ldflda-byref",
-    "neo-delegate-dispatch-arg-marshal"
+    "neo-delegate-dispatch-arg-marshal",
+    "neo-recluster-28"
   ],
   "surfacedFollowups": [
     {
@@ -1503,6 +1521,7 @@
     "fullSmokeAfterR34batch": 33,
     "fullSmokeAfterD2": 32,
     "fullSmokeAfterD4": 31,
-    "fullSmokeAfterD1": 28
+    "fullSmokeAfterD1": 28,
+    "fullSmokeAfterR28": 27
   }
 }
