@@ -1122,6 +1122,23 @@
       "smoke": "FULL SMOKE 42->38 (-4, all 4 C-cluster); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; 3 roots pinned Neo-vs-Legacy; struct VTable gap + dotted-name + adaptor unwrap)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-recluster-38": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-38 recluster: NeoMarshalByrefFieldToSlot byref param field-marshal NRE (3). Reference IL field ldflda + CLR-struct ldsflda emitted byref with no flag -> marshal misrouted to Primitives -> NRE. Fix = reference-field branch (ManagedObjects) + ldsflda F-10 flag for CLR-struct static. Wrote fresh 38 grounding table.",
+      "prerequisites": [
+        "neo-interface-callvirt-cluster-c"
+      ],
+      "dependsOn": [
+        "neo-interface-callvirt-cluster-c"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 38->35 (-3); InheritanceTest21/22 + GenericsRefOut; NeoStep 398/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; byref reference-field + CLR-struct-static F-10; delegate-extension 3 high-risk deferred)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1186,7 +1203,8 @@
     "neo-raw-ldfld-stfld-cluster-e",
     "neo-ldind-stobj-cluster-g",
     "neo-hotfix-patched-il-execute",
-    "neo-interface-callvirt-cluster-c"
+    "neo-interface-callvirt-cluster-c",
+    "neo-recluster-38"
   ],
   "surfacedFollowups": [
     {
@@ -1389,6 +1407,7 @@
     "fullSmokeAfterClusterE": 48,
     "fullSmokeAfterClusterG": 46,
     "fullSmokeAfterClusterH": 42,
-    "fullSmokeAfterClusterC": 38
+    "fullSmokeAfterClusterC": 38,
+    "fullSmokeAfterR38": 35
   }
 }

@@ -512,6 +512,43 @@ namespace ILRuntime.Runtime.Intepreter
                     }
                     return;
                 }
+                // neo-byref-reffield-out-param: a byref produced by
+                // `ldflda &ili.<refField>` (JIT NeoLdfldaHeapIlRefFieldMarker --
+                // a reference-typed field of a heap IL class: string / IL-class /
+                // object) carries (objIdx, ReferenceOffset) with NO flag bit. The
+                // field's storage is ManagedObjects[ReferenceOffset], NOT
+                // Primitives[off]. Discriminate via the byref param's element type
+                // (a reference type). Mirror the CLR-object reference-field branch
+                // below (read = park object on mStack + write mStack index to the
+                // slot's leading int; write = read mStack index from the slot +
+                // store the object). stind_ref/ldind_ref already route this byref
+                // shape to ManagedObjects[off] (content-based); this extends the
+                // same routing to the byref-param field marshal (ref/out param on
+                // a heap-IL reference field). The F-10 flag check above already
+                // diverted boxed-CLR-struct fields, so a primitive/value IL field
+                // (elemType.IsValueType / IsPrimitive) falls through to the
+                // Primitives path unchanged (no regression).
+                if (elemType != null && !elemType.IsValueType && !elemType.IsPrimitive)
+                {
+                    if (isWrite)
+                    {
+                        int vIdx = *(int*)slot;
+                        ili.ManagedObjects[off] = vIdx >= 0 ? mStack[vIdx] : null;
+                    }
+                    else
+                    {
+                        object fieldValue = ili.ManagedObjects[off];
+                        if (fieldValue == null)
+                            *(int*)slot = -1;
+                        else
+                        {
+                            int newIdx = mStack.Count;
+                            mStack.Add(fieldValue);
+                            *(int*)slot = newIdx;
+                        }
+                    }
+                    return;
+                }
                 // IL heap field: flat-bytes region at Primitives[off].
                 if (isWrite)
                     Unsafe.CopyBlock(ref ili.Primitives[off], ref *slot, (uint)sz);
@@ -5242,6 +5279,23 @@ namespace ILRuntime.Runtime.Intepreter
                                         mStack.Add(ldaIlt.StaticInstance);
                                         int ldaSidx = mStack.Count - 1;
                                         int ldaFieldOff = (ldaFt != null && ldaFt.IsPrimitive) ? ldaOff.PrimitiveOffset : ldaOff.ReferenceOffset;
+                                        // neo-ldsflda-clrstruct-static: a CLR-struct STATIC field
+                                        // of an IL type (e.g. `static TestStruct str2;` on an IL
+                                        // class) is stored as a boxed struct at
+                                        // ManagedObjects[ReferenceOffset] -- the SAME storage as an
+                                        // instance CLR-struct field of IL (the F-10 shape). Set the
+                                        // F-10 flag so byref consumers (NeoMarshalByrefFieldToSlot
+                                        // via CopyNeoCallArguments/CopyNeoCallThisBack for a
+                                        // `ref`/`out` param; stobj/ldobj for a whole-struct copy)
+                                        // route to ManagedObjects via ReadNeoValueType /
+                                        // WriteNeoValueType. Mirrors the JIT's IsClrStructFieldOfIL
+                                        // marker for the instance-field ldflda. Mutually exclusive
+                                        // with a primitive field (handled above) and an IL-struct
+                                        // static field (NOT boxed -- it has its own
+                                        // Primitives/ManagedObjects layout in the static instance ->
+                                        // no flag, content-based dispatch).
+                                        if (ldaFt != null && !(ldaFt is ILType) && ldaFt.IsValueType && !ldaFt.IsPrimitive)
+                                            ldaFieldOff |= JITCompiler.NeoF10ByrefOffsetFlag;
                                         *(int*)(frameBase + ldaDstOff + 0) = ldaSidx;
                                         *(int*)(frameBase + ldaDstOff + 4) = ldaFieldOff;
                                     }
