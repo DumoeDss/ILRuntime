@@ -961,6 +961,27 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldc_R8:
                         SetRegisterType(registerTypes, op.Register1, appdomain.DoubleType);
                         break;
+                    // neo-c10-list-index-residual: Initobj/Ldobj are IL value-type
+                    // PRODUCERS (their Operand carries the type-token hash, stamped at
+                    // JIT Translate). Without seeding, a struct TEMP produced by
+                    // `initobj rT, Vector3` / `ldobj rT, srcAddr` stays untyped, and a
+                    // following `move rLocal, rT` clobbers the local's declared in-frame-
+                    // VT type with null -> a subsequent `ldfld.r4 rLocal.field` is NOT
+                    // rewritten to the _Inline variant -> the runtime Ldfld_R4 arm
+                    // misreads the struct's flat bytes (e.g. float bits 0x40400000) as an
+                    // mStack index -> GetNeoILInstance -> List.get_Item OOB. Seed the dest
+                    // so the inline rewrite + Move propagation keep the in-frame-VT type
+                    // (same producer-seeding pattern as child-16/21/23). A non-ILType
+                    // result (CLR struct / primitive) simply does not trigger the inline
+                    // rewrite, so the seed is harmless for those cases.
+                    case OpCodeREnum.Initobj:
+                    case OpCodeREnum.Ldobj:
+                        {
+                            IType t = appdomain.GetType(op.Operand);
+                            if (t != null)
+                                SetRegisterType(registerTypes, op.Register1, t);
+                        }
+                        break;
                     case OpCodeREnum.Ldnull:
                         SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
                         break;

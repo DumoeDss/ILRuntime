@@ -935,6 +935,23 @@
       "smoke": "FULL SMOKE 71->70 (-1, DelegateTest24 4E-45->6); stash-toggle airtight; NeoStep 394/0 (+3 probes, starg regression caught+fixed); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; VT-param-vs-local asymmetry pinned; raw-Ldfld marker namespace {0x1,0x2,0x4}; starg regression self-caught)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-c10-list-index-residual": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 C10 residual (PARTIAL): StructTest8 = Initobj/Ldobj had no producer-seeding case -> temp untyped -> Move clobbered declared in-frame-VT type -> Ldfld_R4 not rewritten to _Inline -> flat bytes read as mStack index -> OOB. Fix = Initobj/Ldobj seeding in TypeSpecializeNeoOpcodes (child-16/21/23 class). StructTest11 = distinct Bug 2 (IL-struct call arg not boxed at List<ILTypeInstance>.Add boundary) handed off.",
+      "prerequisites": [
+        "neo-delegate-vt-float-return"
+      ],
+      "dependsOn": [
+        "neo-delegate-vt-float-return"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 70->69 (-1, StructTest8); StructTest11 distinct Bug 2 handed off; NeoStep 394/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; Initobj/Ldobj seeding; Bug 2 handoff detailed; NEW cluster surfaced: Neo typed opcodes reach ExecuteR)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -988,7 +1005,8 @@
     "neo-vt-binding-misc",
     "neo-il-instance-clr-struct-field-f10",
     "neo-stfld-value-inframe-owner",
-    "neo-delegate-vt-float-return"
+    "neo-delegate-vt-float-return",
+    "neo-c10-list-index-residual"
   ],
   "surfacedFollowups": [
     {
@@ -1168,7 +1186,7 @@
     "fullSmokeAfterC13": 114,
     "fullSmokeAfterC8": 110,
     "fullSmokeAfterC9": 110,
-    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target). struct-newobj delta-0 (real fix, DelegateTest24 2nd blocker = callvirt.clr struct-arg to List<VT>.Add). struct-arg delta-0 (stale Add stub fixed; DelegateTest24 cascade to neo-delegate-vt-float-return). 9 stale default-TODO stubs remain.",
+    "note": " C9=C1 cascade (resolved). NEW candidate: Hotfix patched-IL runs via Execute(StackObject*) with no Neo branch (6 residual Hotfix failures). C5 surfaced: VT-with-ref-field enumerator marshalling bug (JsonTest9 + GCTest.TestDicEnumerator). C14 follow-ups: IT07 adaptor->Legacy ExecuteR cant handle Addi_R4; IT18 reverse-projection (unbox.any on CLR adaptor for IL-type target). struct-newobj delta-0 (real fix, DelegateTest24 2nd blocker = callvirt.clr struct-arg to List<VT>.Add). struct-arg delta-0 (stale Add stub fixed; DelegateTest24 cascade to neo-delegate-vt-float-return). 9 stale default-TODO stubs remain. NEW cluster: ~10 Not-supported-opcode (Muli_R4/Addi_R4/Ldfld_I4/Ldfld_U4/Add_I8) = Neo-JIT typed opcodes reach Legacy ExecuteR (Register.cs:5325) -- dispatch gap.",
     "fullSmokeAfterC5": 104,
     "fullSmokeAfterC14": 103,
     "fullSmokeAfterC7": 101,
@@ -1180,6 +1198,7 @@
     "fullSmokeAfterC11": 74,
     "fullSmokeAfterF10": 73,
     "fullSmokeAfterStfldValue": 71,
-    "fullSmokeAfterDvtfr": 70
+    "fullSmokeAfterDvtfr": 70,
+    "fullSmokeAfterC10res": 69
   }
 }
