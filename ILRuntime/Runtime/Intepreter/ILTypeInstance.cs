@@ -874,8 +874,49 @@ namespace ILRuntime.Runtime.Intepreter
             }
         }
 #else
+        // Neo bridge for the patched-IL eval-stack path. Patched-IL method bodies
+        // are raw eval-stack OpCode[] (HybridPatch AssemblyPatch.InitializeMethodBody),
+        // so ShouldUseRegisterVM==false -> InvocationContext.Invoke falls to the Legacy
+        // Execute(StackObject*) arm, whose Ldfld/Stfld reach here for an IL field of
+        // this instance. Under the Neo object model the field lives in byte[] Primitives
+        // / AutoList ManagedObjects (Fields is null), so read it via the SAME split-
+        // storage logic as the Neo indexer get-arm (F-4 path #4), then push the (boxed)
+        // value onto the legacy eval-stack slot at *esp via the proven PushObject helper
+        // (PushObject writes at *esp and returns esp+1; the return is intentionally
+        // discarded -- PushToStack fills a single fixed slot, mirroring the Legacy arm).
         internal unsafe void PushToStack(int fieldIdx, StackObject* esp, ILIntepreter intp, AutoList managedStack)
         {
+            if (fieldIdx < type.TotalFieldCount && fieldIdx >= 0)
+            {
+                ILTypeFieldOffset off = type.GetFieldOffset(fieldIdx);
+                IType ft = type.GetField(fieldIdx, out ILRuntime.Mono.Cecil.FieldReference _);
+                object obj;
+                if (ft.IsPrimitive)
+                    obj = ReadNeoPrimitive(fields, off.PrimitiveOffset, ft, type.AppDomain);
+                else if (ft.IsValueType && ft is ILType)
+                    throw new NotImplementedException("Neo ILTypeInstance.PushToStack: IL-value-type field reconstruction not supported (field " + fieldIdx + " of " + type.FullName + ")");
+                else
+                    obj = managedObjs != null ? managedObjs[off.ReferenceOffset] : null;
+                ILIntepreter.PushObject(esp, managedStack, obj);
+            }
+            else
+            {
+                // CLR-inherited field via the cross-binding adaptor (mirrors the Legacy
+                // PushToStack else + the Neo indexer get-arm else).
+                if (Type.FirstCLRBaseType != null && Type.FirstCLRBaseType is Enviorment.CrossBindingAdaptor)
+                {
+                    CLRType clrType = intp.AppDomain.GetType(((Enviorment.CrossBindingAdaptor)Type.FirstCLRBaseType).BaseCLRType) as CLRType;
+                    if (!clrType.CopyFieldToStack(fieldIdx, clrInstance, intp, ref esp, managedStack))
+                    {
+                        var obj = clrType.GetFieldValue(fieldIdx, clrInstance);
+                        if (obj is CrossBindingAdaptorType)
+                            obj = ((CrossBindingAdaptorType)obj).ILInstance;
+                        ILIntepreter.PushObject(esp, managedStack, obj);
+                    }
+                }
+                else
+                    throw new TypeLoadException("Neo PushToStack: field index " + fieldIdx + " out of range for " + type.FullName + " (TotalFieldCount=" + type.TotalFieldCount + ") and no CLR base adaptor");
+            }
         }
 
         internal unsafe void CopyToRegister(int fieldIdx,ref RegisterFrameInfo info, short reg)
@@ -1081,8 +1122,60 @@ namespace ILRuntime.Runtime.Intepreter
         {
         }
 
+        // Neo bridge (write side): pop the value off the legacy eval-stack slot at
+        // *esp and write it into this instance's split storage, mirroring the Neo
+        // indexer set-arm (F-4 path #4). Only reached from the patched-IL eval-stack
+        // path (InvocationContext -> Execute(StackObject*) -> Stfld).
         internal unsafe void AssignFromStack(int fieldIdx, StackObject* esp, ILIntepreter intp, AutoList managedStack)
         {
+            if (fieldIdx < type.TotalFieldCount && fieldIdx >= 0)
+            {
+                ILTypeFieldOffset off = type.GetFieldOffset(fieldIdx);
+                IType ft = type.GetField(fieldIdx, out ILRuntime.Mono.Cecil.FieldReference _);
+                if (ft.IsPrimitive)
+                {
+                    object value = StackObject.ToObject(esp, type.AppDomain, managedStack);
+                    if (value != null)
+                    {
+                        // The eval-stack StackObject is ObjectType-driven (e.g. `true`
+                        // is Integer, a float scratch value may sit on an int field);
+                        // WriteNeoPrimitive casts per the declared field type ft. Align
+                        // them so the direct cast holds (mirrors Legacy `field = *esp`
+                        // which is ObjectType-tolerant). Convert.ToBoolean handles the
+                        // int->bool case ChangeType rejects.
+                        Type targetClr = ft.TypeForCLR;
+                        if (value.GetType() != targetClr)
+                            value = targetClr == typeof(bool) ? (object)Convert.ToBoolean(value) : Convert.ChangeType(value, targetClr);
+                        WriteNeoPrimitive(fields, off.PrimitiveOffset, ft, value, type.AppDomain);
+                    }
+                    else
+                        WriteNeoPrimitiveDefault(fields, off.PrimitiveOffset, ft, type.AppDomain);
+                }
+                else if (ft.IsValueType && ft is ILType)
+                    throw new NotImplementedException("Neo ILTypeInstance.AssignFromStack: IL-value-type field write not supported (field " + fieldIdx + " of " + type.FullName + ")");
+                else
+                {
+                    if (managedObjs != null)
+                        managedObjs[off.ReferenceOffset] = StackObject.ToObject(esp, type.AppDomain, managedStack);
+                }
+            }
+            else
+            {
+                // CLR-inherited field via the cross-binding adaptor (mirrors the Legacy
+                // AssignFromStack else + the Neo indexer set-arm else).
+                var appdomain = intp != null ? intp.AppDomain : type.AppDomain;
+                if (Type.FirstCLRBaseType != null && Type.FirstCLRBaseType is Enviorment.CrossBindingAdaptor)
+                {
+                    CLRType clrType = appdomain.GetType(((Enviorment.CrossBindingAdaptor)Type.FirstCLRBaseType).BaseCLRType) as CLRType;
+                    if (intp != null && !clrType.AssignFieldFromStack(fieldIdx, ref clrInstance, intp, esp, managedStack))
+                    {
+                        var field = clrType.GetField(fieldIdx);
+                        clrType.SetFieldValue(fieldIdx, ref clrInstance, field.FieldType.CheckCLRTypes(ILIntepreter.CheckAndCloneValueType(StackObject.ToObject(esp, appdomain, managedStack), appdomain)));
+                    }
+                }
+                else
+                    throw new TypeLoadException("Neo AssignFromStack: field index " + fieldIdx + " out of range for " + type.FullName + " (TotalFieldCount=" + type.TotalFieldCount + ") and no CLR base adaptor");
+            }
         }
 
         internal unsafe void AssignFromStack(StackObject* esp, ILIntepreter intp, AutoList managedStack)

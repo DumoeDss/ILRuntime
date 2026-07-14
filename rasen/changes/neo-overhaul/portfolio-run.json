@@ -1088,6 +1088,23 @@
       "smoke": "FULL SMOKE 48->46 (-2); stash-toggle airtight; NeoStep 398/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; stobj/ldobj ref-type; 4 G-remaining distinct roots reported)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-hotfix-patched-il-execute": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-60 cluster H (PARTIAL): patched-IL runs via eval-stack Execute(StackObject*) by design (raw OpCode[] cant run ExecuteNeo). But ILTypeInstance.PushToStack/AssignFromStack were empty no-ops under Neo. Fix = Neo-eval-stack bridge (mirror Neo indexer F-4: primitive ReadNeoPrimitive/WriteNeoPrimitive, reference managedObjs, Convert.ChangeType). 4 fixed, 2 deep (static callback shared code + Ldtoken blob eval-stack path).",
+      "prerequisites": [
+        "neo-ldind-stobj-cluster-g"
+      ],
+      "dependsOn": [
+        "neo-ldind-stobj-cluster-g"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 46->42 (-4); HotfixBasicTestCases.Test03/Test07 + HotfixTestGenericTestCases.Test02 + HotfixTestInheritanceTestCases.Test03; NeoStep 398/0; Legacy Hotfix 14/0",
+      "review": "APPROVE (LEAD non-author; Neo-eval-stack bridge; 2 deep residuals reported)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1150,7 +1167,8 @@
     "neo-autogen-binding-invoke",
     "neo-jit-generic-method-specialization",
     "neo-raw-ldfld-stfld-cluster-e",
-    "neo-ldind-stobj-cluster-g"
+    "neo-ldind-stobj-cluster-g",
+    "neo-hotfix-patched-il-execute"
   ],
   "surfacedFollowups": [
     {
@@ -1351,6 +1369,7 @@
     "fullSmokeAfterDbinding": 54,
     "fullSmokeAfterJitGen": 51,
     "fullSmokeAfterClusterE": 48,
-    "fullSmokeAfterClusterG": 46
+    "fullSmokeAfterClusterG": 46,
+    "fullSmokeAfterClusterH": 42
   }
 }
