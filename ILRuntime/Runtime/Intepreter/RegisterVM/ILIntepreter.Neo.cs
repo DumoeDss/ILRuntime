@@ -1376,6 +1376,29 @@ namespace ILRuntime.Runtime.Intepreter
             object thisObj = ReadNeoCallThis(ip, targetBase, mStack);
             if (thisObj is ILTypeInstance instance)
             {
+                // DelegateAdapter (and its MethodDelegateAdapter / FunctionDelegateAdapter
+                // / DummyDelegateAdapter subclasses) IS an ILTypeInstance subclass but
+                // carries NO IL type -- its `Type` is null (the adapter wraps an ILMethod
+                // target, not an IL type with a VTable). An inherited System.Object
+                // virtual/non-virtual method (GetType / GetHashCode / Equals / ToString)
+                // called via callvirt on such an adapter `this` reaches here because the
+                // plain Callvirt opcode dispatches to ResolveNeoGenericCallvirtTarget,
+                // whose `thisObj is ILTypeInstance` check the adapter satisfies. Without
+                // this guard the `instance.Type` deref below NREs. Route the inherited CLR
+                // method to CLR dispatch instead (mirrors the C4 inherited-CLR-method
+                // fallback at the TryGetNeoVTableSlot miss): the caller passes the
+                // CLRMethod to InvokeNeoCallTarget -> InvokeNeoClrMethod, which serves a
+                // registered Neo redirect (ObjectGetTypeNeo for GetType) or the reflection
+                // fallback for the real Object method on the adapter object. A genuine IL
+                // instance always has a non-null Type, so Type == null uniquely identifies
+                // the delegate-adapter shape.
+                if (instance.Type == null)
+                {
+                    if (declaredMethod is CLRMethod)
+                        return declaredMethod;
+                    throw new MissingMethodException(string.Format("Neo callvirt on a delegate-adapter this has no IL type to resolve {0}.", declaredMethod));
+                }
+
                 int slot = ip->Operand4 & 0xffff;
                 if (slot == 0xffff)
                 {

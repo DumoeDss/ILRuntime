@@ -986,6 +986,23 @@
       "smoke": "FULL SMOKE 65->63 (-2, InheritanceTest07/16); stash-toggle airtight; NeoStep 394/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; runtime-diag-pinned; isBox:false contract; route asymmetry explained)",
       "shipped": "commit+push 2026-07-14"
+    },
+    "neo-callvirt-il-target-residual": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: ResolveNeoCallvirtILTarget:1366 NRE x3 (DelegateTest16/17 + SimpleTest.EqualsTest). DelegateAdapter is an ILTypeInstance subclass but its ctor never sets the inherited type field -> instance.Type==null. The is-ILTypeInstance check passed -> ResolveNeoCallvirtILTarget deref instance.Type.TryGetNeoVTableSlot -> NRE. Fix = Type==null && CLRMethod guard (mirror C4 fallback). Inherited Object methods (GetType/GetHashCode/Equals) on a delegate this.",
+      "prerequisites": [
+        "neo-float-arith-residual"
+      ],
+      "dependsOn": [
+        "neo-float-arith-residual"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-14",
+      "smoke": "FULL SMOKE 63->60 (-3, DelegateTest16/17/SimpleTest.EqualsTest); stash-toggle airtight; NeoStep 394/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; DelegateAdapter Type==null pinned; ResolveNeoGenericCallvirtTarget:1458 latent shape noted)",
+      "shipped": "commit+push 2026-07-14"
     }
   },
   "runnableFrontier": [],
@@ -1042,7 +1059,8 @@
     "neo-delegate-vt-float-return",
     "neo-c10-list-index-residual",
     "neo-typed-opcode-reach-executer",
-    "neo-float-arith-residual"
+    "neo-float-arith-residual",
+    "neo-callvirt-il-target-residual"
   ],
   "surfacedFollowups": [
     {
@@ -1237,6 +1255,7 @@
     "fullSmokeAfterDvtfr": 70,
     "fullSmokeAfterC10res": 69,
     "fullSmokeAfterTypedOp": 65,
-    "fullSmokeAfterFloatArith": 63
+    "fullSmokeAfterFloatArith": 63,
+    "fullSmokeAfterCvilt": 60
   }
 }
