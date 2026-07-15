@@ -306,6 +306,21 @@ namespace ILRuntime.Runtime.Enviorment
             // CreateInstanceNeo / InitializeArrayNeo.
             RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.TypeMakeGenericTypeNeo);
 #endif
+#if ENABLE_NEO_MODE
+            // neo-typeof-generic-param: Neo dispatch consults RedirectMapNeo
+            // exclusively. Without a Neo entry the autogen ChangeType_1_Neo stub
+            // passes the ILRuntimeWrapperType (CLRType.ReflectionType, what the Neo
+            // ldtoken type path pushes for typeof(CLRType)) raw to the framework
+            // Convert.ChangeType -> "Invalid cast String->Int32" (TestGenericMethod2
+            // line 167). Mirrors Legacy's autogen ChangeType_1 CheckCLRTypes unwrap.
+            // First-registered-wins (this ctor runs before the test-harness
+            // System_Convert_Binding autogen Register) -- same pattern as
+            // EnumToObjectNeo / CreateInstanceNeo. (Legacy has NO redirect for
+            // ChangeType -- its autogen ChangeType_1 binding unwraps via
+            // CheckCLRTypes; this Neo redirect is the twin.)
+            mi = typeof(System.Convert).GetMethod("ChangeType", new Type[] { typeof(object), typeof(Type) });
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.ChangeTypeNeo);
+#endif
             mi = typeof(object).GetMethod("GetType");
             RegisterCLRMethodRedirection(mi, CLRRedirections.ObjectGetType);
 #if ENABLE_NEO_MODE

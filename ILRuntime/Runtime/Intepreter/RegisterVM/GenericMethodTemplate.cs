@@ -131,6 +131,19 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // when the body has no Box T / Isinst T). Null until first used.
         public CompiledFrame RefBody;
         public Dictionary<Instruction, int> RefBodyAddr;
+        // neo-typeof-generic-param: the capture instance's concrete generic args
+        // (the T-values the template body was specialized for). The Neo JIT emits
+        // TYPED opcodes at Translate time (Stfld_I4 vs Stfld_R8, Ldfld_*, unbox-
+        // any, conv, etc.) based on the concrete T's type category, and these
+        // typed arms are baked into the captured template body. CloneAndPatch
+        // patches T-identity TOKENS (ldtoken/Box/Isinst/...) but NOT the typed
+        // opcode CODE, so a concrete T whose typed-field-opcode category differs
+        // from the capture T would execute a wrong-typed arm (e.g. GetRows<int,
+        // int> captured -> Stfld_I4 for V; GetRows<int,double> reuses it -> V is
+        // written as 4 bytes instead of 8 -> corrupt double). The fall-back in
+        // TryInstantiate compares each concrete arg's Stfld category to the
+        // capture arg's; a mismatch -> per-occurrence JIT (the correct reference).
+        public IType[] CaptureTypeArgs;
 
         public bool HasIdentityToken()
         {
@@ -344,6 +357,29 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         if (op.Operand2 == 1) continue;
                         field = PatchField.Operand;
                         break;
+                    // neo-typeof-generic-param: a type-path `ldtoken <T>` (the
+                    // producer half of `typeof(T)`) stores the resolved type-token
+                    // hash in OperandLong (@12-19) -- specifically its LOW dword,
+                    // Operand2 (@12), with the high dword (Operand3 @16) zero
+                    // (JIT emits op.OperandLong = method.GetTypeTokenHashCode(token),
+                    // int->long zero-extended). Operand/Operand2/Operand4 are the
+                    // only stampable PatchFields; Operand2 is the one that aliases
+                    // the type-token low dword, so DoCloneAndPatch's
+                    // `body[idx].Operand2 = newHash` re-resolves typeof(T) for the
+                    // concrete instance (GetTypeTokenHashCode -> FindGenericArgument
+                    // -> the concrete T). Without this patch the cloned template
+                    // keeps the CAPTURE-T hash (e.g. int for both A and B captured
+                    // from GetRows<int,int>), so a later GetRows<int,double> call
+                    // resolves typeof(B) to int instead of double (the
+                    // TestGenericMethod2 failure). LowerNeoOffsets' Ldtoken case
+                    // touches only Operand4 + DstOffset, and TypeSpecialize has no
+                    // Ldtoken arm, so the patched Operand2 survives the back-half.
+                    // The field-path ldtoken (Operand==0) carries a FieldReference
+                    // Cecil token -> HasGenericParameter returns false below -> no
+                    // patch recorded, so the static-field path is unaffected.
+                    case OpCodeREnum.Ldtoken:
+                        field = PatchField.Operand2;
+                        break;
                     // T-qualified Call/Callvirt method-token. The method hash lives
                     // in Operand2 (InitializeFunctionParam: m.GetHashCode() when the
                     // token is generic-param-bearing / "invalid", else token.GetHashCode
@@ -415,11 +451,12 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // byte-identical to the open definition's, so it is the T-invariant
         // template base. Subsequent instantiations (any T, including struct-T)
         // CloneAndPatch from it.
-        internal static GenericMethodTemplate StoreFromCapture(ILMethod definition, JITCompiler.TemplateCapture cap)
+        internal static GenericMethodTemplate StoreFromCapture(ILMethod definition, JITCompiler.TemplateCapture cap, IType[] captureTypeArgs)
         {
             if (cap == null || cap.TemplateBody == null) return null;
             var template = new GenericMethodTemplate();
             template.Definition = definition;
+            template.CaptureTypeArgs = captureTypeArgs;
             template.TemplateBody = cap.TemplateBody;
             template.LocVarRegStart = cap.LocVarRegStart;
             template.TotalRegCnt = cap.TotalRegCnt;
@@ -600,6 +637,26 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 };
             }
             return res;
+        }
+
+        // neo-typeof-generic-param: a stable "typed field opcode" category for a
+        // concrete generic arg, used by TryInstantiate's category fall-back. Two
+        // types whose category differs would select DIFFERENT typed arms
+        // (Stfld_I4 vs Stfld_R8) at JIT Translate time, so the cloned template
+        // body (pre-specialized for the capture T) cannot serve the concrete T.
+        // Returns the OpCodeREnum ordinal GetNeoStfldCodeForType selects (the
+        // authoritative source the JIT itself uses), or -1 for a type the helper
+        // cannot classify (two -1's compare equal -> conservative no-fall-back).
+        static int FieldOpcodeCategory(IType t, ILRuntime.Runtime.Enviorment.AppDomain appdomain)
+        {
+            try
+            {
+                return (int)JITCompiler.GetNeoStfldCodeForType(t, appdomain);
+            }
+            catch
+            {
+                return -1;
+            }
         }
 
         // Does `instance`'s concrete typeArgs keep the front-half T-invariant?
@@ -802,6 +859,33 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         {
             var typeArgs = instance.GenericArugmentsArray;
             if (typeArgs == null || typeArgs.Length == 0) return false;
+
+            // neo-typeof-generic-param: typed-opcode-category fall-back. The Neo
+            // JIT bakes TYPED arms (Stfld_I4/R8, Ldfld_*, conv, ...) into the
+            // template body at Translate time, keyed on the capture T's type
+            // category. CloneAndPatch re-resolves T-identity TOKENS but NOT the
+            // typed opcode CODE, so a concrete T whose typed-field-opcode category
+            // differs from the capture T would run a wrong-typed arm (e.g.
+            // GetRows<int,int> captures Stfld_I4 for V; GetRows<int,double> reuses
+            // it -> the double V is stored as 4 bytes -> corrupt). Compare each
+            // concrete arg's Stfld category to the capture arg's; a mismatch ->
+            // return false so InitCodeBody falls back to a fresh per-occurrence
+            // JIT (the correct reference body). Conservative + correct: a
+            // category match (incl. all-ref -> Stfld_Ref uniformly) proceeds via
+            // the template; only a category mismatch falls back. Null/short
+            // CaptureTypeArgs (an older/synthetic template) -> skip the check
+            // (preserve prior behavior).
+            if (template.CaptureTypeArgs != null && typeArgs.Length == template.CaptureTypeArgs.Length)
+            {
+                for (int i = 0; i < typeArgs.Length; i++)
+                {
+                    var ct = typeArgs[i];
+                    var capt = i < template.CaptureTypeArgs.Length ? template.CaptureTypeArgs[i] : null;
+                    if (ct == null || capt == null) continue;
+                    if (FieldOpcodeCategory(ct, appdomain) != FieldOpcodeCategory(capt, appdomain))
+                        return false;
+                }
+            }
 
             bool allRef = true;
             for (int i = 0; i < typeArgs.Length; i++)

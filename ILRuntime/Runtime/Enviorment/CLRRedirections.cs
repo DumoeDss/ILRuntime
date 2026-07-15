@@ -750,6 +750,41 @@ namespace ILRuntime.Runtime.Enviorment
             WriteNeoObjectResult(mStack, retDst, retRefBase, result);
         }
 
+        // neo-typeof-generic-param: Neo redirect for System.Convert.ChangeType
+        // (object, Type). Mirrors Legacy's autogen ChangeType_1, which reads its
+        // System.Type param through typeof(System.Type).CheckCLRTypes -- that
+        // unwraps an ILRuntimeWrapperType -> RealType before the framework call.
+        // The Neo autogen ChangeType_1_Neo stub does a RAW (System.Type) cast on
+        // ReadNeoReference, handing the framework the ILRuntimeWrapperType (what
+        // CLRType.ReflectionType, the Neo ldtoken type-path push, yields) instead
+        // of the real System.Type -> Convert.DefaultToType rejects it ("Invalid
+        // cast String->Int32"). Registered on RedirectMapNeo (first-registered-
+        // wins; this ctor runs before the test-harness System_Convert_Binding
+        // autogen Register) so every Convert.ChangeType call under Neo unwraps the
+        // conversion Type (and the value when it is likewise wrapped) before
+        // delegating to the host. NOTE: a typeof(T) on a generic-method param
+        // ADDITIONALLY requires the Step-22 generic-method template to re-resolve
+        // the ldtoken type-token for the concrete T (the ExtractPatches Ldtoken
+        // case in GenericMethodTemplate.cs) -- without it typeof(B) for B=double
+        // keeps the capture-T int hash and unwraps to Int32, so ChangeType parses
+        // "345.678" as int -> FormatException. The two fixes are complementary:
+        // this redirect handles the wrapper, the template patch handles the
+        // generic-param identity.
+        public unsafe static void ChangeTypeNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            object value = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            Type conversionType = (Type)ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            // Unwrap ILRuntime reflection Type wrappers -> the real System.Type
+            // the framework Convert.DefaultToType understands (mirrors Legacy
+            // CheckCLRTypes' ILRuntimeWrapperType -> RealType branch).
+            if (conversionType is ILRuntimeWrapperType wt) conversionType = wt.RealType;
+            else if (conversionType is ILRuntimeType rt) conversionType = rt.ILType.TypeForCLR;
+            if (value is ILRuntimeWrapperType wv) value = wv.RealType;
+            var result = Convert.ChangeType(value, conversionType);
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
         // Neo redirect for System.Object.GetType(). Mirrors the Legacy
         // CLRRedirections.ObjectGetType (CLRRedirections.cs:1250). The `this`
         // (param 0, a 4-byte mStack index at frameBase offset 0 -- the callvirt

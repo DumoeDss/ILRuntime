@@ -969,7 +969,7 @@ namespace ILRuntime.CLR.Method
                         if (cap != null) jit.templateCapture = cap;
                         jit.Compile(addr, ref compiledFrame);
                         if (cap != null && cap.TemplateBody != null && genericDefinition != null)
-                            genericDefinition.StoreGenericTemplate(cap);
+                            genericDefinition.StoreGenericTemplate(cap, genericArguments);
                         bodyRegister = compiledFrame.CodeBody;
                         stackRegisterCnt = compiledFrame.StackRegisterCount;
                         jumptablesR = compiledFrame.SwitchTargets;
@@ -1787,13 +1787,13 @@ namespace ILRuntime.CLR.Method
             get { return IsGenericInstance ? null : genericMethodTemplate; }
         }
 
-        internal void StoreGenericTemplate(Runtime.Intepreter.RegisterVM.JITCompiler.TemplateCapture cap)
+        internal void StoreGenericTemplate(Runtime.Intepreter.RegisterVM.JITCompiler.TemplateCapture cap, IType[] captureTypeArgs)
         {
             if (IsGenericInstance) return;  // only the definition caches
             if (genericMethodTemplate != null) return;  // already cached
             try
             {
-                genericMethodTemplate = Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.StoreFromCapture(this, cap);
+                genericMethodTemplate = Runtime.Intepreter.RegisterVM.GenericMethodTemplateOps.StoreFromCapture(this, cap, captureTypeArgs);
             }
             catch (Exception)
             {

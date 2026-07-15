@@ -3672,6 +3672,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         }
         OpCodeREnum GetStfldCodeForType(IType fieldType)
         {
+            return GetNeoStfldCodeForType(fieldType, appdomain);
+        }
+
+        // neo-typeof-generic-param: static form exposed so GenericMethodTemplateOps
+        // can derive the typed Stfld opcode a concrete generic-arg would select,
+        // WITHOUT a JITCompiler instance. Used by the template category-fall-back
+        // (a concrete T whose typed field-opcode category differs from the capture
+        // T -> the cloned template body's pre-specialized typed arms (Stfld_I4 etc.)
+        // would be wrong -> fall back to per-occurrence JIT). Authoritative: the
+        // instance method delegates here, so the two cannot diverge.
+        internal static OpCodeREnum GetNeoStfldCodeForType(IType fieldType, Enviorment.AppDomain appdomain)
+        {
             OpCodeREnum res = OpCodeREnum.Stfld_Ref;
             if (fieldType.IsPrimitive)
             {
