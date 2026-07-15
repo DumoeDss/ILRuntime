@@ -4371,8 +4371,15 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        // Reference type initobj → write null index (-1) into the byte slot.
-                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                        // Reference type initobj → write null (-1 sentinel).
+                                        // If the operand is a BYREF (NeoInitobjByRefOperandMarker:
+                                        // `result = default(T)` on `ref T result`), DstOffset holds
+                                        // the 8-byte byref (objIdx, off) and the null must land at
+                                        // the TARGET, not the byref temp.
+                                        if ((ip->Operand4 & JITCompiler.NeoInitobjByRefOperandMarker) != 0)
+                                            NeoWriteNullThroughByref(AppDomain, frameBase, mStack, ip->DstOffset);
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
                                         break;
                                     }
                                     if (sz > 0)
@@ -4404,8 +4411,12 @@ namespace ILRuntime.Runtime.Intepreter
                                     CLRType clrInitType = t as CLRType;
                                     if (clrInitType == null)
                                     {
-                                        // Unknown CLR type Initobj: write null index.
-                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                        // Unknown CLR type Initobj: write null (-1 sentinel).
+                                        // neo-initobj-ref-byref: deref if the operand is a byref.
+                                        if ((ip->Operand4 & JITCompiler.NeoInitobjByRefOperandMarker) != 0)
+                                            NeoWriteNullThroughByref(AppDomain, frameBase, mStack, ip->DstOffset);
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
                                         break;
                                     }
                                     if (clrInitType.IsPrimitive)
@@ -4417,8 +4428,14 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else if (!clrInitType.IsValueType)
                                     {
-                                        // Reference-type CLR local Initobj: write null index.
-                                        *(int*)(frameBase + ip->DstOffset) = -1;
+                                        // Reference-type CLR local Initobj: write null (-1 sentinel).
+                                        // neo-initobj-ref-byref: deref if the operand is a byref
+                                        // (e.g. `ref string result; result = default;` -- the
+                                        // UnitTest_NestedGenericRefOut canary, T = System.String).
+                                        if ((ip->Operand4 & JITCompiler.NeoInitobjByRefOperandMarker) != 0)
+                                            NeoWriteNullThroughByref(AppDomain, frameBase, mStack, ip->DstOffset);
+                                        else
+                                            *(int*)(frameBase + ip->DstOffset) = -1;
                                     }
                                     else
                                     {
@@ -7865,6 +7882,54 @@ namespace ILRuntime.Runtime.Intepreter
             if (o == null)
                 return false;
             return !(o is ILTypeInstance) && !(o is Array);
+        }
+
+        // neo-initobj-ref-byref: write the -1 null sentinel through a BYREF
+        // operand. `byrefSlotOffset` is the frame byte offset of the slot
+        // HOLDING the 8-byte byref (objIdx @ +0, off @ +4). Decode the byref
+        // and null the TARGET (mirrors Stind_Ref with vIdx = -1 / null). Used
+        // by the Initobj reference-type arms when NeoInitobjByRefOperandMarker
+        // is set (a `result = default(T)` on `ref T result`). Frame-native
+        // byref (objIdx == -1) is the tested shape (a `ref <local>` whose
+        // address was taken); the heap arms (caller-owned-slot / Array /
+        // CLR-object / heap-IL-ref-field) mirror Stind_Ref for correctness.
+        static void NeoWriteNullThroughByref(ILRuntime.Runtime.Enviorment.AppDomain appdomain, byte* frameBase, AutoList mStack, int byrefSlotOffset)
+        {
+            int objIdx = *(int*)(frameBase + byrefSlotOffset + 0);
+            int off = *(int*)(frameBase + byrefSlotOffset + 4);
+            if (objIdx == -1)
+            {
+                // frame-native: off is an absolute frame byte offset; write
+                // the -1 null sentinel directly into the target ref slot.
+                *(int*)(frameBase + off) = -1;
+            }
+            else if (objIdx >= 0 && objIdx < mStack.Count && mStack[objIdx] is ILTypeInstance refIns)
+            {
+                // heap-IL ref field (off = field ReferenceOffset).
+                refIns.ManagedObjects[off] = null;
+            }
+            else if (objIdx >= 0 && objIdx < mStack.Count && NeoIsClrObject(mStack, objIdx))
+            {
+                NeoWriteClrObjectField(appdomain, mStack[objIdx], off, null);
+            }
+            else if (objIdx >= 0 && objIdx < mStack.Count && mStack[objIdx] is Array cArr)
+            {
+                cArr.SetValue(null, off);
+            }
+            else if (objIdx >= 0 && objIdx < mStack.Count && (off & JITCompiler.NeoF10ByrefOffsetFlag) != 0)
+            {
+                // F-7B caller-owned-mStack-slot byref (cross-frame reference-
+                // byref promoted in NeoRunDelegateTargetOnThis).
+                mStack[objIdx] = null;
+            }
+            else
+            {
+                // Defensive fallback: write the -1 null sentinel at the
+                // decoded offset (frame-native interpretation). This only
+                // fires for an unrecognised byref shape, which is not
+                // expected to reach the initobj path.
+                *(int*)(frameBase + off) = -1;
+            }
         }
 
 

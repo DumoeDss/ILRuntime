@@ -1309,6 +1309,23 @@
       "smoke": "FULL SMOKE 21 (delta 0 -- no regression); NeoStep 401/0; 21 deeply fragmented (12 throw grab-bag distinct + 5 autogen-stub distinct + 4 pairs)",
       "review": "APPROVE (LEAD non-author; honest delta-0; optimizer-alias blocker documented; CIL-producer-scan path recommended)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-initobj-ref-byref": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: initobj T on ref-type T through byref (result=default(T)). DstOffset pointed at byref temp slot not target -> -1 clobbered byref objIdx -> ref local stayed non-null. Prior 4 runtime approaches aborted (optimizer alias unreliable). CIL-producer scan succeeded: JIT marker NeoInitobjByRefOperandMarker=0x1 stamped when T is ref AND ins.Previous is ldarg (collision-free with ldloca folded-temp) + NeoWriteNullThroughByref runtime helper.",
+      "prerequisites": [
+        "neo-recluster-21"
+      ],
+      "dependsOn": [
+        "neo-recluster-21"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 21->20 (-1, UnitTest_NestedGenericRefOut); ActivatorCreateInstanceWithArgsTest + InheritanceTest20 PASS (no regression); NeoStep 401/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; CIL-link marker; ldarg discriminator; inliner preserves Operand4)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1384,7 +1401,8 @@
     "neo-stfld-ref-generics",
     "neo-recluster-24",
     "neo-hotfix-field-index",
-    "neo-recluster-21"
+    "neo-recluster-21",
+    "neo-initobj-ref-byref"
   ],
   "surfacedFollowups": [
     {
@@ -1598,6 +1616,7 @@
     "fullSmokeAfterSrg": 24,
     "fullSmokeAfterR24": 23,
     "fullSmokeAfterHfi": 21,
-    "fullSmokeAfterR21": 21
+    "fullSmokeAfterR21": 21,
+    "fullSmokeAfterIrb": 20
   }
 }

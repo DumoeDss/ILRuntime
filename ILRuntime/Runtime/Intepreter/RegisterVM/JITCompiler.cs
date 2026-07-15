@@ -285,6 +285,30 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // remap never decrements a 0x4, TypeSpecializeNeoOpcodes reads only
         // OperandLong/Register1).
         public const int NeoRawLdfldBoxedRefOwnerMarker = 0x4;
+        // neo-initobj-ref-byref: marks an Initobj whose reference-type target
+        // is reached through a BYREF -- the `result = default(T)` shape on a
+        // `ref T result` byref parameter (CIL `ldarg <byref param>; initobj T`,
+        // e.g. TestCases.RefOutTest.UnitTest_NestedGenericRefOutSub2<string>).
+        // The initobj's DstOffset then points at the frame slot HOLDING the
+        // 8-byte byref (objIdx, off), NOT at the target slot. The runtime
+        // reference-type arm must DEREF through the byref and write the -1 null
+        // sentinel at the TARGET (mirrors Stind_Ref with vIdx = -1), not
+        // direct-write the byref temp (which silently loses the `default` and
+        // leaves the reference local non-null). Stamped in `case Code.Initobj`
+        // when T is a reference type AND the CIL predecessor is an `ldarg` (the
+        // genuine-byref shape, never addr-alias-folded). This is the
+        // CIL-producer-scan fix: the `ldarg` signal is stable CIL order and
+        // sidesteps the unreliable runtime alias/localIsRef state that defeated
+        // the 4 prior recluster-21 runtime approaches (all of which regressed
+        // ActivatorCreateInstanceWithArgsTest + InheritanceTest20 because an
+        // EqualityComparer `default(T)` FOLDED stack-temp reads the same
+        // objIdx==-1 at runtime as a frame-native byref). Bit 0x1 of the
+        // Initobj Operand4 -- a disjoint opcode namespace (Initobj's Operand4
+        // is otherwise untouched; the only other Initobj operand stamp is
+        // Operand3=RefOffset for the in-frame VT path). The marker survives
+        // LowerNeoOffsets (Initobj case sets Operand3/DstOffset only) and the
+        // Neo inliner (copies OpCodeR by value, register-remap only).
+        public const int NeoInitobjByRefOperandMarker = 0x1;
         // The runtime byref offset-half flag for an F-10 byref (set by the
         // Ldflda arm): the offset half carries (ReferenceOffset | this flag) so
         // the consumer arms can distinguish "this offset is a ManagedObjects
@@ -3021,6 +3045,37 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 case Code.Initobj:
                     op.Register1 = --baseRegIdx;
                     op.Operand = method.GetTypeTokenHashCode(token);
+#if ENABLE_NEO_MODE
+                    // neo-initobj-ref-byref: stamp the byref-operand marker when
+                    // the initobj target T is a reference type and the CIL
+                    // predecessor is an `ldarg` (the `result = default(T)` shape
+                    // on a `ref T result` byref parameter: CIL `ldarg <byref
+                    // param>; initobj T`). By CIL typing, `ldarg; initobj T`
+                    // implies the ldarg loaded a `T&` byref -- a genuine managed
+                    // pointer that is NEVER addr-alias-folded (unlike an
+                    // ldloca-of-a-stack-temp, which the optimizer folds so the
+                    // initobj's DstOffset resolves to the temp slot itself and
+                    // must keep the direct write). The runtime reference-type arm
+                    // must DEREF through the byref and write the -1 null sentinel
+                    // at the TARGET, not direct-write the byref temp. Gating on
+                    // the CIL `ldarg` predecessor (stable IL order, not the
+                    // unreliable register-VM alias/localIsRef state) sidesteps
+                    // the discrimination problem that defeated the prior
+                    // recluster-21 runtime approaches (they could not distinguish
+                    // the genuine byref from the folded temp and regressed
+                    // ActivatorCreateInstanceWithArgsTest + InheritanceTest20).
+                    // The Neo inliner (Optimizer.InlineMethod) copies OpCodeR by
+                    // value and only remaps registers, so the marker propagates
+                    // to the inlined copy (the `ref T` helper is typically
+                    // inlined into the caller). LowerNeoOffsets' Initobj case
+                    // does not touch Operand4. See NeoInitobjByRefOperandMarker.
+                    {
+                        var initT = appdomain.GetType(token, declaringType, method);
+                        if (initT != null && !initT.IsValueType
+                            && ins.Previous != null && IsLdargCode(ins.Previous.OpCode.Code))
+                            op.Operand4 |= NeoInitobjByRefOperandMarker;
+                    }
+#endif
                     break;
                 case Code.Ret:
                     if (hasReturn)
