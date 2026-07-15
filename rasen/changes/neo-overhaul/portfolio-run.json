@@ -1377,6 +1377,23 @@
       "smoke": "FULL SMOKE 17->16 (-1, ReflectionTest10); NeoStep 404/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; ILRuntimeType Enum.ToObject bridge; 16 deep singletons Step-19/inliner/generic-instance)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-16": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-16 recluster batch: 1 fix. GenericMethodTest11 constrained-callvirt on ILTypeInstance primitive field OWNER grabbed the instance instead of the primitive VALUE. Fix = Constrained arm: ILTypeInstance owner + IsPrimitive field -> read+box from Primitives[thisByteOff]. RegisterVMTest04 ground-17 pin DISPROVEN (ManagedObjects correct; real root = >3-arg virtual-IL-call param-marshall through generic instance).",
+      "prerequisites": [
+        "neo-recluster-17"
+      ],
+      "dependsOn": [
+        "neo-recluster-17"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 16->15 (-1, GenericMethodTest11); NeoStep 404/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; constrained primitive-field-owner box-once; RegisterVMTest04 re-pinned; 15 deep singletons)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1456,7 +1473,8 @@
     "neo-initobj-ref-byref",
     "neo-typeof-generic-param",
     "neo-recluster-19",
-    "neo-recluster-17"
+    "neo-recluster-17",
+    "neo-recluster-16"
   ],
   "surfacedFollowups": [
     {
@@ -1674,6 +1692,7 @@
     "fullSmokeAfterIrb": 20,
     "fullSmokeAfterTgp": 19,
     "fullSmokeAfterR19": 17,
-    "fullSmokeAfterR17": 16
+    "fullSmokeAfterR17": 16,
+    "fullSmokeAfterR16": 15
   }
 }

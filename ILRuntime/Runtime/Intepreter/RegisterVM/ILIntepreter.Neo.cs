@@ -7373,7 +7373,35 @@ namespace ILRuntime.Runtime.Intepreter
                                         }
                                         if (thisObjIdx >= 0)
                                         {
-                                            boxedReceiver = mStack[thisObjIdx];
+                                            object conRawTarget = mStack[thisObjIdx];
+                                            ILTypeInstance conIli = conRawTarget as ILTypeInstance;
+                                            if (conIli == null && conRawTarget is CrossBindingAdaptorType cbaCon)
+                                                conIli = cbaCon.ILInstance;
+                                            // neo-recluster-16: a constrained.callvirt whose byref `this`
+                                            // points at a PRIMITIVE field of an IL instance (ldflda
+                                            // <primField> on an ILTypeInstance produces the byref
+                                            // (objIdx=the IL owner, thisByteOff=Primitives byte offset)).
+                                            // The owner ILTypeInstance is NOT the constrained receiver --
+                                            // the primitive VALUE at Primitives[thisByteOff] is. Read +
+                                            // box it (mirror the frame-native IsPrimitive branch below,
+                                            // but source from the instance's Primitives instead of the
+                                            // caller's frame). Without this, the receiver resolves to the
+                                            // ILTypeInstance -> the autogen CLR-interface binding (e.g.
+                                            // IComparable<int>::CompareTo) InvalidCasts the ILTypeInstance
+                                            // to the interface (GenericMethodTest11). A boxed primitive on
+                                            // mStack is a System.Int32, NOT an ILTypeInstance, so the
+                                            // `is ILTypeInstance` discriminator never intercepts a
+                                            // genuine already-boxed receiver -> no regression on the
+                                            // existing box-once semantics. Primitive-only (a CLR-VT field
+                                            // of an IL instance is a separate, deferred shape).
+                                            if (conIli != null && constrainedType != null && constrainedType.IsPrimitive && conIli.Primitives != null)
+                                            {
+                                                int conPrimSz = AppDomain.GetPrimitiveSize(constrainedType);
+                                                fixed (byte* conPP = conIli.Primitives)
+                                                    boxedReceiver = NeoBoxReturnValue(constrainedType, conPP + thisByteOff, conPrimSz);
+                                            }
+                                            else
+                                                boxedReceiver = conRawTarget;
                                         }
                                         else if (constrainedType is ILType ilBoxType && ilBoxType.IsValueType)
                                         {
