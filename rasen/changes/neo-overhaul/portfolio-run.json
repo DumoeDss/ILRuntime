@@ -1462,6 +1462,23 @@
       "smoke": "FULL SMOKE 13->12 (-1, DelegateTest42); NeoStep 410/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; get_Target Neo twin; 3 deep distinct roots: UnitTest_10046/10051/MyTest.Test)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-vt-return-move-size": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: AllocateSlotForType final else lumped CLR value type with reference types (Size=4,RefCount=1) -> Ret CopyBlock only 4 bytes for a 12-byte CLR struct return. Prior Move-size pinning DISPROVEN (Move was correct; 12 bytes). Fix = CLR-VT branch in AllocateSlotForType (Size=managed,RefCount=0). Closes F-MAJ-1 local vs own-frame return sizing. Bonus UnitTest_10046 (op_Addition VT return same root).",
+      "prerequisites": [
+        "neo-step19-delegate-enumerator-group"
+      ],
+      "dependsOn": [
+        "neo-step19-delegate-enumerator-group"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 12->10 (-2, UnitTest_TestFCP + bonus UnitTest_10046); NeoStep 410/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; stale Move-pinning disproven; AllocateSlotForType 3rd sizing site closed)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1546,7 +1563,8 @@
     "neo-recluster-15",
     "neo-il-struct-box-call-boundary",
     "neo-recluster-13",
-    "neo-step19-delegate-enumerator-group"
+    "neo-step19-delegate-enumerator-group",
+    "neo-vt-return-move-size"
   ],
   "surfacedFollowups": [
     {
@@ -1769,6 +1787,7 @@
     "fullSmokeAfterR15": 15,
     "fullSmokeAfterStructBox": 13,
     "fullSmokeAfterR13": 13,
-    "fullSmokeAfterS19": 12
+    "fullSmokeAfterS19": 12,
+    "fullSmokeAfterVtRet": 10
   }
 }

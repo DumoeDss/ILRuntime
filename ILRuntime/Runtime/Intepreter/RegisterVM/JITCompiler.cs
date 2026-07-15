@@ -2737,9 +2737,35 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 slot.RefCount = 0;
                 offset += size;
             }
+            else if (t.IsValueType)
+            {
+                // neo-vt-return-move-size: a CLR value type (not ILType, not enum --
+                // both caught above) param/return slot is FLAT MANAGED BYTES, mirroring
+                // the CLR-struct LOCAL declaration (the varCnt loop's CLRType else
+                // branch, F-MAJ-1) AND the call-frame layout (AllocateNeoCallParamSlot,
+                // Step 13b D1) so the own-frame param/return layout AGREES with the
+                // caller's CopyNeoCallArguments write layout. Previously this fell
+                // through to the boxed-reference branch (Size=4, RefCount=1), which
+                // truncated a CLR value type RETURN: the Ret handler copies
+                // `returnPrimitiveSize` bytes to the caller's dest, so a 12-byte struct
+                // (e.g. TestVector3NoBinding = 3 floats) returned only its leading 4
+                // bytes (x), dropping y/z -- UnitTest_TestFCP's ToColor returned (1,0,0)
+                // instead of (1,1,0). (The handoff's "Move copies 4 bytes" pinning was
+                // STALE: the Move correctly copies min(src,dst) bytes; the loss is in
+                // the Ret, sized by this return-slot computation.) RefCount stays 0: a
+                // binder struct is owned by the autogen redirects (which use
+                // AllocateNeoCallParamSlot for both caller+callee), so this own-frame
+                // reflection-fallback path only sees no-binder structs (RefCount 0).
+                int clrVtSize = Optimizer.GetNeoValueTypeManagedSize(t.TypeForCLR);
+                slot.Offset = offset;
+                slot.RefOffset = refOffset;
+                slot.Size = clrVtSize;
+                slot.RefCount = 0;
+                offset += clrVtSize;
+            }
             else
             {
-                // CLR value type / reference type -> stored as reference (mStack index)
+                // Reference type -> stored as reference (mStack index)
                 slot.Offset = offset;
                 slot.RefOffset = refOffset;
                 slot.Size = 4; // Need 4 bytes to store the mStack index in the primitive frame
