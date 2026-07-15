@@ -352,6 +352,13 @@ namespace ILRuntime.Runtime.Enviorment
 #endif
             mi = typeof(Delegate).GetMethod("get_Target");
             RegisterCLRMethodRedirection(mi, CLRRedirections.DelegateGetTarget);
+#if ENABLE_NEO_MODE
+            // Step 19: Neo twin for Delegate.get_Target (mirrors the Legacy redirect
+            // above). Without this the JIT emits a raw callvirt.clr get_Target and the
+            // reflection fallback returns the wrong object for an IDelegateAdapter-held
+            // IL delegate -> DelegateTest42 `del.Target != boundInstance`.
+            RegisterCLRMethodRedirectionNeo(mi, CLRRedirections.DelegateGetTargetNeo);
+#endif
             dMgr = new DelegateManager(this);
             dMgr.RegisterDelegateConvertor<Action>((dele) =>
             {

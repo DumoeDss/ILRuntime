@@ -637,6 +637,32 @@ namespace ILRuntime.Runtime.Enviorment
             WriteNeoDelegateResult(mStack, retDst, retRefBase, result);
         }
 
+        // Step 19: Neo redirect for System.Delegate.get_Target (the C# `del.Target`
+        // lowering). Mirrors Legacy DelegateGetTarget (CLRRedirections.cs:1271):
+        // an IL delegate is held as an IDelegateAdapter (an ILTypeInstance subclass,
+        // NOT a System.Delegate), whose bound `this` is `adapter.Instance`; a real
+        // CLR Delegate uses the native `.Target`. Legacy registers this redirect on
+        // RedirectMap, but WITHOUT a Neo twin the JIT emits a raw `callvirt.clr`
+        // get_Target (no RedirectMapNeo entry -> no Call_Redirect) and the reflection
+        // fallback returns the wrong object for an IDelegateAdapter -> DelegateTest42
+        // fails (`del.Target != boundInstance`). The Neo twin restores Legacy parity.
+        // Null-aware result write (WriteNeoObjectResult emits the -1 sentinel for a
+        // static delegate's null Target) so the caller's `brfalse.ref` / `ceq.ref`
+        // null-test reads null correctly.
+        public unsafe static void DelegateGetTargetNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
+        {
+            int curPrim = 0;
+            object dele = ILIntepreter.ReadNeoReference(frameBase, ref curPrim, mStack);
+            if (dele == null)
+                throw new NullReferenceException();
+            object result;
+            if (dele is IDelegateAdapter da)
+                result = da.Instance;
+            else
+                result = ((Delegate)dele).Target;
+            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
+        }
+
         // Store a delegate-typed Combine/Remove result (an IDelegateAdapter or a
         // real Delegate) into the caller's dest ref slot + write the index.
         static unsafe void WriteNeoDelegateResult(AutoList mStack, byte* retDst, int retRefBase, object result)

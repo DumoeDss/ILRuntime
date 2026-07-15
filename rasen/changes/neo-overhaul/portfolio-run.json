@@ -1445,6 +1445,23 @@
       "smoke": "FULL SMOKE 13 (delta 0 honest); NeoStep 410/0 (+6 probes); Legacy-neutral; UnitTest_TestFCP pinned to JIT Move-size next child",
       "review": "APPROVE (LEAD non-author; honest delta-0; latent fix + precise pinning; 13 deep singletons prioritized)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-step19-delegate-enumerator-group": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: 4 Step-19 tests DISPROVEN shared root (4 distinct). 1 tractable: DelegateTest42 = Delegate.get_Target missing Neo twin -> reflection returns wrong object for IDelegateAdapter-held IL delegate. Fix = DelegateGetTargetNeo redirect (IDelegateAdapter.Instance). 3 distinct deep roots reported.",
+      "prerequisites": [
+        "neo-recluster-13"
+      ],
+      "dependsOn": [
+        "neo-recluster-13"
+      ],
+      "status": "done",
+      "capability": "neo-dispatch",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 13->12 (-1, DelegateTest42); NeoStep 410/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; get_Target Neo twin; 3 deep distinct roots: UnitTest_10046/10051/MyTest.Test)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1528,7 +1545,8 @@
     "neo-recluster-16",
     "neo-recluster-15",
     "neo-il-struct-box-call-boundary",
-    "neo-recluster-13"
+    "neo-recluster-13",
+    "neo-step19-delegate-enumerator-group"
   ],
   "surfacedFollowups": [
     {
@@ -1750,6 +1768,7 @@
     "fullSmokeAfterR16": 15,
     "fullSmokeAfterR15": 15,
     "fullSmokeAfterStructBox": 13,
-    "fullSmokeAfterR13": 13
+    "fullSmokeAfterR13": 13,
+    "fullSmokeAfterS19": 12
   }
 }
