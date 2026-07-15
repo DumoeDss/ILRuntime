@@ -1258,6 +1258,23 @@
       "smoke": "FULL SMOKE 27->24 (-3); NeoStep 401/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; inliner+type-tracking root; Ceq_Ref only specialized gap)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-recluster-24": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-24 recluster: Cgt_Un null-idiom (DelegateTest43). x!=null lowers to ldsfld;ldnull;cgt.un. Cgt_Un tested cguA!=-1 but IL-static null is NON-ZERO mStack index pointing to null (child-11), not -1 -> null event read as not-null -> wrong branch. Fix = Cgt_Un cguB==-1 (ldnull idi) resolve mStack[cguA]==null (mirror Ceq_Ref).",
+      "prerequisites": [
+        "neo-stfld-ref-generics"
+      ],
+      "dependsOn": [
+        "neo-stfld-ref-generics"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 24->23 (-1, DelegateTest43); NeoStep 401/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; Cgt_Un null-idiom; remaining 23 fragmented singletons reported)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1330,7 +1347,8 @@
     "neo-nested-ldflda-byref",
     "neo-delegate-dispatch-arg-marshal",
     "neo-recluster-28",
-    "neo-stfld-ref-generics"
+    "neo-stfld-ref-generics",
+    "neo-recluster-24"
   ],
   "surfacedFollowups": [
     {
@@ -1541,6 +1559,7 @@
     "fullSmokeAfterD4": 31,
     "fullSmokeAfterD1": 28,
     "fullSmokeAfterR28": 27,
-    "fullSmokeAfterSrg": 24
+    "fullSmokeAfterSrg": 24,
+    "fullSmokeAfterR24": 23
   }
 }

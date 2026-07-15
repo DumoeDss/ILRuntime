@@ -2573,7 +2573,35 @@ namespace ILRuntime.Runtime.Intepreter
                                     // Neither is exercised by the validated tests.)
                                     int cguA = *(int*)(frameBase + ip->SrcOffset);
                                     int cguB = *(int*)(frameBase + ip->OperandOffset);
-                                    bool cguRes = cguA != -1 && ((uint)cguA > (uint)cguB || cguB == -1);
+                                    bool cguRes;
+                                    if (cguB == -1)
+                                    {
+                                        // The CIL "x != null" idiom is `ldnull; cgt.un`
+                                        // (ldnull lowers to the -1 sentinel, so cguB == -1
+                                        // selects this arm). Under the Neo object model null
+                                        // is EITHER the -1 sentinel (Ldnull / CLR-static
+                                        // Ldsfeld) OR a NON-ZERO mStack index whose entry IS
+                                        // null (IL-static Ldsfeld does mStack.Add(null)+index;
+                                        // a delegate/event field after Delegate.Remove, a
+                                        // reference static field before init). The raw
+                                        // `cguA != -1` check mishandles the second encoding
+                                        // (a non-zero index to a null entry reads as "not
+                                        // null" -> a null static event tests non-null ->
+                                        // wrong branch). Resolve the referenced object like
+                                        // Ceq_Ref above: a is null iff the sentinel OR its
+                                        // mStack entry is null. (The cguB == -1 case is
+                                        // ALREADY special-cased by the prior `|| cguB == -1`
+                                        // clause as the null-sentinel path; this only makes
+                                        // that null-check correct for both null encodings.
+                                        // The integer `cgt.un x, -1` edge is unchanged in
+                                        // spirit -- the prior code already diverged there.)
+                                        bool aIsNull = cguA == -1 || (cguA >= 0 && cguA < mStack.Count && mStack[cguA] == null);
+                                        cguRes = !aIsNull;
+                                    }
+                                    else
+                                    {
+                                        cguRes = cguA != -1 && (uint)cguA > (uint)cguB;
+                                    }
                                     *(int*)(frameBase + ip->DstOffset) = cguRes ? 1 : 0;
                                 }
                                 break;
