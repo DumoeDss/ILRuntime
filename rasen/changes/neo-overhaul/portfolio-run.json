@@ -1292,6 +1292,23 @@
       "smoke": "FULL SMOKE 23->21 (-2, Test04/Test05); stash-toggle airtight; NeoStep 401/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; static-vs-instance fieldIdx; DEEP disproven again)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-recluster-21": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-21 recluster: delta 0 (no fix shipped). 4 fix approaches for initobj-ref-byref all aborted (optimizer alias/localIsRef unreliable for ref locals). CIL-producer scan approach documented. Fresh 21 grounding table written.",
+      "prerequisites": [
+        "neo-hotfix-field-index"
+      ],
+      "dependsOn": [
+        "neo-hotfix-field-index"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 21 (delta 0 -- no regression); NeoStep 401/0; 21 deeply fragmented (12 throw grab-bag distinct + 5 autogen-stub distinct + 4 pairs)",
+      "review": "APPROVE (LEAD non-author; honest delta-0; optimizer-alias blocker documented; CIL-producer-scan path recommended)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1366,7 +1383,8 @@
     "neo-recluster-28",
     "neo-stfld-ref-generics",
     "neo-recluster-24",
-    "neo-hotfix-field-index"
+    "neo-hotfix-field-index",
+    "neo-recluster-21"
   ],
   "surfacedFollowups": [
     {
@@ -1579,6 +1597,7 @@
     "fullSmokeAfterR28": 27,
     "fullSmokeAfterSrg": 24,
     "fullSmokeAfterR24": 23,
-    "fullSmokeAfterHfi": 21
+    "fullSmokeAfterHfi": 21,
+    "fullSmokeAfterR21": 21
   }
 }
