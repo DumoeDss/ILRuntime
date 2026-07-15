@@ -402,14 +402,40 @@ namespace ILRuntime.Runtime.Intepreter
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        static void CopyNeoCallArguments(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain)
+        static void CopyNeoCallArguments(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain, int frameRefBase)
         {
             if (map.PrimitiveSize == null)
                 return;
             bool[] byRefSrc = map.PrimitiveByRefSrc;
             System.Type[] byRefElemType = map.PrimitiveByRefElemType;
+            CLR.TypeSystem.ILType[] boxIlTypes = map.PrimitiveBoxIlType;
             for (int i = 0; i < map.PrimitiveSize.Length; i++)
             {
+                // neo-il-struct-box-call-boundary: an IL value-type struct source
+                // passed to a REFERENCE-typed CLR param (List<Anim>.Add etc.) must
+                // be BOXED into a fresh ILTypeInstance and its mStack index written
+                // to the dest 4-byte ref slot -- NOT raw-copied (which would place
+                // the struct's first primitive-field bytes where the autogen reader
+                // expects an mStack index -> garbage index -> OOB/NRE). The struct's
+                // caller-frame prim source is map.PrimitiveSrc[i]; its ref source is
+                // map.PrimitiveBoxSrcRefOff[i]; sizes come from the ILType. Mirrors
+                // the Box arm + TryNeoIlVtElementArrayCall's Set box (Instantiate +
+                // CopyFrameToIL). The ref region (RefDst) is never read by autogen
+                // bindings (they read only the sequential 4-byte prim indices via
+                // ReadNeoReference), so writing the index alone suffices.
+                if (boxIlTypes != null && i < boxIlTypes.Length && boxIlTypes[i] != null)
+                {
+                    var ilType = boxIlTypes[i];
+                    ILTypeInstance boxIns = ilType.Instantiate(false);
+                    CopyFrameToIL(frameBase, map.PrimitiveSrc[i], map.PrimitiveBoxSrcRefOff[i],
+                        ilType.TotalPrimitiveSize, ilType.TotalReferenceCount,
+                        mStack, frameRefBase, boxIns);
+                    boxIns.Boxed = true;
+                    int boxIdx = mStack.Count;
+                    mStack.Add(boxIns);
+                    *(int*)(targetBase + map.PrimitiveDst[i]) = boxIdx;
+                    continue;
+                }
                 // Step 13 Area 4b / 4c: a byref source slot holds an 8-byte Ref Slot
                 // (objectIndex, offset). The dest slot is sized by the REFERENT type
                 // (a struct `this` for 4b; the byref param's element type for 4c), so
@@ -3537,7 +3563,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int crParamIdx = ip->Operand;
                                     ref var crMap = ref nf.NeoCallParams[crParamIdx];
                                     byte* crTargetBase = newEsp;
-                                    CopyNeoCallArguments(ref crMap, frameBase, crTargetBase, mStack, AppDomain);
+                                    CopyNeoCallArguments(ref crMap, frameBase, crTargetBase, mStack, AppDomain, frameRefBase);
 
                                     bool crIsNewObj = (ip->Operand4 & 0x2) == 0x2;
                                     byte* crRetDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
@@ -3592,7 +3618,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
 
                                     // Reference parameters are passed as existing mStack indices in the frame bytes.
                                     // The primitive copy above has already copied those indices into targetBase.
@@ -3764,7 +3790,7 @@ namespace ILRuntime.Runtime.Intepreter
                                             // Legacy `ILIntepreter.Register.cs:3539-3561`.
                                             if (clrDeclType.IsDelegate)
                                             {
-                                                CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                                CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
                                                 // DUMP-confirmed (NeoStep19_StaticAction): the CLR
                                                 // delegate ctor's NeoCallParamMap has 2 entries --
                                                 // [0] = target (object, 4-byte mStack index),
@@ -3797,7 +3823,7 @@ namespace ILRuntime.Runtime.Intepreter
                                                 ip++;
                                                 continue;
                                             }
-                                            CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                            CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
                                             var clrCtor = targetMethod as CLRMethod;
                                             InvokeNeoClrMethod(clrCtor, true, targetBase, mStack, retDstPtr, newobjDstIdx);
 
@@ -3816,7 +3842,7 @@ namespace ILRuntime.Runtime.Intepreter
                                         // built a NeoCallParamMap: map[0]=target, map[1]=
                                         // fnptr), build the adapter via DelegateManager (the
                                         // IL-overload FindDelegateAdapter), store it.
-                                        CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                        CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
                                         int ildTargetOff = map.PrimitiveDst[0];
                                         int ildMethodOff = map.PrimitiveDst[1];
                                         int ildTargetIdx = *(int*)(targetBase + ildTargetOff);
@@ -3913,7 +3939,7 @@ namespace ILRuntime.Runtime.Intepreter
 
                                         // 3) Copy the remaining ctor args (slots [1..]). The
                                         //    lowering built the NeoCallParamMap skipping slot 0.
-                                        CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                        CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
 
                                         // 4) Invoke the ctor directly via ExecuteNeo (not
                                         //    InvokeNeoCallTarget) so we can pass the caller's dest
@@ -3972,7 +3998,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     mStack[newobjDstIdx] = ins;
 
                                     *(int*)targetBase = newobjDstIdx;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
                                     *(int*)retDstPtr = newobjDstIdx;
 
                                     int targetRetRefBase = frameRefBase + dstRefOffset;
@@ -3996,7 +4022,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
@@ -4098,7 +4124,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
@@ -4234,7 +4260,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;
@@ -4258,7 +4284,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     int callParamIdx = ip->Operand;
                                     ref var map = ref nf.NeoCallParams[callParamIdx];
                                     byte* targetBase = newEsp;
-                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain);
+                                    CopyNeoCallArguments(ref map, frameBase, targetBase, mStack, AppDomain, frameRefBase);
 
                                     byte* retDstPtr = ip->Register1 >= 0 ? frameBase + ip->DstOffset : null;
                                     int targetRetRefBase = ip->Register1 >= 0 ? frameRefBase + ip->Operand3 : -1;

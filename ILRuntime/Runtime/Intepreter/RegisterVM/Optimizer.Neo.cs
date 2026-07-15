@@ -427,6 +427,31 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 return new NeoAddressAlias { Reg = reg, Offset = 0 };
             }
 
+            // neo-il-struct-box-call-boundary: a position-correct per-register
+            // IL-value-type tracker, used by the call-param map-build to decide
+            // whether a Callvirt_CLR / Call / Call_Redirect arg source is a flat-
+            // bytes IL struct that must be boxed into an ILTypeInstance at the
+            // boundary (List<Anim>.Add -> List<ILTypeInstance>.Add). The shared
+            // frame.NeoRegisterTypes is last-write-wins (TypeSpecialize is a
+            // single forward pass with no phi-merge), so for a REUSED temp it
+            // holds the FINAL write's type, not the type live at the call site
+            // (e.g. r5 = new Anim() at body 7 then r5 = 12 at body 13 -> final
+            // Int32, but the call at body 8 needs Anim). curVtTypes is maintained
+            // per-instruction as this loop walks the body in order, so at each
+            // call it reflects the most-recent writer BEFORE the call (position-
+            // correct for the straight-line top-of-stack arg shape). Seeded from
+            // NeoRegisterTypes so declared locals/params carry their (stable)
+            // declared type; a temp is then overwritten by its own producers as
+            // they are visited. Only IL value-type structs are tracked (the only
+            // boxing candidate); every other producer clears its dest. This
+            // mirrors a subset of TypeSpecializeNeoOpcodes' registerType rules
+            // (Newobj/Unbox seed; Move/Ldloc/Ldarg propagate; any other dest
+            // clears) -- deliberately conservative: a struct produced by Ldfld/
+            // Call/Ldelem is cleared (missed), never a false positive.
+            CLR.TypeSystem.IType[] curVtTypes = frame.NeoRegisterTypes != null
+                ? (CLR.TypeSystem.IType[])frame.NeoRegisterTypes.Clone()
+                : null;
+
             for (int i = 0; i < body.Length; i++)
             {
                 OpCodeR op = body[i];
@@ -1280,6 +1305,16 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 throw new Exception($"Neo lowering could not find expected Push instructions for Call/Newobj. [code={op.Code} method={targetMethod} ParameterCount={targetMethod?.ParameterCount} HasThis={targetMethod?.HasThis} isNeoNewobjShape={isNeoNewobjShape} hasConstrained={hasConstrained} op4={op.Operand4} pCnt={pCnt} pushCnt={pushCnt} foundPushes={foundPushes}]");
                             
                              StackSlotInfo[] paramInfos = null;
+                            // neo-il-struct-box-call-boundary: the per-dst-slot
+                            // resolved param type, captured so the map-build loop
+                            // can detect an IL value-type-struct source being
+                            // passed to a REFERENCE-typed CLR param (the
+                            // List<Anim> -> List<ILTypeInstance> box-at-boundary
+                            // case). Populated only for a CLR callee (an IL
+                            // callee's IL-struct params are by-value flat bytes --
+                            // no boxing); stays null for an IL callee, and the
+                            // map-build boxing discriminator null-checks it.
+                            CLR.TypeSystem.IType[] paramTypes = null;
                             if (targetMethod is ILRuntime.CLR.Method.ILMethod ilm)
                             {
                                 paramInfos = ilm.CompiledFrame.ParamInfos;
@@ -1296,6 +1331,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 // Generate contiguous paramInfos for CLRMethod
                                 int totalParams = pCnt + (isNeoNewobjShape ? 1 : 0);
                                 paramInfos = new StackSlotInfo[totalParams];
+                                paramTypes = new CLR.TypeSystem.IType[totalParams];
                                 int curPrim = 0, curRef = 0;
                                 if (isNeoNewobjShape)
                                 {
@@ -1341,6 +1377,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     }
                                     else
                                         paramInfos[dstIndex] = AllocateNeoCallParamSlot(paramType, ref curPrim, ref curRef, domain);
+                                    paramTypes[dstIndex] = paramType;
                                 }
                             }
 
@@ -1354,6 +1391,10 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 List<bool> primByRef = new List<bool>();
                                 List<bool> primByRefWriteBack = new List<bool>();
                                 List<System.Type> primByRefElemType = new List<System.Type>();
+                                // neo-il-struct-box-call-boundary: per-prim-slot boxing
+                                // descriptor (see NeoCallParamMap.PrimitiveBoxIlType).
+                                List<CLR.TypeSystem.ILType> primBoxIlType = new List<CLR.TypeSystem.ILType>();
+                                List<ushort> primBoxSrcRefOff = new List<ushort>();
                                 // Step 13 Area 4c: the CLR ParameterInfo[] for the
                                 // IsIn/IsOut write-back gate. Null for an IL callee
                                 // (the byref-param flag only fires for CLR callees;
@@ -1422,6 +1463,47 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     }
                                     bool dstByRef = dstIsVtThisSlot || dstIsByRefParam;
 
+                                    // neo-il-struct-box-call-boundary: detect an IL value-
+                                    // type struct source being passed to a REFERENCE-typed
+                                    // CLR param. The canonical trigger is a CLR generic
+                                    // collection over an IL struct (List<Anim>.Add ->
+                                    // List<ILTypeInstance>.Add): the C# compiler emits NO
+                                    // CIL box (at source level the param is the value type
+                                    // T), but ILRuntime resolves T to ILTypeInstance (a
+                                    // reference), so CopyNeoCallArguments must box the flat-
+                                    // bytes struct into a fresh ILTypeInstance at the call
+                                    // boundary instead of raw-copying the struct bytes into
+                                    // the dest 4-byte ref slot (which would put the struct's
+                                    // first primitive-field bytes where the autogen reader
+                                    // expects an mStack index -> garbage index -> OOB/NRE).
+                                    // The source representation (flat-bytes IL-struct vs a
+                                    // genuine reference) is a JIT-time dataflow fact (the
+                                    // Neo untyped frame cannot distinguish them at runtime --
+                                    // e.g. Anim = {string;float} is 4 prim/1 ref, identical
+                                    // to a reference slot's shape), so the discriminator
+                                    // uses frame.NeoRegisterTypes[srcReg] (the TypeSpecialize
+                                    // dataflow; Newobj/Ldloca/Ldflda/Unbox seed an IL-VT
+                                    // dest). paramType (reference) + srcType (IL-VT, not
+                                    // enum/primitive) + !dstByRef (byref params have their
+                                    // own deref path) is the precise trigger; a genuine
+                                    // reference source (IL class / CLR string/object) has a
+                                    // non-IL-VT srcType -> no box -> raw copy stands.
+                                    CLR.TypeSystem.ILType boxIlType = null;
+                                    if (!dstByRef && paramTypes != null && dstIndex < paramTypes.Length)
+                                    {
+                                        var pt = paramTypes[dstIndex];
+                                        if (pt != null && !pt.IsValueType && !pt.IsPrimitive && !pt.IsByRef)
+                                        {
+                                            short boxSrcReg = srcRegs[p];
+                                            if (curVtTypes != null && boxSrcReg >= 0 && boxSrcReg < curVtTypes.Length
+                                                && curVtTypes[boxSrcReg] is CLR.TypeSystem.ILType srcIl
+                                                && srcIl.IsValueType && !srcIl.IsEnum && !srcIl.IsPrimitive)
+                                            {
+                                                boxIlType = srcIl;
+                                            }
+                                        }
+                                    }
+
                                     if (dstInfo.Size > 0)
                                     {
                                         primSrc.Add((ushort)srcInfo.Offset);
@@ -1432,6 +1514,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                         // instance method); 4c keys on the ref/out gate.
                                         primByRefWriteBack.Add(dstIsVtThisSlot || byRefWriteBack);
                                         primByRefElemType.Add(byRefElemType);
+                                        primBoxIlType.Add(boxIlType);
+                                        primBoxSrcRefOff.Add((ushort)srcInfo.RefOffset);
                                     }
                                     for (int r = 0; r < dstInfo.RefCount; r++)
                                     {
@@ -1449,6 +1533,18 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                     map.PrimitiveByRefSrc = primByRef.ToArray();
                                     map.PrimitiveByRefWriteBack = primByRefWriteBack.ToArray();
                                     map.PrimitiveByRefElemType = primByRefElemType.ToArray();
+                                    // Only carry the box arrays when at least one slot
+                                    // boxes, so the common no-box call pays no per-call
+                                    // cost (CopyNeoCallArguments null-checks the field).
+                                    for (int bi = 0; bi < primBoxIlType.Count; bi++)
+                                    {
+                                        if (primBoxIlType[bi] != null)
+                                        {
+                                            map.PrimitiveBoxIlType = primBoxIlType.ToArray();
+                                            map.PrimitiveBoxSrcRefOff = primBoxSrcRefOff.ToArray();
+                                            break;
+                                        }
+                                    }
                                 }
                                 if (refSrc.Count > 0)
                                 {
@@ -1484,6 +1580,58 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         break;
                 }
                 WarnUnhandledNeoLoweringOpcode(op.Code, handled);
+
+                // neo-il-struct-box-call-boundary: advance the position-correct
+                // IL-value-type tracker (see the seed comment at the loop head)
+                // for the NEXT iteration's call map-build. Newobj / Unbox of an
+                // IL value type seed the dest; Move / Move_Vt / Ldloc* / Ldarg*
+                // propagate Register2's type to the dest; any other dest-defining
+                // opcode clears the dest (a non-IL-VT producer, or a producer kind
+                // this conservative tracker does not model -- never a false
+                // positive, at most a missed box). Uses preOp (the pre-lowering
+                // register state); op.Code is unchanged by lowering.
+                if (curVtTypes != null)
+                {
+                    OpCodeREnum vtCode = op.Code;
+                    short vtDest = preOp.Register1;
+                    if (vtCode == OpCodeREnum.Newobj)
+                    {
+                        var ctor = domain.GetMethod(preOp.Operand2);
+                        if (ctor != null && ctor.DeclearingType is CLR.TypeSystem.ILType nvt
+                            && nvt.IsValueType && !nvt.IsEnum && !nvt.IsPrimitive
+                            && vtDest >= 0 && vtDest < curVtTypes.Length)
+                            curVtTypes[vtDest] = nvt;
+                        else if (vtDest >= 0 && vtDest < curVtTypes.Length)
+                            curVtTypes[vtDest] = null;
+                    }
+                    else if (vtCode == OpCodeREnum.Unbox || vtCode == OpCodeREnum.Unbox_Any)
+                    {
+                        var ubt = domain.GetType(preOp.Operand);
+                        if (ubt is CLR.TypeSystem.ILType ubil
+                            && ubil.IsValueType && !ubil.IsEnum && !ubil.IsPrimitive
+                            && vtDest >= 0 && vtDest < curVtTypes.Length)
+                            curVtTypes[vtDest] = ubil;
+                        else if (vtDest >= 0 && vtDest < curVtTypes.Length)
+                            curVtTypes[vtDest] = null;
+                    }
+                    else if (vtCode == OpCodeREnum.Move || vtCode == OpCodeREnum.Move_Vt
+                             || vtCode == OpCodeREnum.Ldloc || vtCode == OpCodeREnum.Ldloc_S
+                             || vtCode == OpCodeREnum.Ldloc_0 || vtCode == OpCodeREnum.Ldloc_1
+                             || vtCode == OpCodeREnum.Ldloc_2 || vtCode == OpCodeREnum.Ldloc_3
+                             || vtCode == OpCodeREnum.Ldarg || vtCode == OpCodeREnum.Ldarg_S
+                             || vtCode == OpCodeREnum.Ldarg_0 || vtCode == OpCodeREnum.Ldarg_1
+                             || vtCode == OpCodeREnum.Ldarg_2 || vtCode == OpCodeREnum.Ldarg_3)
+                    {
+                        short vtSrc = preOp.Register2;
+                        if (vtDest >= 0 && vtDest < curVtTypes.Length)
+                            curVtTypes[vtDest] = (vtSrc >= 0 && vtSrc < curVtTypes.Length) ? curVtTypes[vtSrc] : null;
+                    }
+                    else if (GetOpcodeDestRegister(ref preOp, out short vtKilled)
+                             && vtKilled >= 0 && vtKilled < curVtTypes.Length)
+                    {
+                        curVtTypes[vtKilled] = null;
+                    }
+                }
 
                 // B1: maintain the live-range-aware alias snapshot for the next
                 // iteration's _Inline / Initobj consumers. An address producer

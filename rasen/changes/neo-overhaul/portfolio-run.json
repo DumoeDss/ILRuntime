@@ -1411,6 +1411,23 @@
       "smoke": "FULL SMOKE 15 (delta 0 honest); NeoStep 404/0; 2-for-1 boxing pin for next child",
       "review": "APPROVE (LEAD non-author; honest delta-0; 2-for-1 root + 3-site fix path documented)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-il-struct-box-call-boundary": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 2-for-1: IL value-type struct NOT boxed to ILTypeInstance when passed as ref-typed param at Callvirt_CLR/Call boundary (List<Anim>.Add -> List<ILTypeInstance>::Add). CopyNeoCallArguments raw-CopyBlock -> ReadNeoReference reads garbage -> OOB (StructTest11) / null-downstream NRE (TestStructDictionary). Fix = 3-site: NeoCallParamMap.PrimitiveBoxIlType flag + LowerNeoOffsets position-correct curVtTypes tracker (seeded from NeoRegisterTypes, per-iteration maintained) + CopyNeoCallArguments boxing branch (ilType.Instantiate+CopyFrameToIL). +218/-14 across JITCompiler+Optimizer.Neo+ILIntepreter.Neo.",
+      "prerequisites": [
+        "neo-recluster-15"
+      ],
+      "dependsOn": [
+        "neo-recluster-15"
+      ],
+      "status": "done",
+      "capability": "neo-value-types+neo-dispatch",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 15->13 (-2, StructTest11+TestStructDictionary); NeoStep 404/0 (no regression on calling-convention change); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; 3-site calling-convention fix; NeoRegisterTypes+curVtTypes tracker; conservative discriminator; 404 NeoStep green)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1492,7 +1509,8 @@
     "neo-recluster-19",
     "neo-recluster-17",
     "neo-recluster-16",
-    "neo-recluster-15"
+    "neo-recluster-15",
+    "neo-il-struct-box-call-boundary"
   ],
   "surfacedFollowups": [
     {
@@ -1712,6 +1730,7 @@
     "fullSmokeAfterR19": 17,
     "fullSmokeAfterR17": 16,
     "fullSmokeAfterR16": 15,
-    "fullSmokeAfterR15": 15
+    "fullSmokeAfterR15": 15,
+    "fullSmokeAfterStructBox": 13
   }
 }

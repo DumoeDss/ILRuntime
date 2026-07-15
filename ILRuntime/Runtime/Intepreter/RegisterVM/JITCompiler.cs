@@ -62,6 +62,27 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // for a frame-native byref -- the byte width alone suffices there, and
         // null for a non-byref slot).
         public System.Type[] PrimitiveByRefElemType;
+        // neo-il-struct-box-call-boundary: per-prim-slot boxing descriptor for
+        // an IL value-type struct passed as a REFERENCE-typed param at a
+        // Callvirt_CLR / Call / Call_Redirect boundary. When non-null, the
+        // source slot holds the IL-struct's FLAT BYTES (+ its ref region) but
+        // the resolved CLR param is ILTypeInstance / object (a reference) --
+        // the canonical case is a CLR generic collection over an IL struct
+        // (List<Anim>.Add -> List<ILTypeInstance>.Add; the C# compiler emits
+        // NO CIL box because at source level the param is the value type T,
+        // but ILRuntime resolves T to ILTypeInstance). Raw-copying the struct
+        // bytes into the dest 4-byte ref slot puts the struct's first primitive
+        // field bytes where the autogen reader expects an mStack index ->
+        // garbage index -> OOB / NRE. CopyNeoCallArguments must instead BOX the
+        // struct (ilType.Instantiate(false) + CopyFrameToIL) into a fresh mStack
+        // slot and write THAT index. PrimitiveBoxIlType[i] is the struct's ILType
+        // (null = no box for this slot); PrimitiveBoxSrcRefOff[i] is the struct's
+        // caller-frame ref offset (the source of its ref-region fields). The
+        // struct's prim source offset is map.PrimitiveSrc[i]; sizes come from the
+        // ILType. Mirrors the Box arm (Instantiate + CopyFrameToIL) and the
+        // neo-array-multidim-ilvt Set box (TryNeoIlVtElementArrayCall).
+        public CLR.TypeSystem.ILType[] PrimitiveBoxIlType;
+        public ushort[] PrimitiveBoxSrcRefOff;
     }
 #endif
     struct StackSlotInfo
@@ -82,6 +103,14 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         public int TotalRefSize;
 #if ENABLE_NEO_MODE
         public NeoCallParamMap[] NeoCallParams;
+        // neo-il-struct-box-call-boundary: the per-register inferred type map
+        // produced by TypeSpecializeNeoOpcodes (the eval-stack dataflow). Read by
+        // LowerNeoOffsets' call-param map-build to decide whether a call arg
+        // source is a flat-bytes IL value-type struct (needs boxing when the
+        // resolved CLR param is a reference). Set once in RunNeoBackHalf right
+        // after TypeSpecializeNeoOpcodes; null in any path that skips the back-
+        // half (the map-build null-checks it).
+        public IType[] NeoRegisterTypes;
         public StackSlotInfo[] ParamInfos;
         public int ParamPrimitiveSize;
         public int ParamReferenceCount;
@@ -858,7 +887,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             // AllocateLocalStackSpaces resolves its byte/ref offsets from the
             // localInfo at this index and stamps them onto the frame.
             frame.NeoCatchExceptionRegIndex = neoCatchExRegFinal;
-            TypeSpecializeNeoOpcodes(res, locVarRegStart, totalRegCnt);
+            frame.NeoRegisterTypes = TypeSpecializeNeoOpcodes(res, locVarRegStart, totalRegCnt);
             frame.CodeBody = res.ToArray();
             AllocateLocalStackSpaces(ref frame);
             // Keep frame.CodeBody in register-index form (used by inliner,
@@ -930,7 +959,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
 #endif
 
 #if ENABLE_NEO_MODE
-        void TypeSpecializeNeoOpcodes(List<OpCodeR> body, short locVarRegStart, int totalRegCnt)
+        IType[] TypeSpecializeNeoOpcodes(List<OpCodeR> body, short locVarRegStart, int totalRegCnt)
         {
             IType[] registerTypes = BuildInitialRegisterTypes(locVarRegStart, totalRegCnt);
             for (int i = 0; i < body.Count; i++)
@@ -1682,6 +1711,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 }
                 body[i] = op;
             }
+            return registerTypes;
         }
 
         // Step 12: returns true and rewrites `op` from its heap Ldfld_*/Stfld_*

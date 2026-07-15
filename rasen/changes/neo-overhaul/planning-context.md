@@ -1329,3 +1329,66 @@ a Legacy `ExecuteR` arm 1:1; all Neo-gated. Capability split: Conv_R_Un+Switch -
   branch + ldind.I4/I8/R4/R8 + stind.I4/I8/R4/R8 descriptor checks), new
   `TestCases/NeoStepNestedLdfldaByrefTest.cs` (3 probes). Capability = `neo-value-types`. Artifacts at
   `rasen/changes/neo-nested-ldflda-byref/` (proposal/design/specs(neo-value-types ADDED)/tasks).
+
+## Child neo-il-struct-box-call-boundary DONE (2026-07-16) -- durable findings
+- **RE-AUDIT CONFIRMED the 2-for-1 root AND refined the discriminator (the handoff's
+  framing was imprecise on BOTH halves).** An IL value-type struct is NOT boxed to
+  ILTypeInstance when passed as a reference-typed param at a Callvirt_CLR/Call/
+  Call_Redirect boundary. Canonical trigger: a CLR generic collection over an IL
+  struct (`List<Anim>.Add(new Anim())` resolves to `List<ILTypeInstance>::Add(
+  ILTypeInstance)`). The C# compiler emits NO CIL `box` (at source level the param
+  is value-type T, by value), but ILRuntime resolves T to ILTypeInstance (a
+  reference), so the call boundary MUST box. Legacy boxes implicitly via
+  `StackObject.ToObject`; Neo's `CopyNeoCallArguments` raw-CopyBlock'd the struct
+  bytes into the dest 4-byte ref slot -> the autogen `Add_0_Neo` ReadNeoReference
+  read the struct's first primitive-field bytes as an mStack index -> garbage -> OOB
+  (StructTest11) / null-downstream NRE (TestStructDictionary; its `item.id` NRE is a
+  DOWNSTREAM symptom of the SAME Add-boxing bug -- garbage stored -> null retrieved
+  -> field-read NRE; fixing Add flips it). Full smoke **15 -> 13** (both flipped).
+- **D2 (the crux): the handoff's "srcInfo indicates a flat-bytes IL-struct" was
+  UNSOUND.** (1) srcInfo shape is AMBIGUOUS -- Anim = {string;float} = TotalPrimitive
+  Size 4 / TotalReferenceCount 1, IDENTICAL to a reference slot's StackSlotInfo
+  (Size=4, RefCount=1); a pure shape discriminator cannot tell an IL-struct from a
+  reference. (2) `frame.NeoRegisterTypes` is LAST-WRITE-WINS -- TypeSpecialize is a
+  single forward pass with no phi-merge (child-11/16/21 lineage); StructTest11 reuses
+  r5 (`newobj r5=Anim` at body 7 seeds registerTypes[r5]=Anim, but `ldc.i4.s r5,12`
+  at body 13 overwrites to Int32), so reading the FINAL registerTypes[r5] at the call
+  (body 8) yields Int32 (stale) and the box NEVER fires (confirmed by diagnostic).
+- **THE FIX = a POSITION-CORRECT tracker (`curVtTypes`) maintained INSIDE the
+  LowerNeoOffsets main loop** (which already walks the body in order), seeded from
+  `NeoRegisterTypes` (so declared locals/params carry their stable type -- covers
+  TestStructDictionary's `def` local passed directly) + updated per-instruction:
+  Newobj/Unbox of an IL-VT seed the dest; Move/Move_Vt/Ldloc*/Ldarg* propagate
+  Register2's type; any other dest-defining op clears. Read at each call site, it
+  reflects the most-recent writer BEFORE the call (r5 = Anim at body 8, NOT the final
+  Int32). CONSERVATIVE: a struct produced by Ldfld/Ldelem/Call (a producer kind the
+  tracker clears) is MISSED (no box), never a false positive. Future child for
+  struct-field/struct-call-result sources if a test surfaces it.
+- **LESSON (recurring, reaffirmed): the Neo untyped frame means "what does this slot
+  hold" is a JIT-time DATAFLOW fact; a single forward pass without phi-merge gives
+  the LAST write, not the value live at a given site. For a call-site decision the
+  tracker MUST be advanced in lockstep with the body walk and READ at the site.**
+  Same shape as child-11 (Brtrue_Ref), child-16/21 (typed-arith seeding), child-24/29
+  (marker-vs-runtime crux). TypeSpecializeNeoOpcodes now RETURNS registerTypes;
+  RunNeoBackHalf stores `frame.NeoRegisterTypes` for any future JIT pass that needs
+  the (final, last-write) per-register type as a SEED.
+- **The 3-site fix (all Neo-gated -> Legacy-neutral):** (1) JITCompiler.cs --
+  `NeoCallParamMap.PrimitiveBoxIlType` (ILType[], per-prim-slot) +
+  `PrimitiveBoxSrcRefOff` (ushort[]); `CompiledFrame.NeoRegisterTypes`;
+  TypeSpecializeNeoOpcodes returns IType[]; (2) Optimizer.Neo.cs -- capture paramTypes[]
+  in the CLRMethod paramInfos build; curVtTypes seed + per-iteration maintenance;
+  discriminator (!dstByRef + paramType reference + curVtTypes[srcReg] IL-VT) -> set
+  PrimitiveBoxIlType[i]; arrays only carried when a slot boxes (common no-box call pays
+  no per-call cost); (3) ILIntepreter.Neo.cs -- CopyNeoCallArguments gains a frameRefBase
+  param (all 11 call sites updated); prim-loop boxing branch (Instantiate(false) +
+  CopyFrameToIL -- the Box arm / TryNeoIlVtElementArrayCall Set box primitive) +
+  park on mStack + write the index. The ref region (RefDst) is NEVER read by autogen
+  bindings (they read only sequential 4-byte prim indices via ReadNeoReference), so
+  writing the index alone suffices.
+- **Verify:** StructTest11 + TestStructDictionary PASS; stash-toggle airtight (stash
+  the 3 engine files -> rebuild -> both FAIL -> pop -> rebuild -> both PASS); full
+  smoke **15 -> 13** (strict subset); NeoStep **404/0** (the load-bearing gate for a
+  CopyNeoCallArguments change); Legacy-neutral (plain Debug 0 errors). Files
+  (NOT committed, LEAD commits): `JITCompiler.cs`, `Optimizer.Neo.cs`,
+  `ILIntepreter.Neo.cs`. Capability = `neo-optimizer`. Artifacts at
+  `rasen/changes/neo-il-struct-box-call-boundary/` (design/tasks/ship-log).
