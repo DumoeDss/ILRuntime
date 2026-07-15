@@ -1428,6 +1428,23 @@
       "smoke": "FULL SMOKE 15->13 (-2, StructTest11+TestStructDictionary); NeoStep 404/0 (no regression on calling-convention change); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; 3-site calling-convention fix; NeoRegisterTypes+curVtTypes tracker; conservative discriminator; 404 NeoStep green)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-13": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-13 recluster: delta 0 (honest). 13 deep singletons. UnitTest_TestFCP RE-PINNED from struct-ctor arg-loss to JIT Move-size for vt return (ToColor move r13,r12; ret r13). Shipped a real latent fix (CLR-struct reflection newobj writes flat bytes via WriteNeoValueType, proven by TC7) but no count drop. Fresh 13 grounding table written.",
+      "prerequisites": [
+        "neo-il-struct-box-call-boundary"
+      ],
+      "dependsOn": [
+        "neo-il-struct-box-call-boundary"
+      ],
+      "status": "done",
+      "capability": "neo-newobj",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 13 (delta 0 honest); NeoStep 410/0 (+6 probes); Legacy-neutral; UnitTest_TestFCP pinned to JIT Move-size next child",
+      "review": "APPROVE (LEAD non-author; honest delta-0; latent fix + precise pinning; 13 deep singletons prioritized)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1510,7 +1527,8 @@
     "neo-recluster-17",
     "neo-recluster-16",
     "neo-recluster-15",
-    "neo-il-struct-box-call-boundary"
+    "neo-il-struct-box-call-boundary",
+    "neo-recluster-13"
   ],
   "surfacedFollowups": [
     {
@@ -1731,6 +1749,7 @@
     "fullSmokeAfterR17": 16,
     "fullSmokeAfterR16": 15,
     "fullSmokeAfterR15": 15,
-    "fullSmokeAfterStructBox": 13
+    "fullSmokeAfterStructBox": 13,
+    "fullSmokeAfterR13": 13
   }
 }

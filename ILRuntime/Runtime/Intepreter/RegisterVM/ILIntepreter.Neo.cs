@@ -1343,14 +1343,38 @@ namespace ILRuntime.Runtime.Intepreter
                 return;
             if (isNewobj)
             {
-                // The constructed object is a reference type; store it into the
-                // dest mStack ref slot and write the index to the dest byte
-                // offset (mirrors the reference-type return store below).
-                if (targetRetRefBase >= mStack.Count)
-                    mStack.Add(res);
+                // neo-clr-struct-newobj-reflection: discriminate the constructed type.
+                // A CLR VALUE-TYPE newobj routed through the reflection fallback (no
+                // redirect -- e.g. a struct with no ValueTypeBinder ctor, so no autogen
+                // Ctor_Neo stub) must write the struct's FLAT managed bytes to the dest
+                // register, NOT a reference index. The dest register holds the struct
+                // inline (12 bytes for a 3-float struct); storing a reference writes a
+                // 4-byte mStack index into the struct's first-field bytes -> the caller
+                // reads zeros/garbage (UnitTest_TestFCP: ToColor's `new TestVector3NoBinding(
+                // num1,num3,num4)` returned (1,0,0) instead of (1,1,0)). This mirrors the
+                // CLR-struct return store below (Step 13b D6) and the autogen Ctor_Neo
+                // !isNewObj write-back (neo-clr-struct-newobj-retdest-null). A struct WITH
+                // reference fields never reaches here (clrMethod.Invoke NIEs on the ref-
+                // field struct `this` read upstream), so only pure-primitive / zero-ref
+                // binder structs do, and WriteNeoValueType's flat-bytes write suffices.
+                // A reference-type newobj keeps the existing index store.
+                Type newobjType = clrMethod.DeclearingType != null ? clrMethod.DeclearingType.TypeForCLR : null;
+                if (newobjType != null && newobjType.IsValueType && !newobjType.IsPrimitive && !newobjType.IsEnum)
+                {
+                    int newobjSz = Optimizer.GetNeoValueTypeManagedSize(newobjType);
+                    WriteNeoValueType(res, retDstPtr, newobjSz);
+                }
                 else
-                    mStack[targetRetRefBase] = res;
-                *(int*)retDstPtr = targetRetRefBase;
+                {
+                    // The constructed object is a reference type; store it into the
+                    // dest mStack ref slot and write the index to the dest byte
+                    // offset (mirrors the reference-type return store below).
+                    if (targetRetRefBase >= mStack.Count)
+                        mStack.Add(res);
+                    else
+                        mStack[targetRetRefBase] = res;
+                    *(int*)retDstPtr = targetRetRefBase;
+                }
                 return;
             }
 
