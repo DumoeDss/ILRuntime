@@ -1360,6 +1360,23 @@
       "smoke": "FULL SMOKE 19->17 (-2, DelegateTest19+TestForEach); NeoStep 404/0 (+1 probe); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; CLR-enum slot sizing + re-throw preserve; 17 deep singletons reported)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-17": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-17 recluster batch: 1 fix. ReflectionTest10 ILRuntimeType Enum.ToObject reflection bridge. CheckCLRTypes IsEnum branch reached ILRuntimeType(EnumTest/TestEnum) -> framework Enum.ToObject(ILRuntimeType,...) threw Type-must-be-runtime. Fix = Neo-gated ILEnumTypeInstance bridge before Enum.ToObject (mirrors EnumToObjectNeo redirect for the reflection-Invoke path). 16 deep singletons reported.",
+      "prerequisites": [
+        "neo-recluster-19"
+      ],
+      "dependsOn": [
+        "neo-recluster-19"
+      ],
+      "status": "done",
+      "capability": "neo-type-checks",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 17->16 (-1, ReflectionTest10); NeoStep 404/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; ILRuntimeType Enum.ToObject bridge; 16 deep singletons Step-19/inliner/generic-instance)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1438,7 +1455,8 @@
     "neo-recluster-21",
     "neo-initobj-ref-byref",
     "neo-typeof-generic-param",
-    "neo-recluster-19"
+    "neo-recluster-19",
+    "neo-recluster-17"
   ],
   "surfacedFollowups": [
     {
@@ -1655,6 +1673,7 @@
     "fullSmokeAfterR21": 21,
     "fullSmokeAfterIrb": 20,
     "fullSmokeAfterTgp": 19,
-    "fullSmokeAfterR19": 17
+    "fullSmokeAfterR19": 17,
+    "fullSmokeAfterR17": 16
   }
 }

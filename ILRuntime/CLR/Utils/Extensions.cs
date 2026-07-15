@@ -292,6 +292,34 @@ namespace ILRuntime.CLR.Utils
             }
             else if ((typeFlags & TypeFlags.IsEnum) != 0)
             {
+#if ENABLE_NEO_MODE
+                // Under Neo, reflecting an IL-enum getter (e.g.
+                // ILRuntimeMethodInfo.Invoke -> ReturnType.CheckCLRTypes) reaches
+                // here with pt = the IL enum's ILRuntimeType. Legacy routes IL-
+                // enum reflection returns through a different path and never hits
+                // this branch for an IL enum (it only lands here for real CLR
+                // enums, e.g. BindingFlags). The framework Enum.ToObject rejects
+                // an ILRuntimeType ("Type must be a type provided by the
+                // runtime"), so bridge an IL enum to an ILEnumTypeInstance
+                // carrying the underlying value -- mirrors the EnumToObjectNeo
+                // redirect that covers only the direct IL call path.
+                if (obj is ILEnumTypeInstance)
+                    return obj;
+                if (pt is ILRuntimeType)
+                {
+                    ILType it = ((ILRuntimeType)pt).ILType;
+                    if (it.IsEnum)
+                    {
+                        ILEnumTypeInstance ins = new ILEnumTypeInstance(it);
+                        byte[] fields = ins.Primitives;
+                        long lv = Convert.ToInt64(obj);
+                        byte[] raw = fields.Length == 8 ? BitConverter.GetBytes(lv) : BitConverter.GetBytes((int)lv);
+                        int n = fields.Length < raw.Length ? fields.Length : raw.Length;
+                        Buffer.BlockCopy(raw, 0, fields, 0, n);
+                        return ins;
+                    }
+                }
+#endif
                 return Enum.ToObject(pt, obj);
             }
             else if (obj is ILTypeInstance)
