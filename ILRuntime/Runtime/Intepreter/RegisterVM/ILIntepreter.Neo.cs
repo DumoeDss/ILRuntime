@@ -7595,7 +7595,18 @@ namespace ILRuntime.Runtime.Intepreter
                             // Neo frame self-cleaning instead of relying on the
                             // caller's HandleException frame-pop loop to clean up
                             // a leaked frame/mStack reservation.
-                            pendingThrow = new ILRuntimeException(ex.Message, this, method, oriESP, ex);
+                            // Do NOT re-wrap an exception that is ALREADY an
+                            // ILRuntimeException: a propagated+finally-rethrown
+                            // exception reaches here already wrapped (HandleException
+                            // sets lastCaughtEx = ex verbatim for a pre-wrapped
+                            // ILRuntimeException at ILIntepreter.cs:4889), so a fresh
+                            // wrap would DOUBLE-WRAP -- then the host's
+                            // ExpectException check (GetInnerException().GetType())
+                            // sees ILRuntimeException instead of the real inner type
+                            // and mismatches (Test05.TestForEach). Mirror the
+                            // finally-branch guard. The inner's Data already carries
+                            // the appended stack/this/local context (HandleException).
+                            pendingThrow = ex is ILRuntimeException ? ex : new ILRuntimeException(ex.Message, this, method, oriESP, ex);
                             break;
                         }
                     }

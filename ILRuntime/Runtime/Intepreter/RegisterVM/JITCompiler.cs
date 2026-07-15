@@ -2688,6 +2688,25 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                 offset += size;
                 refOffset += refSize;
             }
+            else if (t.IsValueType && !(t is ILType) && t.TypeForCLR != null && t.TypeForCLR.IsEnum)
+            {
+                // A CLR enum is stored as its underlying primitive (flat bytes),
+                // matching the JIT's ldc.i4 / initobj emission for enum locals and
+                // returns, AND matching IL enums (the ILType branch above sizes them
+                // TotalReferenceCount==0). Without this branch a CLR enum would fall
+                // through to the `else` (boxed reference, RefCount=1), which both
+                // leaves an unused ref slot AND mis-routes a CLR-enum RETURN through
+                // the Ret handler's vt-with-ref-fields branch (OOB reading a non-
+                // existent ref slot -- DelegateTest19). Size it as the underlying
+                // primitive instead (4 for an int32 enum).
+                int size = appdomain.GetPrimitiveSize(t);
+                if (size < 1) size = 4;
+                slot.Offset = offset;
+                slot.RefOffset = refOffset;
+                slot.Size = size;
+                slot.RefCount = 0;
+                offset += size;
+            }
             else
             {
                 // CLR value type / reference type -> stored as reference (mStack index)

@@ -1343,6 +1343,23 @@
       "smoke": "FULL SMOKE 20->19 (-1, TestGenericMethod2); stash-toggle airtight; NeoStep 403/0 (+2 probes); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; 3 compounding bugs pinned; category fall-back general safety net; typeof(CLRType) ILRuntimeWrapperType latent noted)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-19": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-19 recluster batch: 2 fixes. (1) DelegateTest19: AllocateSlotForType sized CLR enum as boxed ref (RefCount=1) while JIT emits enum as flat int -> Ret handler OOB-read non-existent ref slot. Fix = CLR-enum sized as underlying primitive (RefCount=0). (2) TestForEach: Ret-unhandled re-throw always double-wrapped in fresh ILRuntimeException -> host GetInnerException saw ILRuntimeException not NotSupportedException. Fix = preserve pre-wrapped ex.",
+      "prerequisites": [
+        "neo-typeof-generic-param"
+      ],
+      "dependsOn": [
+        "neo-typeof-generic-param"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer+neo-exceptions",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 19->17 (-2, DelegateTest19+TestForEach); NeoStep 404/0 (+1 probe); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; CLR-enum slot sizing + re-throw preserve; 17 deep singletons reported)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1420,7 +1437,8 @@
     "neo-hotfix-field-index",
     "neo-recluster-21",
     "neo-initobj-ref-byref",
-    "neo-typeof-generic-param"
+    "neo-typeof-generic-param",
+    "neo-recluster-19"
   ],
   "surfacedFollowups": [
     {
@@ -1636,6 +1654,7 @@
     "fullSmokeAfterHfi": 21,
     "fullSmokeAfterR21": 21,
     "fullSmokeAfterIrb": 20,
-    "fullSmokeAfterTgp": 19
+    "fullSmokeAfterTgp": 19,
+    "fullSmokeAfterR19": 17
   }
 }
