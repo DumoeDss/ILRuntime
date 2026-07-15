@@ -1084,6 +1084,29 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         op.Code = GetTypedBinaryOpcode(op.Code, InferPrimTag(GetRegisterType(registerTypes, op.Register2), appdomain));
                         SetRegisterType(registerTypes, op.Register1, GetRegisterType(registerTypes, op.Register2));
                         break;
+                    // neo-stfld-ref-generics: an ALREADY-specialized Ceq_Ref
+                    // re-enters TypeSpecializeNeoOpcodes when its owning method
+                    // is INLINED into a caller -- the inliner splices the
+                    // callee's post-TypeSpecialize BodyRegister (which has
+                    // Ceq_Ref baked in, NOT a plain Ceq), so the plain-Ceq case
+                    // below (which seeds the dest IntType) never runs for it.
+                    // The dest then keeps a STALE reference type from a preceding
+                    // Ldsfeld/Box in the inlined body, and the Brtrue/Brfalse ->
+                    // _Ref rewrite below mis-classifies the ceq's int32 0/1
+                    // result as a reference mStack index: Brfalse_Ref reads the
+                    // `1` (true) as "mStack[1]", and when that slot is null the
+                    // initializer branch is WRONGLY taken (true -> falsey),
+                    // skipping the lazy `if (x == null) { x = new(); }` body ->
+                    // x stays null -> downstream NRE (e.g. the self-referential
+                    // generic Singleton<T : Singleton<T>>.get_Inst inlined into
+                    // the caller: `Inst.Test = "bar"` NREs because Inst returns
+                    // null). Seed dest = IntType here so the ceq result is
+                    // correctly typed and the following Brfalse stays plain
+                    // (mirrors line 1094 for the freshly-specialized Ceq). The
+                    // opcode itself is NOT re-touched (Ceq_Ref is terminal).
+                    case OpCodeREnum.Ceq_Ref:
+                        SetRegisterType(registerTypes, op.Register1, appdomain.IntType);
+                        break;
                     case OpCodeREnum.Ceq:
                     case OpCodeREnum.Cgt:
                     case OpCodeREnum.Cgt_Un:

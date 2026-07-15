@@ -1241,6 +1241,23 @@
       "smoke": "FULL SMOKE 28->27 (-1, UnitTest_Struct2); NeoStep 401/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; NeoClrStaticFieldAddr descriptor; Legacy-parity NO-OP)",
       "shipped": "commit+push 2026-07-15"
+    },
+    "neo-stfld-ref-generics": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: inlined Ceq_Ref re-entered TypeSpecializeNeoOpcodes via inliner but had no case (only plain Ceq) -> stale ref type -> Brfalse->Brfalse_Ref mis-specialize -> null-check skip -> Singleton _inst null -> NRE. Fix = TypeSpecializeNeoOpcodes Ceq_Ref case seed IntType. Durable: any specialized+inlinable opcode needs a re-seed case. 2 targets + bonus ReflectionTest06.",
+      "prerequisites": [
+        "neo-recluster-28"
+      ],
+      "dependsOn": [
+        "neo-recluster-28"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-15",
+      "smoke": "FULL SMOKE 27->24 (-3); NeoStep 401/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; inliner+type-tracking root; Ceq_Ref only specialized gap)",
+      "shipped": "commit+push 2026-07-15"
     }
   },
   "runnableFrontier": [],
@@ -1312,7 +1329,8 @@
     "neo-long-literal-widened-temp",
     "neo-nested-ldflda-byref",
     "neo-delegate-dispatch-arg-marshal",
-    "neo-recluster-28"
+    "neo-recluster-28",
+    "neo-stfld-ref-generics"
   ],
   "surfacedFollowups": [
     {
@@ -1522,6 +1540,7 @@
     "fullSmokeAfterD2": 32,
     "fullSmokeAfterD4": 31,
     "fullSmokeAfterD1": 28,
-    "fullSmokeAfterR28": 27
+    "fullSmokeAfterR28": 27,
+    "fullSmokeAfterSrg": 24
   }
 }
