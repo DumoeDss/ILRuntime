@@ -886,12 +886,43 @@ namespace ILRuntime.Runtime.Intepreter
         // discarded -- PushToStack fills a single fixed slot, mirroring the Legacy arm).
         internal unsafe void PushToStack(int fieldIdx, StackObject* esp, ILIntepreter intp, AutoList managedStack)
         {
-            if (fieldIdx < type.TotalFieldCount && fieldIdx >= 0)
+            // StaticInstance is reached by the patched-IL eval-stack Stsfld/Ldsfld/Ldtoken
+            // arms (t.StaticInstance.PushToStack(fieldIdx)); there fieldIdx is a STATIC-
+            // field index, so it must be resolved via the static accessors (bounds vs
+            // StaticFieldTypes.Length, offset via GetStaticFieldOffset, type via
+            // StaticFieldTypes) -- NOT the instance accessors. A regular ILTypeInstance
+            // is reached by Ldfld/Stfld, where fieldIdx is an INSTANCE index. The
+            // `is ILTypeStaticInstance` discriminator cleanly separates the two call
+            // shapes (mirrors the proven ExecuteNeo ldtoken field arm).
+            bool isStatic = this is ILTypeStaticInstance;
+            int fieldCount = isStatic ? type.StaticFieldTypes.Length : type.TotalFieldCount;
+            if (fieldIdx < fieldCount && fieldIdx >= 0)
             {
-                ILTypeFieldOffset off = type.GetFieldOffset(fieldIdx);
-                IType ft = type.GetField(fieldIdx, out ILRuntime.Mono.Cecil.FieldReference _);
+                ILTypeFieldOffset off = isStatic ? type.GetStaticFieldOffset(fieldIdx) : type.GetFieldOffset(fieldIdx);
+                IType ft = isStatic ? type.StaticFieldTypes[fieldIdx] : type.GetField(fieldIdx, out ILRuntime.Mono.Cecil.FieldReference _);
                 object obj;
-                if (ft.IsPrimitive)
+                // Array-initializer blob (child-6 lineage): a C# `new T[]{ many }` in a
+                // patched body lowers to `ldtoken <PrivateImplementationDetails> <blob
+                // field>; call RuntimeHelpers.InitializeArray`. The blob field's declared
+                // type is a compiler-generated `.size N` struct with NO instance fields,
+                // so its TotalPrimitiveSize/TotalReferenceCount are both 0 -> the Neo
+                // static instance never materialised the byte[] (ManagedObjects is null
+                // when the declaring type has no reference statics; the InitialValue
+                // replay loop skips the store). The blob lives only in Cecil's
+                // FieldDefinition.InitialValue, so surface it here for the downstream
+                // InitializeArray redirect (mirrors Legacy's static-instance InitialValue
+                // replay + the ExecuteNeo ldtoken arm). Static-only; instance never has
+                // a Cecil InitialValue blob on this path.
+                byte[] initBlob = null;
+                if (isStatic)
+                {
+                    var sfd = type.StaticFieldDefinitions;
+                    if (sfd != null && sfd.Length > fieldIdx)
+                        initBlob = sfd[fieldIdx].InitialValue;
+                }
+                if (initBlob != null && initBlob.Length > 0)
+                    obj = initBlob;
+                else if (ft.IsPrimitive)
                     obj = ReadNeoPrimitive(fields, off.PrimitiveOffset, ft, type.AppDomain);
                 else if (ft.IsValueType && ft is ILType)
                     throw new NotImplementedException("Neo ILTypeInstance.PushToStack: IL-value-type field reconstruction not supported (field " + fieldIdx + " of " + type.FullName + ")");
@@ -1128,10 +1159,16 @@ namespace ILRuntime.Runtime.Intepreter
         // path (InvocationContext -> Execute(StackObject*) -> Stfld).
         internal unsafe void AssignFromStack(int fieldIdx, StackObject* esp, ILIntepreter intp, AutoList managedStack)
         {
-            if (fieldIdx < type.TotalFieldCount && fieldIdx >= 0)
+            // StaticInstance vs regular instance discriminator (see PushToStack): when
+            // `this` is an ILTypeStaticInstance (patched-IL Stsfld), fieldIdx is a
+            // STATIC-field index and must use the static accessors. The blob path is
+            // read-only (ldtoken) so no InitialValue handling is needed on the write side.
+            bool isStatic = this is ILTypeStaticInstance;
+            int fieldCount = isStatic ? type.StaticFieldTypes.Length : type.TotalFieldCount;
+            if (fieldIdx < fieldCount && fieldIdx >= 0)
             {
-                ILTypeFieldOffset off = type.GetFieldOffset(fieldIdx);
-                IType ft = type.GetField(fieldIdx, out ILRuntime.Mono.Cecil.FieldReference _);
+                ILTypeFieldOffset off = isStatic ? type.GetStaticFieldOffset(fieldIdx) : type.GetFieldOffset(fieldIdx);
+                IType ft = isStatic ? type.StaticFieldTypes[fieldIdx] : type.GetField(fieldIdx, out ILRuntime.Mono.Cecil.FieldReference _);
                 if (ft.IsPrimitive)
                 {
                     object value = StackObject.ToObject(esp, type.AppDomain, managedStack);
