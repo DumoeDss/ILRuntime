@@ -1875,10 +1875,55 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             return new NeoAddressAlias { Reg = reg, Offset = 0 };
         }
 
-        // Step 11: build a contiguous callee param-info layout purely from a
-        // method's declared signature (used when the target has no compiled
-        // frame, e.g. an interface abstract method). Mirrors the CLRMethod
-        // branch: slot 0 is `this` for HasThis callvirt, then each parameter.
+        // Step 11: build a callee param-info layout purely from a method's
+        // declared signature (used when the target has no compiled frame, e.g.
+        // an interface/abstract IL method reached via callvirt.il). Slot 0 is
+        // `this` for HasThis callvirt, then each parameter.
+        //
+        // neo-recluster-5 (RegisterVMTest04): the synthesized layout MUST be
+        // byte-identical to the CONCRETE IL impl's frame, which is built by
+        // JITCompiler.AllocateSlotForType -- that applies NATURAL ALIGNMENT per
+        // slot (a reference slot aligns to 4, an IL-VT to NaturalAlignment, a
+        // primitive to its own size). AllocateNeoCallParamSlot (shared with the
+        // CLR-callee branch, whose autogen ReadNeo* reader expects a CONTIGUOUS
+        // no-alignment layout) does NOT align, so synthesizing with it diverged
+        // from the concrete frame whenever a sub-4-byte primitive (bool/byte)
+        // preceded a 4-aligned slot. Canonical trigger: SetViewRect(enum, bool,
+        // bool, Action) -- the unaligned synthesis packed the bools at 1 byte
+        // and put Action at prim offset 10, but the concrete frame aligns Action
+        // to offset 12; CopyNeoCallArguments wrote the Action arg (-1) to offset
+        // 10 while the callee read offset 12 (a stale/garbage mStack index
+        // 0x10000013) -> ArgumentOutOfRangeException at stfld.ref. The fix routes
+        // the IL-callee synthesis through AllocateNeoIlCalleeParamSlot, which
+        // applies the SAME per-slot alignment as AllocateSlotForType BEFORE
+        // sizing via AllocateNeoCallParamSlot. The CLR-callee branch is
+        // UNCHANGED (it still calls AllocateNeoCallParamSlot directly to match
+        // the autogen reader's contiguous layout). Neo-gated -> Legacy-neutral.
+        static int NeoAlignUp(int offset, int alignment)
+        {
+            return (offset + alignment - 1) & ~(alignment - 1);
+        }
+        static StackSlotInfo AllocateNeoIlCalleeParamSlot(CLR.TypeSystem.IType type, ref int offset, ref int refOffset, Enviorment.AppDomain domain)
+        {
+            int align = 4;
+            if (type != null)
+            {
+                if (type.IsByRef)
+                    align = 4;
+                else if (type.IsPrimitive)
+                {
+                    align = domain.GetPrimitiveSize(type);
+                    if (align < 1) align = 1;
+                }
+                else if (type is CLR.TypeSystem.ILType ilt && type.IsValueType)
+                {
+                    align = ilt.NaturalAlignment;
+                    if (align < 1) align = 1;
+                }
+            }
+            offset = NeoAlignUp(offset, align);
+            return AllocateNeoCallParamSlot(type, ref offset, ref refOffset, domain);
+        }
         static StackSlotInfo[] AllocNeoParamInfosFromSignature(CLR.Method.IMethod targetMethod, bool isNewobj, Enviorment.AppDomain domain)
         {
             int pCnt = targetMethod.ParameterCount;
@@ -1894,16 +1939,17 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
             }
             if (hasThis)
             {
-                paramInfos[0] = AllocateNeoCallParamSlot(targetMethod.DeclearingType, ref curPrim, ref curRef, domain);
+                paramInfos[0] = AllocateNeoIlCalleeParamSlot(targetMethod.DeclearingType, ref curPrim, ref curRef, domain);
             }
             for (int p = 0; p < pCnt; p++)
             {
                 int dstIndex = (hasThis || isNewobj) ? p + 1 : p;
                 var paramType = targetMethod.Parameters[p];
-                paramInfos[dstIndex] = AllocateNeoCallParamSlot(paramType, ref curPrim, ref curRef, domain);
+                paramInfos[dstIndex] = AllocateNeoIlCalleeParamSlot(paramType, ref curPrim, ref curRef, domain);
             }
             return paramInfos;
         }
+
 
         static void FixBranchTargetsAfterRemove(OpCodeR[] body, int removedIndex, Dictionary<int, int[]> jumpTables, Dictionary<int, RegisterVMSymbol> symbols, ILRuntime.CLR.Method.ExceptionHandler[] ehs)
         {

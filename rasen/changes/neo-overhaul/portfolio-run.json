@@ -1598,6 +1598,23 @@
       "smoke": "FULL SMOKE 6->5 (-1, UnitTest_TestStackRegisterTransition3); NeoStep 414/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; 2 coupled roots; prior comparison framing disproven; ref-region copy layout-neutral; closes Step-12 nested-VT ref-field gap)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-5": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-5 recluster: RegisterVMTest04. Prior >3-arg/generic-instance framing DISPROVEN. Real root: abstract IL-callee synthesized param layout (AllocNeoParamInfosFromSignature -> AllocateNeoCallParamSlot) applied NO natural alignment, but the concrete IL impl frame (AllocateSlotForType) DOES align -> offset mismatch -> callee read stale residue -> OOB. Fix = AllocateNeoIlCalleeParamSlot (mirror AllocateSlotForType natural alignment, additive safe).",
+      "prerequisites": [
+        "neo-struct-byvalue-il-callee"
+      ],
+      "dependsOn": [
+        "neo-struct-byvalue-il-callee"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 5->4 (-1, RegisterVMTest04); NeoStep 414/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; prior framing disproven; natural alignment gap; additive safe)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1690,7 +1707,8 @@
     "neo-async-movenext-frame-stacking",
     "neo-recluster-7",
     "neo-recluster-6",
-    "neo-struct-byvalue-il-callee"
+    "neo-struct-byvalue-il-callee",
+    "neo-recluster-5"
   ],
   "surfacedFollowups": [
     {
@@ -1921,6 +1939,7 @@
     "fullSmokeAfterAsyncFs": 7,
     "fullSmokeAfterR7": 6,
     "fullSmokeAfterR6": 6,
-    "fullSmokeAfterSvbic": 5
+    "fullSmokeAfterSvbic": 5,
+    "fullSmokeAfterR5": 4
   }
 }
