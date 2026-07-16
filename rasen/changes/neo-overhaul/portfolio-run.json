@@ -1615,6 +1615,23 @@
       "smoke": "FULL SMOKE 5->4 (-1, RegisterVMTest04); NeoStep 414/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; prior framing disproven; natural alignment gap; additive safe)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-4": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-4 recluster: StructTest6. Dictionary<string,ILTypeInstance>.TryGetValue byref ref-typed param whose source is a 0-prim+2-ref IL struct LOCAL. The Area-4c frame-native CopyBlock only touched the 4-byte ref-slot index, never the struct REF region. The byref sibling of neo-il-struct-box-call-boundary (which handled by-value). Fix = NeoCallParamMap PrimitiveByRefBoxIlType + optimizer byref-box detection (liveAliasMap trace to IL-VT local) + CopyNeoCallArguments forward box + CopyNeoCallThisBack write-back unbox.",
+      "prerequisites": [
+        "neo-recluster-5"
+      ],
+      "dependsOn": [
+        "neo-recluster-5"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 4->3 (-1, StructTest6); NeoStep 414/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; byref-box sibling of by-value-box; prior architectural verdict disproven)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1708,7 +1725,8 @@
     "neo-recluster-7",
     "neo-recluster-6",
     "neo-struct-byvalue-il-callee",
-    "neo-recluster-5"
+    "neo-recluster-5",
+    "neo-recluster-4"
   ],
   "surfacedFollowups": [
     {
@@ -1940,6 +1958,7 @@
     "fullSmokeAfterR7": 6,
     "fullSmokeAfterR6": 6,
     "fullSmokeAfterSvbic": 5,
-    "fullSmokeAfterR5": 4
+    "fullSmokeAfterR5": 4,
+    "fullSmokeAfterR4": 3
   }
 }

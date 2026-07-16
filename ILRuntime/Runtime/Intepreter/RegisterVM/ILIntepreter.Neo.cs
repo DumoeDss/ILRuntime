@@ -452,6 +452,29 @@ namespace ILRuntime.Runtime.Intepreter
                     int offset = *(int*)(frameBase + map.PrimitiveSrc[i] + 4);
                     if (objIdx == -1)
                     {
+                        // neo-byref-out-struct: a BYREF reference-typed param whose source
+                        // is an IL value-type struct local (Dictionary.TryGetValue(out
+                        // ILTypeInstance) on a StructTest local). The dest slot is a 4-byte
+                        // ref, but the caller's struct has prim + ref regions; raw-CopyBlock
+                        // would copy garbage / read-beyond the struct's empty prim region.
+                        // BOX the struct (Instantiate + CopyFrameToIL) into a fresh mStack
+                        // slot and write THAT index -- the reflection fallback (CLRMethod.Invoke)
+                        // reads it as the byref's initial value (harmless for `out`; correct
+                        // input for `ref`). Mirrors the by-value PrimitiveBoxIlType arm above.
+                        var byRefBoxIl = map.PrimitiveByRefBoxIlType;
+                        if (byRefBoxIl != null && i < byRefBoxIl.Length && byRefBoxIl[i] != null)
+                        {
+                            var ilType = byRefBoxIl[i];
+                            ILTypeInstance boxIns = ilType.Instantiate(false);
+                            CopyFrameToIL(frameBase, offset, map.PrimitiveByRefBoxSrcRefOff[i],
+                                ilType.TotalPrimitiveSize, ilType.TotalReferenceCount,
+                                mStack, frameRefBase, boxIns);
+                            boxIns.Boxed = true;
+                            int boxIdx = mStack.Count;
+                            mStack.Add(boxIns);
+                            *(int*)(targetBase + map.PrimitiveDst[i]) = boxIdx;
+                            continue;
+                        }
                         // frame-native byref: offset is an absolute frame byte offset.
                         Unsafe.CopyBlock(targetBase + map.PrimitiveDst[i], frameBase + offset, map.PrimitiveSize[i]);
                     }
@@ -783,9 +806,9 @@ namespace ILRuntime.Runtime.Intepreter
         // NOTE (F-5 / Step 17): this covers MUTATING INSTANCE METHODS / ref-out
         // PARAMS, NOT constructors -- the newobj path (VT-THIS-ADDR) performs its
         // own slot-0 -> caller-dest copy-back in ExecuteNeo's Ret arm.
-        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain)
+        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain, int frameRefBase)
         {
-            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, appdomain, null);
+            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, appdomain, null, frameRefBase);
         }
 
         // Step 20 fixer round 1 (TaskAwaiter round-trip): the write-back reads each
@@ -800,7 +823,7 @@ namespace ILRuntime.Runtime.Intepreter
         // call, then read the snapshot here. The snapshot is a flat (objIdx,off)
         // pair array (8 bytes per flagged slot), passed by the Call/Callvirt site
         // (null = legacy re-read behavior, for callers that did not snapshot).
-        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain, int* byRefSnapshot)
+        static void CopyNeoCallThisBack(ref NeoCallParamMap map, byte* frameBase, byte* targetBase, AutoList mStack, ILRuntime.Runtime.Enviorment.AppDomain appdomain, int* byRefSnapshot, int frameRefBase)
         {
             if (map.PrimitiveSize == null || map.PrimitiveByRefSrc == null)
                 return;
@@ -833,9 +856,34 @@ namespace ILRuntime.Runtime.Intepreter
                 }
                 if (objIdx == -1)
                 {
-                    // frame-native byref: write the (possibly-mutated) slot bytes
-                    // back to the caller's in-frame local.
-                    Unsafe.CopyBlock(frameBase + offset, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i]);
+                    // neo-byref-out-struct: a BYREF reference-typed param whose source
+                    // is an IL value-type struct local (Dictionary.TryGetValue(out
+                    // ILTypeInstance) on a StructTest local with 0 prim + N ref). The
+                    // reflection fallback (CLRMethod.Invoke) wrote the result
+                    // ILTypeInstance's mStack index to the dest slot; a raw CopyBlock
+                    // would copy only those 4 bytes into the struct's empty prim
+                    // region, leaving the REF region (the struct's ref fields)
+                    // unwritten. UNBOX the result ILTypeInstance back to the caller's
+                    // struct frame (prim + ref) via CopyILToFrame. A null result
+                    // (TryGetValue false / out never assigned) leaves the caller's
+                    // struct as-is (its pre-call value).
+                    var byRefBoxIl = map.PrimitiveByRefBoxIlType;
+                    if (byRefBoxIl != null && i < byRefBoxIl.Length && byRefBoxIl[i] != null)
+                    {
+                        int resultIdx = *(int*)(targetBase + map.PrimitiveDst[i]);
+                        if (resultIdx >= 0 && resultIdx < mStack.Count && mStack[resultIdx] is ILTypeInstance resultIns)
+                        {
+                            var ilType = byRefBoxIl[i];
+                            CopyILToFrame(resultIns, frameBase, offset, map.PrimitiveByRefBoxSrcRefOff[i],
+                                ilType.TotalPrimitiveSize, ilType.TotalReferenceCount, mStack, frameRefBase);
+                        }
+                    }
+                    else
+                    {
+                        // frame-native byref: write the (possibly-mutated) slot bytes
+                        // back to the caller's in-frame local.
+                        Unsafe.CopyBlock(frameBase + offset, targetBase + map.PrimitiveDst[i], map.PrimitiveSize[i]);
+                    }
                 }
                 else if (objIdx >= 0 && objIdx < mStack.Count)
                 {
@@ -3706,7 +3754,7 @@ namespace ILRuntime.Runtime.Intepreter
                                             int crCaptured = SnapshotNeoCallByRefSources(ref crMap, frameBase, crSnap);
                                             int* crByRefSnap = crCaptured > 0 ? crSnap : null;
                                             InvokeNeoClrMethod(targetMethod, crIsNewObj, crTargetBase, mStack, crRetDstPtr, crRetRefBase);
-                                            CopyNeoCallThisBack(ref crMap, frameBase, crTargetBase, mStack, AppDomain, crByRefSnap);
+                                            CopyNeoCallThisBack(ref crMap, frameBase, crTargetBase, mStack, AppDomain, crByRefSnap, frameRefBase);
                                         }
                                     }
                                     else
@@ -3834,7 +3882,7 @@ namespace ILRuntime.Runtime.Intepreter
                                                 if (f7bRebasedSlotOff >= 0)
                                                     *(int*)(targetBase + f7bRebasedSlotOff + 4) = f7bRebasedOrigOff;
                                             }
-                                            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap);
+                                            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap, frameRefBase);
                                         }
                                     }
                                     else
@@ -3866,7 +3914,7 @@ namespace ILRuntime.Runtime.Intepreter
                                         // mutation (ctor / mutating instance method) back to the
                                         // caller's in-frame local. No-op for non-mutating calls
                                         // and for non-VT-`this` calls (empty PrimitiveByRefSrc).
-                                        CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap);
+                                        CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, byRefSnap, frameRefBase);
                                     }
 
                                     ip++;
@@ -4390,13 +4438,13 @@ namespace ILRuntime.Runtime.Intepreter
                                             if (SnapshotNeoCallByRefSources(ref map, frameBase, snap) > 0)
                                                 cvClrByRefSnap = snap;
                                             InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
-                                            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, cvClrByRefSnap);
+                                            CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, cvClrByRefSnap, frameRefBase);
                                         }
                                     }
                                     else
                                     {
                                         InvokeNeoClrMethod(clrMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase);
-                                        CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, cvClrByRefSnap);
+                                        CopyNeoCallThisBack(ref map, frameBase, targetBase, mStack, AppDomain, cvClrByRefSnap, frameRefBase);
                                     }
 
                                     ip++;

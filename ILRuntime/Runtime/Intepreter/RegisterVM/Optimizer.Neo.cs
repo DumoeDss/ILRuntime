@@ -1424,6 +1424,12 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                 // descriptor (see NeoCallParamMap.PrimitiveBoxIlType).
                                 List<CLR.TypeSystem.ILType> primBoxIlType = new List<CLR.TypeSystem.ILType>();
                                 List<ushort> primBoxSrcRefOff = new List<ushort>();
+                                // neo-byref-out-struct: the BYREF (ref/out) sibling -- an
+                                // IL value-type struct local passed as a BYREF reference-
+                                // typed param (Dictionary.TryGetValue(out ILTypeInstance)
+                                // on a StructTest local). See NeoCallParamMap.PrimitiveByRefBoxIlType.
+                                List<CLR.TypeSystem.ILType> primByRefBoxIlType = new List<CLR.TypeSystem.ILType>();
+                                List<ushort> primByRefBoxSrcRefOff = new List<ushort>();
                                 // Step 13 Area 4c: the CLR ParameterInfo[] for the
                                 // IsIn/IsOut write-back gate. Null for an IL callee
                                 // (the byref-param flag only fires for CLR callees;
@@ -1533,6 +1539,41 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                         }
                                     }
 
+                                    // neo-byref-out-struct (StructTest6): the BYREF (ref/out)
+                                    // sibling. An IL value-type struct LOCAL passed as a BYREF
+                                    // reference-typed CLR param -- the canonical case is a CLR
+                                    // generic collection over an IL struct resolved to
+                                    // ILTypeInstance, e.g. Dictionary<string, ILTypeInstance>
+                                    // .TryGetValue(string, out ILTypeInstance) where the caller's
+                                    // `out cube` is a StructTest local (0 prim + N ref). The
+                                    // byref source register (srcRegs[p]) holds an 8-byte Ref Slot
+                                    // produced by `ldloca structLocal`; liveAliasMap traces it
+                                    // back to the struct local register, whose curVtTypes entry
+                                    // (seeded by Newobj/Unbox/Initobj) gives the struct's ILType.
+                                    // The param's element type (byRefElemType) is a reference
+                                    // (the struct boxed to ILTypeInstance). Without this, the
+                                    // Area-4c frame-native CopyBlock forward/write-back only
+                                    // touches the 4-byte ref slot, never the struct's REF region
+                                    // -> the out struct's ref fields stay unwritten. Forward must
+                                    // box; write-back must unbox. dstIsVtThisSlot (4b) is the
+                                    // mutating-VT-this subset (already flat-bytes-correct), so
+                                    // exclude it.
+                                    CLR.TypeSystem.ILType byRefBoxIlType = null;
+                                    ushort byRefBoxSrcRefOff = 0;
+                                    if (dstByRef && !dstIsVtThisSlot && byRefElemType != null
+                                        && !byRefElemType.IsValueType && !byRefElemType.IsPrimitive && !byRefElemType.IsEnum
+                                        && curVtTypes != null && liveAliasMap != null
+                                        && srcRegs[p] >= 0
+                                        && liveAliasMap.TryGetValue(srcRegs[p], out NeoAddressAlias brAlias)
+                                        && brAlias.Reg >= 0 && brAlias.Reg < curVtTypes.Length
+                                        && curVtTypes[brAlias.Reg] is CLR.TypeSystem.ILType brIl
+                                        && brIl.IsValueType && !brIl.IsEnum && !brIl.IsPrimitive
+                                        && brAlias.Reg < localInfos.Length)
+                                    {
+                                        byRefBoxIlType = brIl;
+                                        byRefBoxSrcRefOff = (ushort)localInfos[brAlias.Reg].RefOffset;
+                                    }
+
                                     if (dstInfo.Size > 0)
                                     {
                                         primSrc.Add((ushort)srcInfo.Offset);
@@ -1545,6 +1586,8 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                         primByRefElemType.Add(byRefElemType);
                                         primBoxIlType.Add(boxIlType);
                                         primBoxSrcRefOff.Add((ushort)srcInfo.RefOffset);
+                                        primByRefBoxIlType.Add(byRefBoxIlType);
+                                        primByRefBoxSrcRefOff.Add(byRefBoxSrcRefOff);
                                     }
                                     for (int r = 0; r < dstInfo.RefCount; r++)
                                     {
@@ -1571,6 +1614,17 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                                         {
                                             map.PrimitiveBoxIlType = primBoxIlType.ToArray();
                                             map.PrimitiveBoxSrcRefOff = primBoxSrcRefOff.ToArray();
+                                            break;
+                                        }
+                                    }
+                                    // neo-byref-out-struct: same lazy-carry rule for the byref
+                                    // box arrays (only when at least one slot boxes).
+                                    for (int bi = 0; bi < primByRefBoxIlType.Count; bi++)
+                                    {
+                                        if (primByRefBoxIlType[bi] != null)
+                                        {
+                                            map.PrimitiveByRefBoxIlType = primByRefBoxIlType.ToArray();
+                                            map.PrimitiveByRefBoxSrcRefOff = primByRefBoxSrcRefOff.ToArray();
                                             break;
                                         }
                                     }
@@ -1640,6 +1694,28 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                             && ubil.IsValueType && !ubil.IsEnum && !ubil.IsPrimitive
                             && vtDest >= 0 && vtDest < curVtTypes.Length)
                             curVtTypes[vtDest] = ubil;
+                        else if (vtDest >= 0 && vtDest < curVtTypes.Length)
+                            curVtTypes[vtDest] = null;
+                    }
+                    else if (vtCode == OpCodeREnum.Initobj)
+                    {
+                        // neo-byref-out-struct: Initobj is an IL value-type PRODUCER
+                        // (its Operand is the type token -- TypeSpecializeNeoOpcodes
+                        // already seeds registerTypes for it at :1090). Without
+                        // seeding the tracker, a struct local zero-init'd via
+                        // `initobj rLocal, StructType` and later passed BYREF to a
+                        // reference-typed CLR param (Dictionary.TryGetValue(out
+                        // ILTypeInstance) on a StructTest local) would read
+                        // curVtTypes[rLocal]=null here -> miss the box/unbox fix
+                        // (the byref struct-to-ref detection below keys on it). Seed
+                        // the dest so the byref-box detection fires. A non-ILType /
+                        // non-value-type Operand simply clears (matches the
+                        // generic dest-clear for an unmodeled producer).
+                        var iot = domain.GetType(preOp.Operand);
+                        if (iot is CLR.TypeSystem.ILType ioil
+                            && ioil.IsValueType && !ioil.IsEnum && !ioil.IsPrimitive
+                            && vtDest >= 0 && vtDest < curVtTypes.Length)
+                            curVtTypes[vtDest] = ioil;
                         else if (vtDest >= 0 && vtDest < curVtTypes.Length)
                             curVtTypes[vtDest] = null;
                     }

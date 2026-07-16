@@ -83,6 +83,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         // neo-array-multidim-ilvt Set box (TryNeoIlVtElementArrayCall).
         public CLR.TypeSystem.ILType[] PrimitiveBoxIlType;
         public ushort[] PrimitiveBoxSrcRefOff;
+        // neo-byref-out-struct (StructTest6): the BYREF (ref/out) sibling of
+        // PrimitiveBoxIlType. An IL value-type struct local passed as a BYREF
+        // REFERENCE-typed param -- the canonical case is a CLR generic
+        // collection over an IL struct resolved to ILTypeInstance, e.g.
+        // Dictionary<string,ILTypeInstance>.TryGetValue(string, out ILTypeInstance)
+        // where the caller's `out cube` is a StructTest local (0 prim + N ref).
+        // The byref's dest slot is sized as a single 4-byte reference (an mStack
+        // index), so the Area-4c frame-native CopyBlock forward/write-back only
+        // touches 4 bytes -- never propagating the struct's REF region. Forward
+        // must BOX the struct (Instantiate + CopyFrameToIL) into a fresh
+        // ILTypeInstance and write its mStack index; write-back must UNBOX the
+        // result ILTypeInstance (CopyILToFrame) back to the caller's struct
+        // frame (prim + ref regions). PrimitiveByRefBoxIlType[i] is the struct's
+        // ILType (null = no box for this slot); PrimitiveByRefBoxSrcRefOff[i] is
+        // the struct's caller-frame ref offset (the source of its ref region).
+        public CLR.TypeSystem.ILType[] PrimitiveByRefBoxIlType;
+        public ushort[] PrimitiveByRefBoxSrcRefOff;
     }
 #endif
     struct StackSlotInfo
