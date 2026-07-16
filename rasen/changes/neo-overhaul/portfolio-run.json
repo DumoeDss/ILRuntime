@@ -1496,6 +1496,23 @@
       "smoke": "FULL SMOKE 10->9 (-1, UnitTest_TestInline01); NeoStep 414/0 (+4 probes); Legacy-neutral; 2 sibling fixes (LowerNeoOffsets+marker) self-caught",
       "review": "APPROVE (LEAD non-author; prior framing disproven; 3-part new object() fix; 9 deep singletons remaining)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-9": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-9 recluster: delta 0 (honest). 9 distinct deep singletons. ReflectionTest14 DISPROVEN as reflection bug (GetFields valid; crash = register-transition frame-slot clobber r6 offset20: 5->0 mid-loop). Highest-value next = register-transition/frame-clobber class (ReflectionTest14+TransitionTest3+possibly RegisterVMTest04 shared allocator/loop root).",
+      "prerequisites": [
+        "neo-recluster-10"
+      ],
+      "dependsOn": [
+        "neo-recluster-10"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 9 (delta 0 honest); NeoStep 414/0; fresh 09 grounding table; register-transition lead documented",
+      "review": "APPROVE (LEAD non-author; honest delta-0; ReflectionTest14 re-pinned to frame-clobber; quick-win surface exhausted)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1582,7 +1599,8 @@
     "neo-recluster-13",
     "neo-step19-delegate-enumerator-group",
     "neo-vt-return-move-size",
-    "neo-recluster-10"
+    "neo-recluster-10",
+    "neo-recluster-9"
   ],
   "surfacedFollowups": [
     {
@@ -1807,6 +1825,7 @@
     "fullSmokeAfterR13": 13,
     "fullSmokeAfterS19": 12,
     "fullSmokeAfterVtRet": 10,
-    "fullSmokeAfterR10": 9
+    "fullSmokeAfterR10": 9,
+    "fullSmokeAfterR9": 9
   }
 }
