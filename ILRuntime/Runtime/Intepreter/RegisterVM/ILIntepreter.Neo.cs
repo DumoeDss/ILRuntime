@@ -1301,6 +1301,37 @@ namespace ILRuntime.Runtime.Intepreter
             return 4; // int, uint, float, char, enum
         }
 
+        // REGTC (neo-register-transition-frame-clobber): see handoff -- a sub-int
+        // primitive LOCAL (bool/byte/sbyte/short/ushort/char) is sized to its exact
+        // width (1/2 bytes) by AllocateLocalStackSpaces, but every primitive write
+        // path (InvokeNeoClrMethod:1390-1397, WriteNeoDelegateInvokeReturn:383-390,
+        // and the autogen Neo redirect stubs e.g. System_Type_Binding.IsAssignableFrom_
+        // 16_Neo:774) writes *(int*)retDstPtr (4 bytes, sign/zero-extended) so the
+        // int32 read path (ldloc/brfalse via *(int*)) sees a correct value. That
+        // 4-byte write OVERRUNS a 1/2-byte local, clobbering the neighbour
+        // (ReflectionTest14: a bool IsAssignableFrom result zeroed the adjacent
+        // FieldInfo[] mStack index mid-foreach -> NRE on the next ldlen).
+        //
+        // The conflict is fundamental: a 1-byte bool slot read as int32 ALWAYS reads
+        // 3 neighbour bytes. Byref consumption (ldloca + a constrained/struct method,
+        // e.g. bool.ToString) reads the exact 1 byte -> correct, needs the neighbour
+        // PRESERVED. int32 consumption (brfalse/ldloc on the bool result) reads 4
+        // bytes -> correct ONLY if the neighbour bytes are 0 (zero-extension from the
+        // 4-byte write). These are contradictory for a 1-byte slot. Narrowing the
+        // write (1 byte) fixes byref but breaks int32 (brfalse reads stale neighbour
+        // -> NeoStepRecluster10_TC4_StringArg regresses: op_Inequality's bool result
+        // reads truthy). Save/restore of the neighbour around the redirect has the
+        // SAME defect (the restored neighbour makes the int32 read wrong). The ONLY
+        // correct fix is to size sub-int LOCAL slots to int32 (4 bytes) in
+        // AllocateLocalStackSpaces (matching the temp file's >=8-byte slots and
+        // Legacy's 12-byte StackObject). That was implemented + verified to flip
+        // ReflectionTest14, but it shifts offsets in EVERY method with a sub-int
+        // local and regresses NeoStep20_TC12_TwoIncompleteAwaits (a nested async
+        // resume no longer settles -- the bigger driver frame interacts with
+        // DriveMoveNextCore's reuse of stack.StackBase for the MoveNext byte-frame).
+        // Resolving that async interaction is the prerequisite to shipping the
+        // slot-side fix (dedicated child). No surgical runtime-only fix exists.
+
         void InvokeNeoClrMethod(CLRMethod clrMethod, bool isNewobj, byte* targetBase, AutoList mStack, byte* retDstPtr, int targetRetRefBase)
         {
             // C2 (neo-iltype-cast-clr-base): unwrap ILTypeInstance -> CLRInstance

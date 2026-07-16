@@ -1513,6 +1513,23 @@
       "smoke": "FULL SMOKE 9 (delta 0 honest); NeoStep 414/0; fresh 09 grounding table; register-transition lead documented",
       "review": "APPROVE (LEAD non-author; honest delta-0; ReflectionTest14 re-pinned to frame-clobber; quick-win surface exhausted)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-register-transition-frame-clobber": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: shared-root hypothesis DISPROVEN (3 distinct roots). ReflectionTest14 root PINNED: sub-int primitive LOCAL (bool/byte/etc) sized to exact width by AllocateLocalStackSpaces but every prim result write stores *(int*)retDstPtr (4 bytes) -> overruns 1/2-byte slot -> clobbers neighbor. The canonically-correct fix (size sub-int locals to int32) flips ReflectionTest14 (9->8) but regresses NeoStep20_TC12 (async MoveNext byte-frame reuse of stack.StackBase). Prerequisite: dedicated async-infra child to stack MoveNext frame above current top. Documented inline.",
+      "prerequisites": [
+        "neo-recluster-9"
+      ],
+      "dependsOn": [
+        "neo-recluster-9"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 9 (delta 0 honest -- correct fix blocked by async-infra TC12 regression); NeoStep 414/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; shared-root disproven; sub-int slot-sizing root pinned; correct fix verified but blocked by async MoveNext frame-reuse; documented inline + for next child)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1600,7 +1617,8 @@
     "neo-step19-delegate-enumerator-group",
     "neo-vt-return-move-size",
     "neo-recluster-10",
-    "neo-recluster-9"
+    "neo-recluster-9",
+    "neo-register-transition-frame-clobber"
   ],
   "surfacedFollowups": [
     {
@@ -1826,6 +1844,7 @@
     "fullSmokeAfterS19": 12,
     "fullSmokeAfterVtRet": 10,
     "fullSmokeAfterR10": 9,
-    "fullSmokeAfterR9": 9
+    "fullSmokeAfterR9": 9,
+    "fullSmokeAfterRegTc": 9
   }
 }
