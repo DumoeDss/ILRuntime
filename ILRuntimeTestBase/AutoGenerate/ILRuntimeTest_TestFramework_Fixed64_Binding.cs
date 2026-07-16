@@ -113,8 +113,13 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            ILRuntimeTest.TestFramework.Fixed64 instance_of_this_method = default(ILRuntimeTest.TestFramework.Fixed64);
-            // TODO: ValueType instance in Neo
+            // neo-recluster-3: the value-type `this` (Fixed64) occupies the first
+            // __sz bytes of the param region (a constrained-callvirt copies the
+            // struct value into the call frame). Read it via ReadNeoValueType
+            // (mirrors child-28's ReadNeoValueType arg pattern). Was a stale
+            // `default(...)` TODO -> RawValue always returned 0.
+            int __sz_this = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.Fixed64));
+            ILRuntimeTest.TestFramework.Fixed64 instance_of_this_method = (ILRuntimeTest.TestFramework.Fixed64)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.Fixed64), __frameBase, ref __curPrim, __sz_this);
             var result_of_this_method = instance_of_this_method.RawValue;
             if (__retDst != null) *(long*)__retDst = (long)result_of_this_method;
         }
@@ -155,10 +160,14 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            ILRuntimeTest.TestFramework.Fixed64 @x = default(ILRuntimeTest.TestFramework.Fixed64);
-            // TODO: CLR value type reflection fallback: Step 13
-            ILRuntimeTest.TestFramework.Fixed64 @y = default(ILRuntimeTest.TestFramework.Fixed64);
-            // TODO: CLR value type reflection fallback: Step 13
+            // neo-recluster-3: read both value-type args via ReadNeoValueType
+            // (declared param order). Was a stale `default(...)` TODO -> the
+            // comparison always evaluated false (0 < 0), breaking every Fixed64
+            // sort/comparison.
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.Fixed64));
+            ILRuntimeTest.TestFramework.Fixed64 @x = (ILRuntimeTest.TestFramework.Fixed64)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.Fixed64), __frameBase, ref __curPrim, __sz_0);
+            int __sz_1 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.Fixed64));
+            ILRuntimeTest.TestFramework.Fixed64 @y = (ILRuntimeTest.TestFramework.Fixed64)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.Fixed64), __frameBase, ref __curPrim, __sz_1);
             var result_of_this_method = @x < @y;
             if (__retDst != null) *(int*)__retDst = result_of_this_method ? 1 : 0;
         }
@@ -201,10 +210,12 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
-            ILRuntimeTest.TestFramework.Fixed64 @x = default(ILRuntimeTest.TestFramework.Fixed64);
-            // TODO: CLR value type reflection fallback: Step 13
-            ILRuntimeTest.TestFramework.Fixed64 @y = default(ILRuntimeTest.TestFramework.Fixed64);
-            // TODO: CLR value type reflection fallback: Step 13
+            // neo-recluster-3: read both value-type args via ReadNeoValueType
+            // (declared param order). Was a stale `default(...)` TODO.
+            int __sz_0 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.Fixed64));
+            ILRuntimeTest.TestFramework.Fixed64 @x = (ILRuntimeTest.TestFramework.Fixed64)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.Fixed64), __frameBase, ref __curPrim, __sz_0);
+            int __sz_1 = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.Fixed64));
+            ILRuntimeTest.TestFramework.Fixed64 @y = (ILRuntimeTest.TestFramework.Fixed64)ILIntepreter.ReadNeoValueType(typeof(ILRuntimeTest.TestFramework.Fixed64), __frameBase, ref __curPrim, __sz_1);
             var result_of_this_method = @x > @y;
             if (__retDst != null) *(int*)__retDst = result_of_this_method ? 1 : 0;
         }
@@ -248,17 +259,33 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
+            int __thisSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.Fixed64));
             if (isNewObj)
             {
                 __curPrim += 4; // Skip retRefBase
             }
             else
             {
-                // TODO: Constructor binding for non-newObj (e.g. value type init) in Neo
+                // Non-newobj (Roslyn lowers a struct `new VT(args)` assigned to a
+                // local/field to `initobj; ldloca/ldflda; <args>; call .ctor`):
+                // the `this` struct occupies the first __thisSz bytes (zero-init
+                // from initobj). Skip it to reach the args; the constructed result
+                // is written back to this slot for the runtime write-back to
+                // propagate. Mirrors child-28's TestVector3 Ctor_0_Neo.
+                __curPrim += __thisSz;
             }
             System.Int64 @value = ILIntepreter.ReadNeoInt64(__frameBase, ref __curPrim);
             ILRuntimeTest.TestFramework.Fixed64 result_of_this_method = new ILRuntimeTest.TestFramework.Fixed64(@value);
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (isNewObj)
+            {
+                if (__retDst != null) { ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __thisSz); }
+            }
+            else
+            {
+                // Write the constructed struct into the `this` slot (offset 0);
+                // the runtime write-back propagates it to the caller's target.
+                ILIntepreter.WriteNeoValueType(result_of_this_method, __frameBase, __thisSz);
+            }
         }
 #else
         static StackObject* Ctor_0(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)

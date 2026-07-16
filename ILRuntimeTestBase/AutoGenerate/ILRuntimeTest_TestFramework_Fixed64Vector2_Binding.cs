@@ -147,18 +147,30 @@ namespace ILRuntime.Runtime.Generated
         {
             ILRuntime.Runtime.Enviorment.AppDomain __domain = __intp.AppDomain;
             int __curPrim = 0;
+            int __thisSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(ILRuntimeTest.TestFramework.Fixed64Vector2));
             if (isNewObj)
             {
                 __curPrim += 4; // Skip retRefBase
             }
             else
             {
-                // TODO: Constructor binding for non-newObj (e.g. value type init) in Neo
+                // Non-newobj value-type init: the `this` struct occupies the first
+                // __thisSz bytes (zero-init from initobj). Skip it to reach the
+                // args; write the constructed result back to this slot. Mirrors
+                // child-28's TestVector3 Ctor_0_Neo.
+                __curPrim += __thisSz;
             }
             System.Int32 @x = (System.Int32)ILIntepreter.ReadNeoInt32(__frameBase, ref __curPrim);
             System.Int32 @y = (System.Int32)ILIntepreter.ReadNeoInt32(__frameBase, ref __curPrim);
             ILRuntimeTest.TestFramework.Fixed64Vector2 result_of_this_method = new ILRuntimeTest.TestFramework.Fixed64Vector2(@x, @y);
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (isNewObj)
+            {
+                if (__retDst != null) { ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __thisSz); }
+            }
+            else
+            {
+                ILIntepreter.WriteNeoValueType(result_of_this_method, __frameBase, __thisSz);
+            }
         }
 #else
         static StackObject* Ctor_0(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)
