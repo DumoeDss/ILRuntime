@@ -483,6 +483,43 @@ namespace ILRuntime.Runtime.Intepreter
             }
         }
 
+        // neo-struct-byvalue-il-callee: a by-value IL-struct param whose value
+        // type has reference fields (e.g. TransitionTest = {int; string; float;
+        // SubStruct}) stores those refs in the caller-frame REF region
+        // (mStack[callerFrameRefBase + refOff], per Stfld_Ref_Inline), NOT in the
+        // primitive bytes that CopyNeoCallArguments CopyBlock'd. The optimizer
+        // builds map.RefSrc/RefDst for every ref-bearing dest slot, but
+        // CopyNeoCallArguments never consumed them -- so the callee's
+        // Ldfld_Ref_Inline read its own (zeroed-at-entry) ref slot -> null ->
+        // `arg.B != "2"` op_Inequality(null,..) returned true -> spurious throw.
+        // This helper PRE-RESERVES the IL callee's whole ref region in the caller
+        // (after F-7B byref promotion, so promoted slots sit BELOW it and survive
+        // the callee Ret pop), shallow-copies each ref entry, and returns the
+        // pre-reserved base so ExecuteNeo skips its own reservation. Layout-
+        // neutral: the base == mStack.Count (the exact position ExecuteNeo would
+        // have reserved), and the Ret/unwind truncation pops the same range. The
+        // caller passes the returned base to InvokeNeoCallTarget; -1 (no ref
+        // entries / CLR callee) means "reserve normally" (the ExecuteNeo default).
+        static int NeoReserveAndCopyCalleeRefs(ILMethod ilm, ref NeoCallParamMap map, AutoList mStack, int callerFrameRefBase)
+        {
+            var refSrc = map.RefSrc;
+            if (refSrc == null || refSrc.Length == 0)
+                return -1;
+            int calleeRefBase = mStack.Count;
+            int totalRefSize = ilm.CompiledFrame.TotalRefSize;
+            for (int i = 0; i < totalRefSize; i++)
+                mStack.Add(null);
+            var refDst = map.RefDst;
+            for (int i = 0; i < refSrc.Length; i++)
+            {
+                int src = callerFrameRefBase + refSrc[i];
+                // Source ref slots always sit below the just-reserved callee base.
+                object srcObj = (src >= 0 && src < calleeRefBase) ? mStack[src] : null;
+                mStack[calleeRefBase + refDst[i]] = srcObj;
+            }
+            return calleeRefBase;
+        }
+
         // Step 13 Area 4c: the shared byref-field marshal (D3 unification). Reads
         // OR writes a referent through a Ref Slot (objIdx, off) where the referent
         // is a FIELD of an mStack object. The object is a CLR object (off = field
@@ -845,12 +882,13 @@ namespace ILRuntime.Runtime.Intepreter
             return n;
         }
 
-        bool InvokeNeoCallTarget(IMethod targetMethod, bool isNewobj, byte* targetBase, AutoList mStack, byte* retDstPtr, int targetRetRefBase, out bool unhandledException)
+        bool InvokeNeoCallTarget(IMethod targetMethod, bool isNewobj, byte* targetBase, AutoList mStack, byte* retDstPtr, int targetRetRefBase, out bool unhandledException, int preReservedFrameRefBase = -1)
         {
             unhandledException = false;
             if (targetMethod is ILMethod ilm)
             {
-                ExecuteNeo(ilm, targetBase, retDstPtr, targetRetRefBase, out unhandledException);
+                ExecuteNeo(ilm, targetBase, retDstPtr, targetRetRefBase, out unhandledException,
+                    preReservedFrameRefBase: preReservedFrameRefBase);
                 return !unhandledException;
             }
             else if (targetMethod is CLRMethod clrMethod)
@@ -1811,7 +1849,8 @@ namespace ILRuntime.Runtime.Intepreter
 
         internal unsafe byte* ExecuteNeo(ILMethod method, byte* esp, byte* retDst, int retRefBase, out bool unhandledException,
             byte* vtNewobjCallerDst = null, int vtNewobjCallerDstRefBase = -1, int vtNewobjCallerPrimSize = 0, int vtNewobjCallerRefCount = 0,
-            int constrainedSlot0SeedRefOffset = -1, int constrainedSlot0SeedSrcRefBase = -1, int constrainedSlot0SeedRefCount = 0)
+            int constrainedSlot0SeedRefOffset = -1, int constrainedSlot0SeedSrcRefBase = -1, int constrainedSlot0SeedRefCount = 0,
+            int preReservedFrameRefBase = -1)
         {
 #if DEBUG
             if (method == null)
@@ -1857,10 +1896,28 @@ namespace ILRuntime.Runtime.Intepreter
                 }
             }
 
-            // Managed stack reservation for this frame's reference slots
-            int frameRefBase = mStack.Count;
-            for (int i = 0; i < totalRefSize; i++)
-                mStack.Add(null);
+            // Managed stack reservation for this frame's reference slots.
+            // neo-struct-byvalue-il-callee: when the CALLER pre-reserved this
+            // frame's whole ref region (to propagate a by-value IL-struct param's
+            // reference fields across the call boundary -- CopyNeoCallArguments
+            // only CopyBlock's primitive bytes), skip the reservation+zero loop
+            // and reuse the caller-supplied base. The position is identical to
+            // what the loop below would produce (mStack.Count at entry), so every
+            // downstream absolute-ref-index consumer (Ldfld_Ref_Inline etc.) and
+            // the Ret/unwind truncation (mStack.RemoveRange(frameRefBase, ...))
+            // are unaffected. The caller pre-filled the param ref slots and
+            // null-initialized the rest, matching the loop's zeroing.
+            int frameRefBase;
+            if (preReservedFrameRefBase >= 0)
+            {
+                frameRefBase = preReservedFrameRefBase;
+            }
+            else
+            {
+                frameRefBase = mStack.Count;
+                for (int i = 0; i < totalRefSize; i++)
+                    mStack.Add(null);
+            }
 
             // Step 17 (b) (neo-step17-stobj-refloop): seed the callee slot-0 ref
             // region for a constrained.callvirt DIRECT-CALL on an IL value type
@@ -3747,6 +3804,16 @@ namespace ILRuntime.Runtime.Intepreter
                                             out f7bPromotedCallerSlot, out f7bRebasedSlotOff, out f7bRebasedOrigOff);
                                     }
 
+                                    // neo-struct-byvalue-il-callee: pre-reserve the IL callee's ref
+                                    // region and propagate a by-value IL-struct param's reference
+                                    // fields (map.RefSrc -> map.RefDst). Runs AFTER F-7B promotion so
+                                    // any promoted caller-owned byref slots sit below the callee base
+                                    // (and survive its Ret pop). -1 for a CLR callee / no ref entries
+                                    // (ExecuteNeo then reserves normally).
+                                    int calleeFrameRefBase = -1;
+                                    if (targetMethod is ILMethod cfrIlm)
+                                        calleeFrameRefBase = NeoReserveAndCopyCalleeRefs(cfrIlm, ref map, mStack, frameRefBase);
+
                                     if (needSnap)
                                     {
                                         fixed (int* snap = snapArr)
@@ -3754,7 +3821,7 @@ namespace ILRuntime.Runtime.Intepreter
                                             int captured = SnapshotNeoCallByRefSources(ref map, frameBase, snap);
                                             if (captured > 0)
                                                 byRefSnap = snap;
-                                            if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                            if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException, calleeFrameRefBase))
                                                 return null;
                                             if (f7bTouched)
                                             {
@@ -3772,7 +3839,7 @@ namespace ILRuntime.Runtime.Intepreter
                                     }
                                     else
                                     {
-                                        if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException))
+                                        if (!InvokeNeoCallTarget(targetMethod, false, targetBase, mStack, retDstPtr, targetRetRefBase, out unhandledException, calleeFrameRefBase))
                                             return null;
                                         if (f7bTouched)
                                         {

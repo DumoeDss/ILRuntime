@@ -57,7 +57,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         // Inherit any alias the source already carries.
                         NeoAddressAlias inherited;
                         if (addrAlias.TryGetValue(src, out inherited))
-                            addrAlias[dest] = new NeoAddressAlias { Reg = inherited.Reg, Offset = inherited.Offset };
+                            addrAlias[dest] = new NeoAddressAlias { Reg = inherited.Reg, Offset = inherited.Offset, RefOffset = inherited.RefOffset };
                         else
                             addrAlias[dest] = new NeoAddressAlias { Reg = src, Offset = 0 };
                     }
@@ -70,11 +70,15 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     if (addrAlias != null && addrAlias.TryGetValue(src, out inherited))
                     {
                         // Fold the nested field's PrimitiveOffset into the
-                        // accumulated byte offset.
+                        // accumulated byte offset, and its ReferenceOffset into
+                        // the accumulated ref offset (neo-struct-byvalue-il-callee:
+                        // needed so a ref field of a nested struct resolves to the
+                        // leaf's absolute frame-ref index, not the first ref slot).
                         addrAlias[dest] = new NeoAddressAlias
                         {
                             Reg = inherited.Reg,
-                            Offset = inherited.Offset + so.Operand2
+                            Offset = inherited.Offset + so.Operand2,
+                            RefOffset = inherited.RefOffset + so.Operand3
                         };
                     }
                 }
@@ -1059,17 +1063,19 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         }
                         break;
                     // Ref inline variants: resolve the absolute frame-ref
-                    // index = owningSlot.RefOffset + field.ReferenceOffset.
-                    // Operand3 still holds the field's ReferenceOffset (set by
-                    // the JIT); we fold in the owning slot's RefOffset here.
-                    // NOTE: nested-VT ref-field accumulation (ldflda of a VT
-                    // that itself has ref fields) is not folded here -- Step 12
-                    // tests only nest primitive value types.
+                    // index = owningSlot.RefOffset + nestedRefOffset + field.ReferenceOffset.
+                    // Operand3 still holds the leaf field's ReferenceOffset (set by
+                    // the JIT); we fold in the owning slot's RefOffset here. For a
+                    // nested value type (ldflda of a struct that itself has ref
+                    // fields, e.g. `outer.Sub.A`), owner.RefOffset carries the
+                    // accumulated ReferenceOffset of the intermediate struct(s) --
+                    // without it the leaf resolves to the FIRST ref slot and
+                    // corrupts a sibling ref field (TransitionTest.D.A overwrote .B).
                     case OpCodeREnum.Ldfld_Ref_Inline:
                         {
                             short r1 = op.Register1; // dest temp
                             NeoAddressAlias owner = ResolveLiveAlias(op.Register2);
-                            op.Operand = localInfos[owner.Reg].RefOffset + op.Operand3; // source field abs ref index
+                            op.Operand = localInfos[owner.Reg].RefOffset + owner.RefOffset + op.Operand3; // source field abs ref index
                             op.Operand4 = localInfos[r1].RefOffset;                     // dest temp ref offset
                             op.DstOffset = (ushort)localInfos[r1].Offset;
                             op.SrcOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
@@ -1079,7 +1085,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         {
                             NeoAddressAlias owner = ResolveLiveAlias(op.Register1);
                             short r2 = op.Register2; // value temp
-                            op.Operand = localInfos[owner.Reg].RefOffset + op.Operand3; // dest field abs ref index
+                            op.Operand = localInfos[owner.Reg].RefOffset + owner.RefOffset + op.Operand3; // dest field abs ref index
                             op.DstOffset = (ushort)(localInfos[owner.Reg].Offset + owner.Offset);
                             op.SrcOffset = (ushort)localInfos[r2].Offset;
                         }
@@ -1679,7 +1685,7 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         if (aSrc >= 0 && aSrc < localInfos.Length && !aSrcIsRef)
                         {
                             liveAliasMap[aDest] = liveAliasMap.TryGetValue(aSrc, out NeoAddressAlias inh)
-                                ? new NeoAddressAlias { Reg = inh.Reg, Offset = inh.Offset }
+                                ? new NeoAddressAlias { Reg = inh.Reg, Offset = inh.Offset, RefOffset = inh.RefOffset }
                                 : new NeoAddressAlias { Reg = aSrc, Offset = 0 };
                         }
                         else
@@ -1690,7 +1696,13 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         short aDest = preOp.Register1;
                         short aSrc = preOp.Register2;
                         if (liveAliasMap.TryGetValue(aSrc, out NeoAddressAlias inh))
-                            liveAliasMap[aDest] = new NeoAddressAlias { Reg = inh.Reg, Offset = inh.Offset + op.Operand2 };
+                            // neo-struct-byvalue-il-callee: accumulate BOTH the prim
+                            // offset (Operand2) and the ref offset (Operand3, the
+                            // field's ReferenceOffset stamped by the JIT) so a
+                            // subsequent Stfld_Ref_Inline / Ldfld_Ref_Inline on a ref
+                            // field of this nested struct resolves the leaf's absolute
+                            // frame-ref index (base + nested ref offs + leaf ref offs).
+                            liveAliasMap[aDest] = new NeoAddressAlias { Reg = inh.Reg, Offset = inh.Offset + op.Operand2, RefOffset = inh.RefOffset + op.Operand3 };
                         else
                             liveAliasMap.Remove(aDest);
                     }
@@ -1844,6 +1856,16 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
         {
             public short Reg;
             public int Offset;
+            // neo-struct-byvalue-il-callee: accumulated reference-region offset for
+            // a nested value-type field address (ldflda of a struct that itself has
+            // reference fields). Mirrors the prim `Offset` accumulation but for the
+            // ref region, so Stfld_Ref_Inline / Ldfld_Ref_Inline on a nested struct
+            // ref field (e.g. `outer.Sub.A = ..` lowered as `ldflda Sub; stfld.ref
+            // A`) resolves the leaf field's ABSOLUTE frame-ref index correctly =
+            // base.RefOffset + Sub.ReferenceOffset + A.ReferenceOffset. Without it
+            // the leaf wrote to the FIRST ref slot (base.RefOffset + 0), corrupting
+            // the sibling ref field (TransitionTest.D.A="4" overwrote .B="2").
+            public int RefOffset;
         }
 
         static NeoAddressAlias ResolveAddressAlias(Dictionary<short, NeoAddressAlias> addrAlias, short reg)

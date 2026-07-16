@@ -1581,6 +1581,23 @@
       "smoke": "FULL SMOKE 6 (delta 0 honest); NeoStep 414/0; experimental ref-region copy verified-correct-but-neutral (reverted); fresh 06 grounding table",
       "review": "APPROVE (LEAD non-author; honest delta-0; ref-region copy necessary-but-insufficient; downstream comparison issue documented)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-struct-byvalue-il-callee": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: 2 COUPLED roots. (1) CopyNeoCallArguments never consumed map.RefSrc/RefDst -> IL struct ref-field params not propagated to callee. (2) NeoAddressAlias carried only prim Offset, dropped RefOffset -> Stfld_Ref_Inline computed wrong ref offset for nested struct fields (t.D.A wrote to t.B slot). recluster-6 downstream-comparison framing DISPROVEN (producer/storage bug, not comparison). Fix = ref-region copy (NeoReserveAndCopyCalleeRefs + ExecuteNeo preReservedFrameRefBase) + NeoAddressAlias.RefOffset for nested ref accumulation.",
+      "prerequisites": [
+        "neo-recluster-6"
+      ],
+      "dependsOn": [
+        "neo-recluster-6"
+      ],
+      "status": "done",
+      "capability": "neo-value-types",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 6->5 (-1, UnitTest_TestStackRegisterTransition3); NeoStep 414/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; 2 coupled roots; prior comparison framing disproven; ref-region copy layout-neutral; closes Step-12 nested-VT ref-field gap)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1672,7 +1689,8 @@
     "neo-register-transition-frame-clobber",
     "neo-async-movenext-frame-stacking",
     "neo-recluster-7",
-    "neo-recluster-6"
+    "neo-recluster-6",
+    "neo-struct-byvalue-il-callee"
   ],
   "surfacedFollowups": [
     {
@@ -1902,6 +1920,7 @@
     "fullSmokeAfterRegTc": 9,
     "fullSmokeAfterAsyncFs": 7,
     "fullSmokeAfterR7": 6,
-    "fullSmokeAfterR6": 6
+    "fullSmokeAfterR6": 6,
+    "fullSmokeAfterSvbic": 5
   }
 }
