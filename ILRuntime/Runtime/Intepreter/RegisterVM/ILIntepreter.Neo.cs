@@ -7589,6 +7589,27 @@ namespace ILRuntime.Runtime.Intepreter
                                             constrainedSlot0SeedRefCount: ilConstrained.TotalReferenceCount);
                                         if (unhandledException)
                                             return null;
+                                        // neo-structtest12: write-back the callee's slot-0 to the
+                                        // caller's struct. The direct-call path passes the struct BY
+                                        // VALUE into the callee's slot-0 (a fresh frame copy, NOT an
+                                        // aliasing byref). ECMA constrained. semantics require a value-
+                                        // type instance method to mutate `this` IN PLACE (the byref the
+                                        // prefix resolves), so a MUTATOR (e.g. set_i via the
+                                        // `new T(){ field = val }` object-initializer lowering on a
+                                        // generic struct T) must propagate its slot-0 modifications back
+                                        // to the caller's struct -- otherwise `ins.i` stays 0 after
+                                        // `set_i(10)` (StructTest12Sub<T> `T ins = new T(){ i = 10 }`).
+                                        // Getters / ToString / GetHashCode leave slot-0 unchanged, so
+                                        // the copy-back is an idempotent no-op for them. The ref-field-
+                                        // struct mutator write-back is deferred (needs the callee's
+                                        // frameRefBase, internal to ExecuteNeo); the prim write-back
+                                        // covers the 0-ref struct case (the only smoke hit, MyStruct2).
+                                        if (ilConstrained.TotalPrimitiveSize > 0)
+                                        {
+                                            Unsafe.CopyBlock(frameBase + thisByteOff,
+                                                targetBase + thisSlotInfo.Offset,
+                                                (uint)ilConstrained.TotalPrimitiveSize);
+                                        }
                                     }
                                     else
                                     {

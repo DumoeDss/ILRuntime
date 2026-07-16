@@ -1666,6 +1666,23 @@
       "smoke": "FULL SMOKE 2->1 (-1, MyTest.Test); NeoStep 417/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; Box = last unseeded ref producer; closes the producer-seeding class entirely); StructTest12 remains (deepest singleton, 2 coupled JIT bugs)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-structtest12-generic-activator": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 LAST child: StructTest12. Bug 1 (T mis-resolution) DISPROVEN at runtime (method.GenericArguments correct; dump label was stale capture-T display). Bug 2 CONFIRMED with 2 coupled sub-sites: (a) CreateInstanceNeo returned heap ILTypeInstance for value-type T -> wrote mStack index into struct flat bytes -> ins.i=1; (b) constrained-callvirt direct-call path copied struct into callee slot-0 but NEVER copied the mutated slot-0 back -> set_i(10) lost -> ins.i=0. Fix = CreateInstanceNeo IL-VT zero-init branch + constrained-callvirt direct-call post-ExecuteNeo CopyBlock write-back.",
+      "prerequisites": [
+        "neo-recluster-2"
+      ],
+      "dependsOn": [
+        "neo-recluster-2"
+      ],
+      "status": "done",
+      "capability": "neo-newobj+neo-dispatch",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 1->0 (-1, StructTest12); NeoStep 417/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; Bug1 disproven at runtime; 2 coupled sub-sites for Bug2; constrained-callvirt write-back is the latent ECMA in-place mutation gap)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1762,7 +1779,8 @@
     "neo-recluster-5",
     "neo-recluster-4",
     "neo-recluster-3",
-    "neo-recluster-2"
+    "neo-recluster-2",
+    "neo-structtest12-generic-activator"
   ],
   "surfacedFollowups": [
     {
@@ -1997,6 +2015,7 @@
     "fullSmokeAfterR5": 4,
     "fullSmokeAfterR4": 3,
     "fullSmokeAfterR3": 2,
-    "fullSmokeAfterR2": 1
+    "fullSmokeAfterR2": 1,
+    "fullSmokeAfterSt12": 0
   }
 }

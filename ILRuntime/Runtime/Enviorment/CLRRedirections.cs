@@ -709,18 +709,70 @@ namespace ILRuntime.Runtime.Enviorment
         public unsafe static void CreateInstanceNeo(ILIntepreter intp, byte* frameBase, AutoList mStack, CLRMethod method, bool isNewObj, byte* retDst, int retRefBase)
         {
             IType[] genericArguments = method.GenericArguments;
-            object result;
             if (genericArguments != null && genericArguments.Length == 1)
             {
                 var t = genericArguments[0];
-                if (t is ILType ilt)
-                    result = ilt.Instantiate();
+                // new T() (Roslyn lowers a generic-param `new T()` w/o a `new()`
+                // constraint to `Activator.CreateInstance<T>()`) for a VALUE TYPE
+                // yields default(T) -- a ZEROED struct -- NOT a heap instance. The
+                // caller assigns the result to a by-value struct local, so the dest
+                // (retDst) is the struct's flat-bytes slot (the JIT writes the call
+                // result directly into the struct local; e.g. StructTest12Sub<T>
+                // `T ins = new T(){...}`). Returning a heap ILTypeInstance (the old
+                // ILType branch) made WriteNeoObjectResult stamp the mStack index
+                // into the struct's prim bytes -> `ins.i` read the index (1) instead
+                // of the field -> the `if(ins.i!=10) throw` fired. The fix writes
+                // default(T): zero the prim bytes + null the ref-field slots (the
+                // same contract as the ExecuteNeo Initobj arm). The JIT always emits
+                // `initobj <struct local>` before this call, so the slot is already
+                // zeroed -- this write is idempotent + robust if initobj is elided.
+                if (t.IsValueType)
+                {
+                    if (t is ILType ilt)
+                    {
+                        if (retDst != null)
+                        {
+                            int primSize = ilt.TotalPrimitiveSize;
+                            for (int i = 0; i < primSize; i++) retDst[i] = 0;
+                        }
+                        int refCount = ilt.TotalReferenceCount;
+                        if (refCount > 0 && retRefBase >= 0)
+                        {
+                            for (int i = 0; i < refCount; i++)
+                            {
+                                int idx = retRefBase + i;
+                                if (idx >= 0 && idx < mStack.Count) mStack[idx] = null;
+                            }
+                        }
+                        return;
+                    }
+                    else
+                    {
+                        // CLR value type: CreateDefaultInstance returns a boxed
+                        // default struct; write its flat bytes (default = all zero)
+                        // to the dest via the shared value-type writer. A ref-field
+                        // CLR struct NIEs inside WriteNeoValueType (Step-13b) -- the
+                        // same fail-loud contract as every other Neo VT site.
+                        var ct = (CLRType)t;
+                        object boxedDefault = ct.CreateDefaultInstance();
+                        if (retDst != null && boxedDefault != null)
+                        {
+                            int sz = ILIntepreter.GetNeoValueTypeManagedSize(ct.TypeForCLR);
+                            ILIntepreter.WriteNeoValueType(boxedDefault, retDst, sz);
+                        }
+                        return;
+                    }
+                }
+                // Reference type: new heap instance.
+                object result;
+                if (t is ILType ilt2)
+                    result = ilt2.Instantiate();
                 else
                     result = ((CLRType)t).CreateDefaultInstance();
+                WriteNeoObjectResult(mStack, retDst, retRefBase, result);
             }
             else
                 throw new EntryPointNotFoundException();
-            WriteNeoObjectResult(mStack, retDst, retRefBase, result);
         }
 
         // Neo redirect for System.Activator.CreateInstance(Type). Mirrors the
