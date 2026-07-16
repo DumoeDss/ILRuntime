@@ -47,7 +47,7 @@ namespace ILRuntime.Runtime.Generated
             int __curPrim = 0;
             System.Collections.Generic.IEnumerator<System.Collections.Generic.KeyValuePair<System.Int32, System.Int32>> instance_of_this_method = (System.Collections.Generic.IEnumerator<System.Collections.Generic.KeyValuePair<System.Int32, System.Int32>>)ILIntepreter.ReadNeoReference(__frameBase, ref __curPrim, __mStack);
             var result_of_this_method = instance_of_this_method.Current;
-            // TODO: CLR value type return in reflection fallback: Step 13
+            if (__retDst != null) { int __retSz = ILIntepreter.GetNeoValueTypeManagedSize(typeof(System.Collections.Generic.KeyValuePair<System.Int32, System.Int32>)); ILIntepreter.WriteNeoValueType(result_of_this_method, __retDst, __retSz); }
         }
 #else
         static StackObject* get_Current_0(ILIntepreter __intp, StackObject* __esp, AutoList __mStack, CLRMethod __method, bool isNewObj)

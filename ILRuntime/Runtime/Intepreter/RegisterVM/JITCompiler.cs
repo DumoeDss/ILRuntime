@@ -1101,6 +1101,30 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldstr:
                         SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
                         break;
+                    // neo-recluster-2: Box produces a REFERENCE -- the runtime
+                    // Box arm writes the boxed object to the dest's ref slot
+                    // (frameRefBase + dstRefOffset) and the mStack index to the
+                    // dest's prim bytes. Without seeding, a following
+                    // `move rDst, rBox` is a NON-reference Move: the Move case
+                    // (below) keys `op.Operand = IsNeoReferenceSlot(srcType) ? 1:0`
+                    // on registerTypes[src], so an unseeded box dest yields
+                    // Operand=0 -> the runtime Move copies ONLY the prim bytes
+                    // (the index), NOT the ref-slot object. The dest then points
+                    // at the BOX register's own ref slot instead of getting an
+                    // independent copy. When the box register is later reused by
+                    // any reference producer (ldstr / call returning ref / another
+                    // box), that ref slot is overwritten and the move dest
+                    // dangles. (MyTest.Test: `box r6,enum; move r5,r6; move r1,r5`
+                    // left r1 pointing at r6's ref slot; a later `ldstr r6,"  "`
+                    // overwrote it -> the next get_Current cast the String to
+                    // IEnumerator -> InvalidCastException.) Same unseeded-
+                    // reference-producer class as Ldnull/Ldstr/Ldsfelda (child-11)
+                    // and Ldfld_Ref (child-23). Seeding ObjectType makes the Move
+                    // a reference Move (copies the object to the dest's OWN ref
+                    // slot), matching the runtime Box arm's dest contract.
+                    case OpCodeREnum.Box:
+                        SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
+                        break;
                     case OpCodeREnum.Ldsflda:
                         // neo-recluster-7: Ldsfelda produces a Neo byref (8-byte
                         // (objIdx, off) pointer into a static field's storage), NOT an

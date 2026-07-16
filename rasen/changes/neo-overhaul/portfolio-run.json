@@ -1649,6 +1649,23 @@
       "smoke": "FULL SMOKE 3->2 (-1, UnitTest_10051); NeoStep 417/0 (+3 probes); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; stale-stub ports; verified post-mortem after socket-close infra death)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-2": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-2 recluster: MyTest.Test FIXED. Root = Box was the LAST unseeded reference producer in TypeSpecializeNeoOpcodes -> Move specialization no-oped -> boxed IEnumerator shared a ref slot with a later ldstr -> cast to IEnumerator failed on 2nd iteration. Fix = Box seeding case (ObjectType) + stale get_Current_0_Neo stub port. StructTest12 (Activator.CreateInstance generic-param JIT resolution + heap-not-struct return, 2 coupled bugs) remains as the deepest singleton.",
+      "prerequisites": [
+        "neo-recluster-3"
+      ],
+      "dependsOn": [
+        "neo-recluster-3"
+      ],
+      "status": "done",
+      "capability": "neo-boxing+neo-optimizer",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 2->1 (-1, MyTest.Test); NeoStep 417/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; Box = last unseeded ref producer; closes the producer-seeding class entirely); StructTest12 remains (deepest singleton, 2 coupled JIT bugs)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1744,7 +1761,8 @@
     "neo-struct-byvalue-il-callee",
     "neo-recluster-5",
     "neo-recluster-4",
-    "neo-recluster-3"
+    "neo-recluster-3",
+    "neo-recluster-2"
   ],
   "surfacedFollowups": [
     {
@@ -1978,6 +1996,7 @@
     "fullSmokeAfterSvbic": 5,
     "fullSmokeAfterR5": 4,
     "fullSmokeAfterR4": 3,
-    "fullSmokeAfterR3": 2
+    "fullSmokeAfterR3": 2,
+    "fullSmokeAfterR2": 1
   }
 }
