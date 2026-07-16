@@ -1530,6 +1530,23 @@
       "smoke": "FULL SMOKE 9 (delta 0 honest -- correct fix blocked by async-infra TC12 regression); NeoStep 414/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; shared-root disproven; sub-int slot-sizing root pinned; correct fix verified but blocked by async MoveNext frame-reuse; documented inline + for next child)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-async-movenext-frame-stacking": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2: sub-int slot-sizing fix SHIPPED (the MoveNext frame-stacking hypothesis was DISPROVEN -- MoveNext uses a fresh RequestILIntepreter, not the callers stack). The TC12 regression was a buggy test gate (resumed1 spin on t.IsCompleted mid-cascade) masked by the sub-int clobber. Fix = (1) AllocateLocalStackSpaces sub-int locals sized to int32 (#if ENABLE_NEO_MODE); (2) TC12 test gate corrected. ReflectionTest14 + bonus ReflectionTest25 flipped.",
+      "prerequisites": [
+        "neo-register-transition-frame-clobber"
+      ],
+      "dependsOn": [
+        "neo-register-transition-frame-clobber"
+      ],
+      "status": "done",
+      "capability": "neo-optimizer",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 9->7 (-2, ReflectionTest14+ReflectionTest25); NeoStep 414/0 (TC12 test-gate fix load-bearing); Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; MoveNext hypothesis disproven; sub-int slot-sizing is the canonical fix; TC12 gate was buggy false-positive masked by the clobber; 7 deep singletons remaining)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1618,7 +1635,8 @@
     "neo-vt-return-move-size",
     "neo-recluster-10",
     "neo-recluster-9",
-    "neo-register-transition-frame-clobber"
+    "neo-register-transition-frame-clobber",
+    "neo-async-movenext-frame-stacking"
   ],
   "surfacedFollowups": [
     {
@@ -1845,6 +1863,7 @@
     "fullSmokeAfterVtRet": 10,
     "fullSmokeAfterR10": 9,
     "fullSmokeAfterR9": 9,
-    "fullSmokeAfterRegTc": 9
+    "fullSmokeAfterRegTc": 9,
+    "fullSmokeAfterAsyncFs": 7
   }
 }

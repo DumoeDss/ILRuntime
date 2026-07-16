@@ -403,15 +403,25 @@ namespace TestCases
             // task B; <>u__1 is now overwritten with await2's awaiter).
             TestCLRBinding.CompleteIncompleteTask(va);
 
-            // Bounded spin-wait (NO real delay) for the resume to settle. A
-            // stuck/deadlocked resume #1 exhausts the budget and FAILs here.
-            bool resumed1 = false;
-            for (int i = 0; i < 1_000_000; i++)
-            {
-                if (t.IsCompleted || t.IsFaulted) { resumed1 = true; break; }
-                if ((i & 0x3FF) == 0) System.Threading.Thread.Yield();
-            }
-            if (!resumed1) { int x = 1; int y = 0; int _ = x / y; }
+            // resume #1 runs SYNCHRONOUSLY: the host TaskCompletionSource's SetResult
+            // (inside CompleteIncompleteTask) invokes the Neo suspend path's registered
+            // UnsafeOnCompleted continuation INLINE on this thread, so by the time
+            // CompleteIncompleteTask(va) returns, resume #1 has already settled -- it
+            // either re-suspended on task B (the multi-await case), completed, or
+            // faulted (a fault propagates out of CompleteIncompleteTask as an exception,
+            // failing the test). A deadlocked resume #1 would hang CompleteIncompleteTask
+            // itself (caught by the >10s kill rule), so no spin-wait is needed here.
+            //
+            // NOTE: the prior `t.IsCompleted || t.IsFaulted` spin gate was WRONG for a
+            // multi-await SM -- after resume #1 the SM RE-SUSPENDS on task B, so the
+            // bridge Task stays incomplete until the FINAL resume. That gate only ever
+            // passed (pre-sub-int-slot-fix) because a 1-byte bool-local slot got
+            // overrun by a 4-byte primitive write, clobbering the `t` reference so
+            // t.IsCompleted mis-read TRUE. Sizing sub-int locals to int32 (the
+            // ReflectionTest14 fix) removed that clobber, so t.IsCompleted now reads
+            // correctly (FALSE) and the wrong gate fails. The sync-settled resume makes
+            // the spin redundant, so it is dropped rather than re-gated.
+            if (t.IsFaulted) { int x = 1; int y = 0; int _ = x / y; }
 
             // Drive completion of task B (await2's Task). The continuation fires
             // -> resume #2: MoveNext reloads await2's awaiter from <>u__1 (state

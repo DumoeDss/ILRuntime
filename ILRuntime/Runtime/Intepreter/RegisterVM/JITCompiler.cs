@@ -2558,6 +2558,15 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     var ivt = appdomain.GetType(vt, declaringType, method);
                     int size = appdomain.GetPrimitiveSize(ivt);
                     if (size < 1) size = 1;
+#if ENABLE_NEO_MODE
+                    // REGTC (neo-register-transition-frame-clobber / neo-async-movenext-frame-stacking):
+                    // size sub-int primitive LOCALS (bool/byte/sbyte/short/ushort/char) to int32.
+                    // Every Neo primitive write path writes *(int*)retDst (4 bytes, sign/zero-extended);
+                    // a 1/2-byte local slot is overrun, clobbering the neighbour (ReflectionTest14).
+                    // Matches the temp file's >=8-byte slots + Legacy's 12-byte StackObject. Legacy is
+                    // unaffected (Legacy locals occupy full 12-byte StackObject slots).
+                    if (size < 4) size = 4;
+#endif
                     // Step 12: align the primitive local to its natural size.
                     offset = AlignUp(offset, size);
                     slot.Offset = offset;
