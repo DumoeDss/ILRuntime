@@ -1333,7 +1333,6 @@ namespace ILRuntime.Runtime.Intepreter
             }
 
             object res = clrMethod.Invoke(targetBase, mStack, isNewobj);
-
             // Step 18 (D3): for a reflection-constructed newobj the returned
             // object MUST be stored into the caller's dest (the early-return
             // previously skipped this, so the dest was never filled). The
@@ -3780,6 +3779,39 @@ namespace ILRuntime.Runtime.Intepreter
                                     var targetMethod = AppDomain.GetMethod(ip->Operand2);
                                     if (targetMethod == null)
                                     {
+                                        // AppDomain.IsInvalidMethodReference (AppDomain
+                                        // .cs:2156) flags System.Object::.ctor() (and
+                                        // System.Attribute::.ctor()) and caches null for
+                                        // the method token, so GetMethod returns null here.
+                                        // This is the Legacy "Means new object();" signal
+                                        // (ILIntepreter.Register.cs:3529-3536): `new
+                                        // object()` in IL code must produce a REAL
+                                        // System.Object, NOT be silently skipped. The old
+                                        // `ip++; continue;` left the dest register unwritten
+                                        // -> the result read as null -> `object o = new
+                                        // object(); if (o == null) throw` fired (broke
+                                        // UnitTest_TestInline01 + the broader `new object()`
+                                        // surface). Mirror Legacy: construct a System.Object
+                                        // and write it to the dest as a reference-type
+                                        // newobj result (mStack ref slot + primitive index).
+                                        // The null-method signal is EXCLUSIVELY the
+                                        // IsInvalidMethodReference path -- any other
+                                        // resolution failure throws KeyNotFoundException
+                                        // upstream instead of caching null -- so this is
+                                        // safe. System.Attribute is abstract and never
+                                        // instantiated, so `new object()` covers the
+                                        // reachable set (Legacy identical). Neo-gated
+                                        // (this file is ENABLE_NEO_MODE-gated) -> Legacy-
+                                        // neutral by construction.
+                                        int nulDstRefOff = ip->Operand3;
+                                        int nulNewobjDstIdx = frameRefBase + nulDstRefOff;
+                                        byte* nulRetDstPtr = frameBase + ip->DstOffset;
+                                        object nulNewObj = new object();
+                                        if (nulNewobjDstIdx >= mStack.Count)
+                                            mStack.Add(nulNewObj);
+                                        else
+                                            mStack[nulNewobjDstIdx] = nulNewObj;
+                                        *(int*)nulRetDstPtr = nulNewobjDstIdx;
                                         ip++;
                                         continue;
                                     }

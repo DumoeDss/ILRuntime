@@ -1479,6 +1479,23 @@
       "smoke": "FULL SMOKE 12->10 (-2, UnitTest_TestFCP + bonus UnitTest_10046); NeoStep 410/0; Legacy-neutral",
       "review": "APPROVE (LEAD non-author; stale Move-pinning disproven; AllocateSlotForType 3rd sizing site closed)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-10": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-10 recluster: UnitTest_TestInline01. Prior by-ref-aliasing framing DISPROVEN (TC1 new object() alone fails). Real root: AppDomain.IsInvalidMethodReference caches null for System.Object..ctor -> Neo Newobj arm silently skipped -> dest null. Fix = 3 parts: (1) Newobj arm constructs new object() when targetMethod==null; (2) LowerNeoOffsets stamps DstOffset for null-method newobj (was skipped -> clobbered adjacent reg, UnitTest_1013 regression); (3) NeoInitobjByRefOperandMarker extended to Ldflda predecessor (refField=null/default(T) lowering).",
+      "prerequisites": [
+        "neo-vt-return-move-size"
+      ],
+      "dependsOn": [
+        "neo-vt-return-move-size"
+      ],
+      "status": "done",
+      "capability": "neo-newobj",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 10->9 (-1, UnitTest_TestInline01); NeoStep 414/0 (+4 probes); Legacy-neutral; 2 sibling fixes (LowerNeoOffsets+marker) self-caught",
+      "review": "APPROVE (LEAD non-author; prior framing disproven; 3-part new object() fix; 9 deep singletons remaining)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1564,7 +1581,8 @@
     "neo-il-struct-box-call-boundary",
     "neo-recluster-13",
     "neo-step19-delegate-enumerator-group",
-    "neo-vt-return-move-size"
+    "neo-vt-return-move-size",
+    "neo-recluster-10"
   ],
   "surfacedFollowups": [
     {
@@ -1788,6 +1806,7 @@
     "fullSmokeAfterStructBox": 13,
     "fullSmokeAfterR13": 13,
     "fullSmokeAfterS19": 12,
-    "fullSmokeAfterVtRet": 10
+    "fullSmokeAfterVtRet": 10,
+    "fullSmokeAfterR10": 9
   }
 }

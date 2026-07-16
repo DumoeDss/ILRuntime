@@ -3144,10 +3144,22 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     // to the inlined copy (the `ref T` helper is typically
                     // inlined into the caller). LowerNeoOffsets' Initobj case
                     // does not touch Operand4. See NeoInitobjByRefOperandMarker.
+                    // neo-recluster-10: the marker ALSO fires for a `Code.Ldflda`
+                    // predecessor -- Roslyn lowers `refField = null` / `= default(T)`
+                    // (T : class) on a HEAP reference field to `ldflda <refField>;
+                    // initobj T`, producing a genuine managed byref (objIdx,
+                    // ReferenceOffset) that is NOT addr-alias-folded. Without the
+                    // marker the runtime initobj direct-wrote -1 to the byref TEMP
+                    // and the field stayed non-null (UnitTest_1013's SetNull:
+                    // `tValue = null` on a generic T=object field). A value-type
+                    // field's ldflda+initobj never reaches here (`!initT.IsValueType`
+                    // gate), so the fold-vs-genuine discrimination is unchanged.
                     {
                         var initT = appdomain.GetType(token, declaringType, method);
                         if (initT != null && !initT.IsValueType
-                            && ins.Previous != null && IsLdargCode(ins.Previous.OpCode.Code))
+                            && ins.Previous != null
+                            && (IsLdargCode(ins.Previous.OpCode.Code)
+                                || ins.Previous.OpCode.Code == Code.Ldflda))
                             op.Operand4 |= NeoInitobjByRefOperandMarker;
                     }
 #endif

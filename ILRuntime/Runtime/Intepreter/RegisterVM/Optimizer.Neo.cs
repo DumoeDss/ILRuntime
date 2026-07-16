@@ -1248,7 +1248,30 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                         {
                             var targetMethod = domain.GetMethod(op.Operand2);
                             if (targetMethod == null)
+                            {
+                                // System.Object::.ctor() / System.Attribute::.ctor() are
+                                // flagged "invalid" by AppDomain.IsInvalidMethodReference,
+                                // so GetMethod returns null. The runtime Newobj arm handles
+                                // this by constructing a real System.Object (mirroring Legacy
+                                // `new object()`), but it needs the DEST register offset to be
+                                // stamped like every other Newobj. The null-method `break`
+                                // below previously skipped the dest stamping at the tail of
+                                // this case, so op.DstOffset retained the register INDEX (not a
+                                // byte offset) and the runtime wrote the result to a garbage
+                                // frame location, clobbering an adjacent register (UnitTest_1013:
+                                // `tc.tValue = new object()` corrupted the owner tc). A null-
+                                // method ctor has NO params, so ONLY the dest stamping is needed
+                                // here (no Push scan, no NeoCallParamMap). isNeoNewobjShape is
+                                // op.Code==Newobj here (the case label), so mirror the tail
+                                // stamping exactly. Neo-gated (this file is ENABLE_NEO_MODE-gated).
+                                if (op.Register1 >= 0 && op.Register1 < localInfos.Length)
+                                {
+                                    short nr1 = op.Register1;
+                                    op.DstOffset = (ushort)localInfos[nr1].Offset;
+                                    op.Operand3 = localInfos[nr1].RefOffset;
+                                }
                                 break;
+                            }
                             
                             int pCnt = targetMethod.ParameterCount;
                             // A CLR Newobj with a redirect is rewritten by the JIT from Newobj to
