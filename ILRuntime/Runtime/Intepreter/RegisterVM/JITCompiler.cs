@@ -1084,6 +1084,23 @@ namespace ILRuntime.Runtime.Intepreter.RegisterVM
                     case OpCodeREnum.Ldstr:
                         SetRegisterType(registerTypes, op.Register1, appdomain.ObjectType);
                         break;
+                    case OpCodeREnum.Ldsflda:
+                        // neo-recluster-7: Ldsfelda produces a Neo byref (8-byte
+                        // (objIdx, off) pointer into a static field's storage), NOT an
+                        // in-frame value type. A prior producer on the same eval-stack
+                        // register (e.g. `initobj r, Vector3`) may have seeded
+                        // registerTypes[r] with the struct's ILType; if left stale, the
+                        // Ldfld/Stfld inline rewrite (TryRewriteFieldAccessForInline,
+                        // keys on `registerTypes[owner] is ILType && IsValueType`)
+                        // mis-treats the byref as an in-frame VT and emits a frame-
+                        // relative _Inline read/write that reads the byref's (objIdx,
+                        // off) bytes as struct fields (garbage). Clear the dest so the
+                        // inline rewrite does NOT fire -- the byref then flows to the
+                        // runtime Ldfld_* heap arm, which dereferences it. Safe for all
+                        // consumers: a byref is never an in-frame VT / reference slot /
+                        // arithmetic operand, so no specialization should fire on it.
+                        SetRegisterType(registerTypes, op.Register1, null);
+                        break;
                     case OpCodeREnum.Move:
                         {
                             IType srcType = GetRegisterType(registerTypes, op.Register2);

@@ -1547,6 +1547,23 @@
       "smoke": "FULL SMOKE 9->7 (-2, ReflectionTest14+ReflectionTest25); NeoStep 414/0 (TC12 test-gate fix load-bearing); Legacy-neutral",
       "review": "APPROVE (LEAD non-author; MoveNext hypothesis disproven; sub-int slot-sizing is the canonical fix; TC12 gate was buggy false-positive masked by the clobber; 7 deep singletons remaining)",
       "shipped": "commit+push 2026-07-16"
+    },
+    "neo-recluster-7": {
+      "pipeline": "small-feature",
+      "wave": 3,
+      "scope": "Wave-2 fresh-7 recluster: UnitTest_StaticTest05. 3 interacting defects in ldsflda <IL-static struct field> + ldfld <sub-field> + ref <IL-static struct field> for a pure-primitive struct (Vector3). Fix = (1) Ldsfelda IL-static arm uses PrimitiveOffset for IL-struct fields; (2) TypeSpecialize Ldsfelda clears registerTypes[dest]=null (stale Vector3 seed from initobj); (3) scalar Ldfld arms add byref static-field base offset when owner is ILTypeStaticInstance.",
+      "prerequisites": [
+        "neo-async-movenext-frame-stacking"
+      ],
+      "dependsOn": [
+        "neo-async-movenext-frame-stacking"
+      ],
+      "status": "done",
+      "capability": "neo-byref",
+      "completedDate": "2026-07-16",
+      "smoke": "FULL SMOKE 7->6 (-1, UnitTest_StaticTest05); NeoStep 414/0; Legacy-neutral",
+      "review": "APPROVE (LEAD non-author; 3-part ldsflda+ldfld+static-byref fix; prior DEEP verdict disproven for pure-primitive subset)",
+      "shipped": "commit+push 2026-07-16"
     }
   },
   "runnableFrontier": [],
@@ -1636,7 +1653,8 @@
     "neo-recluster-10",
     "neo-recluster-9",
     "neo-register-transition-frame-clobber",
-    "neo-async-movenext-frame-stacking"
+    "neo-async-movenext-frame-stacking",
+    "neo-recluster-7"
   ],
   "surfacedFollowups": [
     {
@@ -1864,6 +1882,7 @@
     "fullSmokeAfterR10": 9,
     "fullSmokeAfterR9": 9,
     "fullSmokeAfterRegTc": 9,
-    "fullSmokeAfterAsyncFs": 7
+    "fullSmokeAfterAsyncFs": 7,
+    "fullSmokeAfterR7": 6
   }
 }

@@ -4912,43 +4912,43 @@ namespace ILRuntime.Runtime.Intepreter
                                 break;
                             case OpCodeREnum.Ldfld_I1:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(int*)(frameBase + ip->DstOffset) = (sbyte)ins.Primitives[ip->Operand2];
+                                *(int*)(frameBase + ip->DstOffset) = (sbyte)ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)];
                                 break;
                             case OpCodeREnum.Ldfld_U1:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(int*)(frameBase + ip->DstOffset) = ins.Primitives[ip->Operand2];
+                                *(int*)(frameBase + ip->DstOffset) = ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)];
                                 break;
                             case OpCodeREnum.Ldfld_I2:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<short>(ref ins.Primitives[ip->Operand2]);
+                                *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<short>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_U2:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<ushort>(ref ins.Primitives[ip->Operand2]);
+                                *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<ushort>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_I4:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<int>(ref ins.Primitives[ip->Operand2]);
+                                *(int*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<int>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_U4:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(uint*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<uint>(ref ins.Primitives[ip->Operand2]);
+                                *(uint*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<uint>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_I8:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(long*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<long>(ref ins.Primitives[ip->Operand2]);
+                                *(long*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<long>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_U8:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(ulong*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<ulong>(ref ins.Primitives[ip->Operand2]);
+                                *(ulong*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<ulong>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_R4:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(float*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<float>(ref ins.Primitives[ip->Operand2]);
+                                *(float*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<float>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_R8:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
-                                *(double*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<double>(ref ins.Primitives[ip->Operand2]);
+                                *(double*)(frameBase + ip->DstOffset) = Unsafe.ReadUnaligned<double>(ref ins.Primitives[NeoLdfldStaticByrefOff(ins, frameBase, ip->SrcOffset, ip->Operand2)]);
                                 break;
                             case OpCodeREnum.Ldfld_Ref:
                                 ins = GetNeoILInstance(mStack, *(int*)(frameBase + ip->SrcOffset));
@@ -5621,7 +5621,18 @@ namespace ILRuntime.Runtime.Intepreter
                                         var ldaFt = ldaIlt.StaticFieldTypes.Length > ldaSIdx ? ldaIlt.StaticFieldTypes[ldaSIdx] : null;
                                         mStack.Add(ldaIlt.StaticInstance);
                                         int ldaSidx = mStack.Count - 1;
-                                        int ldaFieldOff = (ldaFt != null && ldaFt.IsPrimitive) ? ldaOff.PrimitiveOffset : ldaOff.ReferenceOffset;
+                                        // An IL value-type (struct) STATIC field is stored INLINE in
+                                        // the static instance's Primitives (mirrors the Ldsfeld IL-
+                                        // struct arm which CopyBlock-reads Primitives[PrimitiveOffset]
+                                        // + ManagedObjects[ReferenceOffset]), so its byref MUST carry
+                                        // PrimitiveOffset -- NOT ReferenceOffset. A primitive field
+                                        // also uses PrimitiveOffset. A CLR-struct field is boxed at
+                                        // ManagedObjects[ReferenceOffset] (the F-10 flag below).
+                                        // neo-recluster-7: previously `ldaFt.IsPrimitive ?
+                                        // PrimitiveOffset : ReferenceOffset` -- WRONG for IL-struct
+                                        // fields (Vector3 etc.), which corrupted ref/out-static-
+                                        // struct write-back (stobj wrote to the wrong Primitives slot).
+                                        int ldaFieldOff = (ldaFt != null && (ldaFt.IsPrimitive || (ldaFt is ILType && ldaFt.IsValueType))) ? ldaOff.PrimitiveOffset : ldaOff.ReferenceOffset;
                                         // neo-ldsflda-clrstruct-static: a CLR-struct STATIC field
                                         // of an IL type (e.g. `static TestStruct str2;` on an IL
                                         // class) is stored as a boxed struct at
@@ -7794,6 +7805,24 @@ namespace ILRuntime.Runtime.Intepreter
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        // neo-recluster-7: typed-Ldfld byref-owner Primitives-offset adjust. A byref
+        // owner produced by `ldsflda <IL-static struct field>` carries
+        // (staticInstanceIdx, fieldPrimOff) in the owner slot (set by the Ldsfelda IL-
+        // static arm). The typed Ldfld_* heap arm must read at fieldPrimOff + the sub-
+        // field's ip->Operand2, NOT Primitives[Operand2] (which is the static
+        // instance's FIRST field). The static instance (ILTypeStaticInstance, a
+        // distinct ILTypeInstance subclass) is the reliable runtime discriminator: a
+        // normal heap Ldfld_* owner is a plain ILTypeInstance, and the static-byref
+        // shape is reachable ONLY via ldsfelda (which materializes the StaticInstance
+        // onto mStack). Returns the adjusted Primitives index; for a non-static owner
+        // it returns Operand2 unchanged (no regression to the heap path).
+        static int NeoLdfldStaticByrefOff(ILTypeInstance ins, byte* frameBase, int srcOff, int fieldOperand2)
+        {
+            if (ins is ILTypeStaticInstance)
+                return fieldOperand2 + *(int*)(frameBase + srcOff + 4);
+            return fieldOperand2;
+        }
+
         static ILTypeInstance GetNeoILInstance(AutoList mStack, int objIndex)
         {
             if (objIndex < 0)
