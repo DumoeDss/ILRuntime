@@ -1925,14 +1925,14 @@
   },
   "planner": null,
   "sessionHandoff": {
-    "path": "handoff/lead-14.md",
-    "n": 14,
-    "pct": 0.85,
-    "afterStage": "wave-2: 3 children (C1/C4/C2) shipped, full-smoke 189->133",
-    "at": "2026-07-14",
-    "head": "(this commit)",
-    "baseline": "NeoStep 380/0; full Neo smoke 189->133 (-56 across C1/C4/C2). Grounding-driven: 187/189 failures are REAL bugs not NIEs. See lead-14.md + wave2-rootcause-plan.md (remaining ~13 clusters).",
-    "note": "User mandate drove grounding (real run) over doc-judgment. Re-audit caught wrong framings (C2). Stale-binding class recurring. .cctor stale-TODO was highest value (C4)."
+    "path": "handoff/lead-15.md",
+    "n": 15,
+    "pct": 4.1,
+    "afterStage": "wave-2 COMPLETE: full smoke 189->0 (951 ran / 0 failed), 64 wave-2 children, NeoStep 417/0",
+    "at": "2026-07-17",
+    "head": "abb7de5b",
+    "baseline": "NeoStep 417/0; full Neo smoke 951 ran / 0 failed. Wave-2 COMPLETE. All 189 original failures fixed. See lead-15.md.",
+    "note": "Wave-2 driven to completion by the user mandate fix-all-bugs. 64 children (lead-14 wave-2 start + lead-15 completion). Every child verified by real full-smoke count drop. NeoStep 0 regression throughout. Optional remaining: archive child dirs + update CLAUDE.md/.trae with 189->0."
   },
   "notes": "Each child: propose->apply->verify->review-loop->ship->archive, then LEAD git commit+push. Serial-by-shared-interpreter/JIT-files. Build/test: dotnet build ILRuntimeTestCLI -c Debug_Neo --no-incremental + dotnet build TestCases -c Debug; run: dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- TestCases/bin/Debug/netstandard2.1/TestCases.dll HotfixAOT/Patched/HotfixAOT.patch true [filter]. NeoStep smoke must stay green (301/0/0 baseline at lead-11).",
   "wave2": {
