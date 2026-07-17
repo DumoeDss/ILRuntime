@@ -8,7 +8,7 @@ ILRuntime：纯 C# IL 解释运行时（Ourpalm，MIT）。运行时加载 .NET 
 - `ENABLE_NEO_MODE`：开 = Neo（新模型 + `ExecuteNeo`），关 = Legacy（`StackObject[]` + `ExecuteR`）。
 - `USE_OLD_OBJ_MODEL`：旧宏，待清理，语义与 `!ENABLE_NEO_MODE` 重叠。
 - **两种对象模型不可混用**（值类型字段访问会格式转换 → 性能退化）。
-- Neo 按 26 步推进：**Step 1-26 主干已全部完成**（19 委托 / 20 async / 22 泛型模板 / 23 NeoAssembly / 24 ilrt_neoc / 25 加载器+Cecil 解耦 / 26 性能验证均归档；21「JIT 完整改造」横切贯穿各步），外加大量派生/边角 change（[OPT-HARDEN]、13b、[CATCH-COMPLETE]、completion-portfolio、neo-overhaul 等）。**当前阶段 = overhaul**：在已实现 step 之上修边角 bug 与未覆盖的指令形状，不再推进新 step。`ExecuteNeo` 里的 `NotImplementedException` 现在多为**边角待办，非主干缺失**。当前 overhaul 交接见 `rasen/changes/neo-overhaul/handoff/lead-13.md`；主干 26 步进度见 `.trae/documents/neo-handoff.md` 与 `neo-implementation-steps.md`。
+- Neo 按 26 步推进：**Step 1-26 主干已全部完成**（19 委托 / 20 async / 22 泛型模板 / 23 NeoAssembly / 24 ilrt_neoc / 25 加载器+Cecil 解耦 / 26 性能验证均归档；21「JIT 完整改造」横切贯穿各步），外加大量派生/边角 change（[OPT-HARDEN]、13b、[CATCH-COMPLETE]、completion-portfolio、neo-overhaul 等）。**全量 Neo 冒烟已归零**（951 ran / 0 failed；overhaul wave-2 的 64 个 child 把 189 个失败修到 0）。NeoStep 417/0。`ExecuteNeo` 里的 `NotImplementedException` 现在几乎为**零**（189 全量失败里只有 2 个是 NIE，其余全是真运行时 bug，已全部修复）。overhaul 交接见 `rasen/changes/neo-overhaul/handoff/lead-15.md`；主干 26 步进度见 `.trae/documents/neo-handoff.md` 与 `neo-implementation-steps.md`。
 
 改执行 / 对象模型前先读 `.trae/documents/`（见下）。深度架构 / 模块 / API 详解作为技能按需加载：`.claude/skills/ilruntime/`（入口 `SKILL.md`）。
 
@@ -51,8 +51,8 @@ dotnet run -c Debug_Neo -f net8.0 --project ILRuntimeTestCLI --no-build -- \
 
 基线（2026-07-13 实测，同一份 `TestCases.dll`、同一份预生成的 `HotfixAOT.patch`）：
 - **Legacy/register 全量**（plain `Debug` + `useRegister=true`）：519 跑，1 失败（518/519）→ 稳定绿基线，回归用。这 1 个未定位。
-- **Neo 全量**（`Debug_Neo` + `useRegister=true`，无 filter）：**现已能跑完**（约 902 跑 / 192 失败，不再 pre-crash）。`Ldftn`/委托（Step 19）/async（Step 20）等早已实现；剩余失败是 overhaul 边角 bug（见 lead-13 surfacedFollowups），**不是主干 step 未实现**。Step 1-26 主干指令均已实现，对应 `NeoStep*` 用例全绿。
-- 日常只跑 `NeoStep` 冒烟（**当前 380/0 全绿**，HEAD `1cda0f51`，2026-07-13；全绿 = 环境正常；`NeoOptHardening` K1 用例在单独过滤下跑）。
+- **Neo 全量**（`Debug_Neo` + `useRegister=true`，无 filter）：**951 跑 / 0 失败**（全量绿！overhaul wave-2 的 64 个 child 把 189 个失败修到 0）。`Ldftn`/委托（Step 19）/async（Step 20）等早已实现；189 个失败全是真运行时 bug（不是未实现指令），已全部修复。Step 1-26 主干指令均已实现，对应 `NeoStep*` 用例全绿。
+- 日常只跑 `NeoStep` 冒烟（**当前 417/0 全绿**，HEAD `f820c644`，2026-07-17；全绿 = 环境正常；`NeoOptHardening` K1 用例在单独过滤下跑）。
 
 注意：`Debug_Neo` 因 `OUTPUT_JIT_RESULT` 宏会打印大量 JIT / 优化器中间结果，属正常。Neo 模式只用 `Debug_Neo` 构建 **CLI**，**不要**用该配置构建 `TestCases`（其产物路径不变）；单测 >10s 多为解释器死循环。完整规则见 `.trae/rules/unittest_guide.md`。
 

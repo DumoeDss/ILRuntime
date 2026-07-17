@@ -1,16 +1,11 @@
 # Neo Overhaul — Handoff Document
 
-> **PROGRESS UPDATE (2026-07-13) — supersedes the 2026-07-09 progress/baseline text below.** All
-> 26 roadmap steps are now COMPLETE (Step 1-10 in `.trae/specs/`, Step 11-26 in
-> `openspec/changes/archive/` — including Step 19 delegates, Step 20 async, Step 22-26 AOT/tooling;
-> Step 21 is a cross-cutting JIT change woven through the others). `ldftn`/delegates/async/etc. are
-> IMPLEMENTED. The Neo full smoke now COMPLETES (~902 ran / 192 failed, no pre-crash). **Current phase
-> = overhaul**: fixing edge-case bugs and uncovered instruction shapes on top of the implemented
-> steps, NOT advancing new steps. NeoStep smoke = **380/0** green; HEAD = `1cda0f51` (2026-07-13).
-> The authoritative overhaul handoff is `rasen/changes/neo-overhaul/handoff/lead-13.md` (latest
-> session: 9 correctness children 21-29; its `surfacedFollowups` are the current frontier). The
-> env/build/code-map sections below remain accurate; only the progress/baseline numbers and the
-> old completion-portfolio/lead-3 pointer are outdated.
+> **PROGRESS UPDATE (2026-07-17) — wave-2 COMPLETE.** All 26 roadmap steps COMPLETE. The Neo full
+> smoke is now **0 failures** (951 ran / 0 failed — wave-2 drove 189 failures to 0 via 64 children).
+> NeoStep smoke = **417/0** green; HEAD = `f820c644` (2026-07-17). The authoritative overhaul handoff
+> is `rasen/changes/neo-overhaul/handoff/lead-15.md` (wave-2 completion). The 189 original failures
+> were 187 real runtime bugs + 2 NIEs (all fixed). The env/build/code-map sections below remain
+> accurate.
 
 > **Read this FIRST when continuing the ILRuntime Neo work.**
 > Companion to `neo-implementation-steps.md` (the 26-step roadmap) and
