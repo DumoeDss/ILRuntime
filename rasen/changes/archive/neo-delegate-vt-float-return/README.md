@@ -1,0 +1,3 @@
+# neo-delegate-vt-float-return
+
+wave2: FunctionDelegateAdapter2 VT/float-return corruption (4E-45 bit-reinterpret). DelegateTest24 cascade bottom. ROOT CAUSE: a CLR value-type PARAMETER is a boxed reference under the Neo calling convention, but the raw-Ldfld IsValueType arm read the owner slot as flat bytes (reinterpreting the mStack index as the struct's first field). FIX: a JIT marker on `ldarg; ldfld` + a runtime branch that dereferences the boxed struct (with a flat-bytes fallback for the starg-reassigned case). Full smoke 73 -> 70 (DelegateTest24 fixed, 0 regressions). NeoStep 394/0. Legacy-neutral. DONE.
